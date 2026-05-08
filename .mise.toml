@@ -1,0 +1,14 @@
+# 루트 .mise.toml — 공통 개발 도구만 둔다.
+# 도구별 런타임/태스크는 apps/<tool>/.mise.toml 에서 격리 관리.
+#
+# mise 는 실행 디렉토리에서 위로 올라가며 .mise.toml 을 머지하므로,
+# `cd apps/<tool> && mise run <task>` 호출 시 도구별 설정이 자연스럽게 적용된다.
+
+[tools]
+# 공통 셸 도구 (도구별 mise 가 추가 런타임을 덧붙임)
+shellcheck = "latest"
+shfmt = "latest"
+
+[tasks.list]
+description = "List all tools under apps/"
+run = "ls -1 apps/ 2>/dev/null || echo '(no tools yet)'"
