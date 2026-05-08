@@ -1,0 +1,25 @@
+name: jg CI
+
+on:
+  push:
+    paths:
+      - 'apps/jg/**'
+      - '.github/workflows/jg-ci.yml'
+  pull_request:
+    paths:
+      - 'apps/jg/**'
+      - '.github/workflows/jg-ci.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/jg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: mise run fmt-check
+      - run: mise run lint
+      - run: mise run test
+      - run: mise run build

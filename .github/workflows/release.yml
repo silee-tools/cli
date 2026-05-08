@@ -1,0 +1,63 @@
+name: Release
+
+# 모노레포 공통 릴리스 워크플로우.
+# 태그 형식: <tool>/v<MAJOR>.<MINOR>.<PATCH> (예: jg/v0.1.28)
+# prefix 부분(slash 앞)을 도구 이름으로 추출하여 apps/<tool>/ 디렉토리에서 빌드한다.
+
+on:
+  push:
+    tags:
+      - '*/v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse tag
+        id: parse
+        run: |
+          set -euo pipefail
+          ref="${GITHUB_REF_NAME}"
+          tool="${ref%%/*}"
+          version="${ref#*/}"
+          if [ -z "$tool" ] || [ "$tool" = "$ref" ]; then
+            echo "Tag '$ref' does not match <tool>/v* pattern" >&2
+            exit 1
+          fi
+          if [ ! -d "apps/$tool" ]; then
+            echo "apps/$tool 가 존재하지 않음 — 태그 prefix 확인 필요" >&2
+            exit 1
+          fi
+          echo "tool=$tool" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tool $version"
+
+      - uses: jdx/mise-action@v2
+
+      - name: Build
+        working-directory: apps/${{ steps.parse.outputs.tool }}
+        run: |
+          set -euo pipefail
+          if mise tasks | awk '{print $1}' | grep -qx build; then
+            mise run build
+          else
+            echo "build task 없음 — 빌드 단계 skip"
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tool="${{ steps.parse.outputs.tool }}"
+          version="${{ steps.parse.outputs.version }}"
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${tool} ${version}" \
+            --generate-notes

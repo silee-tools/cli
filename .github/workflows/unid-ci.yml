@@ -1,0 +1,25 @@
+name: unid CI
+
+on:
+  push:
+    paths:
+      - 'apps/unid/**'
+      - '.github/workflows/unid-ci.yml'
+  pull_request:
+    paths:
+      - 'apps/unid/**'
+      - '.github/workflows/unid-ci.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/unid
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: mise run fmt-check
+      - run: mise run lint
+      - run: mise run test
+      - run: mise run build

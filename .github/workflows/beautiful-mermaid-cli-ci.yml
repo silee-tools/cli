@@ -1,0 +1,26 @@
+name: beautiful-mermaid-cli CI
+
+on:
+  push:
+    paths:
+      - 'apps/beautiful-mermaid-cli/**'
+      - '.github/workflows/beautiful-mermaid-cli-ci.yml'
+  pull_request:
+    paths:
+      - 'apps/beautiful-mermaid-cli/**'
+      - '.github/workflows/beautiful-mermaid-cli-ci.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/beautiful-mermaid-cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: bun install --frozen-lockfile
+      - run: mise run fmt-check
+      - run: mise run lint
+      - run: mise run test
+      - run: mise run build
