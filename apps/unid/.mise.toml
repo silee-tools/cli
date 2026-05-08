@@ -1,0 +1,55 @@
+[tools]
+go = "latest"
+
+[tasks.build]
+description = "Build the project"
+run = "go build -o unid ./cmd/unid"
+
+[tasks.test]
+description = "Run tests"
+run = "go test ./..."
+
+[tasks.test-render]
+description = "Run render tests with visible diagram output"
+run = "go test -v -run TestGoldenFiles/render_complex ./..."
+
+[tasks.lint]
+description = "Run go vet linter"
+run = "go vet ./..."
+
+[tasks.fmt]
+description = "Format code"
+run = "gofmt -w ."
+
+[tasks.fmt-check]
+description = "Check code formatting"
+run = "test -z \"$(gofmt -l .)\""
+
+[tasks.link]
+description = "Build and symlink unid to ~/.local/bin"
+depends = ["build"]
+run = """
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/unid" ~/.local/bin/unid
+echo "Linked: ~/.local/bin/unid"
+"""
+
+[tasks.unlink]
+description = "Remove unid symlink from ~/.local/bin"
+run = """
+if [ -L ~/.local/bin/unid ]; then
+  rm ~/.local/bin/unid
+  echo "Unlinked: ~/.local/bin/unid"
+elif [ -e ~/.local/bin/unid ]; then
+  echo "Error: ~/.local/bin/unid exists but is not a symlink" >&2
+  exit 1
+else
+  echo "Nothing to unlink: ~/.local/bin/unid not found"
+fi
+"""
+
+[tasks.release]
+description = "Interactive release (version bump, tag, push)"
+raw = true
+run = "bash scripts/release.sh"
+

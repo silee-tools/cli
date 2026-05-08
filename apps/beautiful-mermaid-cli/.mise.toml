@@ -1,0 +1,22 @@
+[tools]
+bun = "latest"
+
+[tasks.build]
+description = "Build the project"
+run = "bun build src/cli.ts --outdir dist --target bun"
+
+[tasks.test]
+description = "Run tests"
+run = "bun test"
+
+[tasks.lint]
+description = "Run linter"
+run = "bun x biome check ."
+
+[tasks.fmt]
+description = "Format code"
+run = "bun x biome format --write ."
+
+[tasks.fmt-check]
+description = "Check formatting (CI)"
+run = "bun x biome format ."

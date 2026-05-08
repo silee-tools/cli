@@ -1,0 +1,33 @@
+#compdef jg
+
+_jg() {
+  local -a repos
+  repos=("${(@f)$(command jg -l 2>/dev/null | awk '{print $NF}')}")
+
+  _arguments -C \
+    '--add[Add/update entry]:directory:_directories' \
+    '--remove[Remove entry]:directory:_directories' \
+    '--clean[Remove stale entries]' \
+    {-l,--list}'[List repos]' \
+    {-v,--version}'[Show version]' \
+    {-h,--help}'[Show help]' \
+    '1: :->first_arg' \
+    '*: :->rest' \
+    && return 0
+
+  case "$state" in
+    first_arg)
+      _alternative \
+        'subcommands:subcommand:(init setup)' \
+        'repos:repository:compadd -a repos'
+      ;;
+    rest)
+      case "${words[2]}" in
+        init|setup) _values 'shell' zsh bash ;;
+        *) compadd -a repos ;;
+      esac
+      ;;
+  esac
+}
+
+_jg "$@"

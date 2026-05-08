@@ -1,0 +1,485 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="0.2.3"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ -d "$SCRIPT_DIR/apps" ]]; then
+  APPS_DIR="$SCRIPT_DIR/apps"
+elif [[ -d "$SCRIPT_DIR/../share/appback/apps" ]]; then
+  APPS_DIR="$(cd "$SCRIPT_DIR/../share/appback/apps" && pwd)"
+else
+  echo "apps 디렉토리를 찾을 수 없습니다" >&2
+  exit 1
+fi
+
+# === UI helpers ===
+
+has_gum() {
+  command -v gum &>/dev/null
+}
+
+info() {
+  if has_gum; then
+    gum style --foreground 248 "$1"
+  else
+    echo "$1"
+  fi
+}
+
+success() {
+  if has_gum; then
+    gum style --foreground 114 "✓ $1"
+  else
+    echo "✓ $1"
+  fi
+}
+
+warn() {
+  if has_gum; then
+    gum style --foreground 178 "⚠ $1"
+  else
+    echo "⚠ $1" >&2
+  fi
+}
+
+error() {
+  if has_gum; then
+    gum style --foreground 167 "✗ $1"
+  else
+    echo "✗ $1" >&2
+  fi
+}
+
+die() {
+  error "$1"
+  exit 1
+}
+
+spin() {
+  local title="$1"
+  shift
+  if has_gum && [[ "${NON_INTERACTIVE:-}" != "1" ]]; then
+    gum spin --spinner dot --title "$title" -- "$@"
+  else
+    "$@"
+  fi
+}
+
+# === App definition ===
+
+load_app() {
+  local app_name="$1"
+  local app_file="$APPS_DIR/${app_name}.sh"
+
+  if [[ ! -f "$app_file" ]]; then
+    die "앱 '${app_name}'을(를) 찾을 수 없습니다 (app not found)"
+  fi
+
+  # 변수 초기화
+  # shellcheck disable=SC2034
+  APP_NAME="" BUNDLE_ID="" PROCESS_NAME=""
+  BACKUP_PATHS=() EXCLUDE_PATHS=() KEYCHAIN_ITEMS=()
+
+  # shellcheck disable=SC1090
+  source "$app_file"
+
+  if [[ -z "$APP_NAME" ]]; then
+    die "앱 정의에 APP_NAME이 없습니다: $app_file"
+  fi
+  if [[ ${#BACKUP_PATHS[@]} -eq 0 ]]; then
+    die "앱 정의에 BACKUP_PATHS가 없습니다: $app_file"
+  fi
+}
+
+list_apps() {
+  local app_file app_name
+  for app_file in "$APPS_DIR"/*.sh; do
+    [[ -f "$app_file" ]] || continue
+    app_name="$(basename "$app_file" .sh)"
+    # source to get APP_NAME for display
+    (
+      # shellcheck disable=SC1090
+      source "$app_file"
+      printf "%-12s %s\n" "$app_name" "${APP_NAME:-}"
+    )
+  done
+}
+
+# === Process check ===
+
+is_app_running() {
+  pgrep -xq "$PROCESS_NAME" 2>/dev/null
+}
+
+check_app_running() {
+  if is_app_running; then
+    warn "${APP_NAME}이(가) 현재 실행 중입니다."
+    if [[ "${NON_INTERACTIVE:-}" == "1" ]]; then
+      return 0
+    fi
+    if has_gum; then
+      gum confirm "실행 중에도 계속할까요?" || exit 1
+    else
+      read -rp "계속할까요? [Y/n] " answer
+      [[ "$answer" =~ ^[Nn] ]] && exit 1
+    fi
+  fi
+}
+
+# === Export ===
+
+cmd_export() {
+  local app_name="" output_dir="$HOME/Downloads" no_keychain=0
+  local non_interactive=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --output) output_dir="$2"; shift 2 ;;
+      --no-keychain) no_keychain=1; shift ;;
+      --non-interactive) non_interactive=1; shift ;;
+      --help) cmd_help; exit 0 ;;
+      -*) die "알 수 없는 옵션: $1" ;;
+      *) app_name="$1"; shift ;;
+    esac
+  done
+
+  [[ "$non_interactive" == "1" ]] && export NON_INTERACTIVE=1
+
+  # 앱 선택 (인터랙티브)
+  if [[ -z "$app_name" ]]; then
+    if [[ "${NON_INTERACTIVE:-}" == "1" ]]; then
+      die "앱 이름을 지정해 주세요"
+    fi
+    if ! has_gum; then
+      die "gum이 필요합니다: brew install gum"
+    fi
+    local apps_list
+    apps_list=$(list_apps | awk '{print $1}')
+    app_name=$(echo "$apps_list" | gum choose --header "백업할 앱을 선택하세요")
+  fi
+
+  load_app "$app_name"
+
+  # 출력 디렉토리 확인
+  if [[ ! -d "$output_dir" ]]; then
+    die "출력 디렉토리가 존재하지 않습니다: $output_dir"
+  fi
+
+  check_app_running
+
+  local date_stamp
+  date_stamp="$(date +%Y-%m-%d)"
+  local backup_name="${app_name}-backup-${date_stamp}"
+  local backup_file="${output_dir}/${backup_name}.tar.gz"
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+
+  # 설정 파일 백업
+  local tar_args=()
+  for path in "${BACKUP_PATHS[@]}"; do
+    local full_path="$HOME/$path"
+    if [[ -e "$full_path" ]]; then
+      tar_args+=("$path")
+    else
+      warn "경로가 존재하지 않습니다 (건너뜀): ~/$path"
+    fi
+  done
+
+  if [[ ${#tar_args[@]} -eq 0 ]]; then
+    die "백업할 파일이 없습니다"
+  fi
+
+  # tar 옵션 구성
+  local exclude_args=()
+  for exc in "${EXCLUDE_PATHS[@]+"${EXCLUDE_PATHS[@]}"}"; do
+    [[ -n "$exc" ]] && exclude_args+=(--exclude "$exc")
+  done
+
+  spin "설정 파일 백업 중..." \
+    tar czf "$tmp_dir/settings.tar.gz" \
+    -C "$HOME" \
+    ${exclude_args[@]+"${exclude_args[@]}"} \
+    "${tar_args[@]}"
+
+  success "설정 파일 백업 완료"
+
+  # 키체인 백업
+  if [[ "$no_keychain" -eq 0 ]] && [[ "${#KEYCHAIN_ITEMS[@]}" -gt 0 ]]; then
+    local password=""
+
+    if [[ "${NON_INTERACTIVE:-}" == "1" ]]; then
+      die "키체인 백업에는 비밀번호가 필요합니다 (--no-keychain으로 건너뛰기 가능)"
+    fi
+
+    if has_gum; then
+      password=$(gum input --password --placeholder "키체인 암호화 비밀번호")
+      local password_confirm
+      password_confirm=$(gum input --password --placeholder "비밀번호 확인")
+      if [[ "$password" != "$password_confirm" ]]; then
+        rm -rf "$tmp_dir"
+        die "비밀번호가 일치하지 않습니다"
+      fi
+    else
+      read -rsp "키체인 암호화 비밀번호: " password; echo
+      local password_confirm
+      read -rsp "비밀번호 확인: " password_confirm; echo
+      if [[ "$password" != "$password_confirm" ]]; then
+        rm -rf "$tmp_dir"
+        die "비밀번호가 일치하지 않습니다"
+      fi
+    fi
+
+    local keychain_count=0
+    for item in "${KEYCHAIN_ITEMS[@]}"; do
+      local service="${item%%:*}"
+      local account="${item##*:}"
+      local value
+      value=$(security find-generic-password -w -s "$service" -a "$account" 2>/dev/null) || {
+        warn "키체인 항목을 찾을 수 없습니다: $service ($account)"
+        continue
+      }
+      # 암호화하여 저장 (평문은 디스크에 기록하지 않음)
+      echo "$value" | openssl enc -aes-256-cbc -pbkdf2 -salt -pass "pass:$password" \
+        -out "$tmp_dir/keychain_${service//[^a-zA-Z0-9]/_}.enc"
+      # 메타데이터 저장
+      echo "${service}:${account}" >> "$tmp_dir/keychain.manifest"
+      keychain_count=$((keychain_count + 1))
+    done
+
+    if [[ $keychain_count -gt 0 ]]; then
+      success "키체인 ${keychain_count}개 항목 암호화 완료"
+    fi
+  fi
+
+  # 최종 아카이브
+  spin "아카이브 생성 중..." \
+    tar czf "$backup_file" -C "$tmp_dir" .
+
+  rm -rf "$tmp_dir"
+
+  local size
+  size=$(du -h "$backup_file" | awk '{print $1}')
+
+  if has_gum && [[ "${NON_INTERACTIVE:-}" != "1" ]]; then
+    gum style --border double --padding "1 2" --border-foreground 114 \
+      "백업 완료!" \
+      "" \
+      "파일: $backup_file" \
+      "크기: $size"
+  else
+    success "백업 완료: $backup_file ($size)"
+  fi
+}
+
+# === Import ===
+
+cmd_import() {
+  local app_name="" backup_file="" non_interactive=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --non-interactive) non_interactive=1; shift ;;
+      --help) cmd_help; exit 0 ;;
+      -*) die "알 수 없는 옵션: $1" ;;
+      *)
+        if [[ -z "$app_name" ]]; then
+          app_name="$1"
+        elif [[ -z "$backup_file" ]]; then
+          backup_file="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  [[ "$non_interactive" == "1" ]] && export NON_INTERACTIVE=1
+
+  # 앱 선택
+  if [[ -z "$app_name" ]]; then
+    if [[ "${NON_INTERACTIVE:-}" == "1" ]]; then
+      die "앱 이름을 지정해 주세요"
+    fi
+    if ! has_gum; then
+      die "gum이 필요합니다: brew install gum"
+    fi
+    local apps_list
+    apps_list=$(list_apps | awk '{print $1}')
+    app_name=$(echo "$apps_list" | gum choose --header "복원할 앱을 선택하세요")
+  fi
+
+  load_app "$app_name"
+
+  # 백업 파일 선택
+  if [[ -z "$backup_file" ]]; then
+    if [[ "${NON_INTERACTIVE:-}" == "1" ]]; then
+      die "백업 파일을 지정해 주세요"
+    fi
+    if has_gum; then
+      backup_file=$(gum file "$HOME/Downloads" --header "백업 파일을 선택하세요")
+    else
+      read -rp "백업 파일 경로: " backup_file
+    fi
+  fi
+
+  if [[ ! -f "$backup_file" ]]; then
+    die "백업 파일이 존재하지 않습니다: $backup_file"
+  fi
+
+  check_app_running
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+
+  # 아카이브 해제
+  spin "아카이브 해제 중..." \
+    tar xzf "$backup_file" -C "$tmp_dir"
+
+  # 설정 복원
+  if [[ -f "$tmp_dir/settings.tar.gz" ]]; then
+    spin "설정 복원 중..." \
+      tar xzf "$tmp_dir/settings.tar.gz" -C "$HOME"
+    success "설정 파일 복원 완료"
+  fi
+
+  # 키체인 복원
+  if [[ -f "$tmp_dir/keychain.manifest" ]]; then
+    local password=""
+
+    if [[ "${NON_INTERACTIVE:-}" == "1" ]]; then
+      warn "키체인 복원에는 비밀번호가 필요합니다 (건너뜀)"
+    else
+      if has_gum; then
+        password=$(gum input --password --placeholder "키체인 복호화 비밀번호")
+      else
+        read -rsp "키체인 복호화 비밀번호: " password; echo
+      fi
+
+      local keychain_count=0
+      while IFS=: read -r service account; do
+        local enc_file="$tmp_dir/keychain_${service//[^a-zA-Z0-9]/_}.enc"
+        if [[ ! -f "$enc_file" ]]; then
+          warn "암호화된 키체인 파일을 찾을 수 없습니다: $service"
+          continue
+        fi
+
+        local value
+        value=$(openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:$password" -in "$enc_file") || {
+          die "키체인 복호화 실패 (비밀번호를 확인하세요)"
+        }
+
+        # 기존 항목 삭제 후 재등록
+        security delete-generic-password -s "$service" -a "$account" login.keychain-db 2>/dev/null || true
+        security add-generic-password -s "$service" -a "$account" -w "$value" login.keychain-db
+
+        keychain_count=$((keychain_count + 1))
+      done < "$tmp_dir/keychain.manifest"
+
+      if [[ $keychain_count -gt 0 ]]; then
+        success "키체인 ${keychain_count}개 항목 복원 완료"
+      fi
+    fi
+  fi
+
+  rm -rf "$tmp_dir"
+
+  if has_gum && [[ "${NON_INTERACTIVE:-}" != "1" ]]; then
+    gum style --border double --padding "1 2" --border-foreground 114 \
+      "복원 완료!" \
+      "" \
+      "${APP_NAME} 설정이 복원되었습니다." \
+      "앱을 다시 시작하여 확인하세요."
+  else
+    success "복원 완료: ${APP_NAME}"
+  fi
+}
+
+# === Help / Version ===
+
+cmd_help() {
+  cat <<EOF
+appback v${VERSION} — Mac 앱 설정 백업/복원
+
+사용법:
+  appback <command> [options]
+
+명령:
+  export [<app>]        앱 설정을 백업 파일로 내보내기
+  import [<app>]        백업 파일에서 앱 설정 복원
+  list                  지원하는 앱 목록 표시
+  install-completions   셸 자동완성 설치 (bash/zsh)
+
+옵션:
+  --output <dir>    백업 파일 저장 경로 (기본: ~/Downloads)
+  --no-keychain     키체인 항목 백업/복원 건너뛰기
+  --non-interactive 비인터랙티브 모드 (gum UI 없이 실행)
+  --help            도움말 표시
+  --version         버전 표시
+  --completions     자동완성 스크립트 출력
+EOF
+}
+
+cmd_version() {
+  echo "appback v${VERSION}"
+}
+
+cmd_completions() {
+  local shell_name comp_file
+  shell_name="$(basename "$SHELL")"
+
+  case "$shell_name" in
+    zsh)
+      comp_file="$SCRIPT_DIR/completions/_appback"
+      if [[ ! -f "$comp_file" ]]; then
+        comp_file="$SCRIPT_DIR/../share/appback/completions/_appback"
+      fi
+      ;;
+    *)
+      comp_file="$SCRIPT_DIR/completions/appback.bash"
+      if [[ ! -f "$comp_file" ]]; then
+        comp_file="$SCRIPT_DIR/../share/appback/completions/appback.bash"
+      fi
+      ;;
+  esac
+
+  cat "$comp_file"
+}
+
+cmd_install_completions() {
+  local shell_name
+  shell_name="$(basename "$SHELL")"
+  local line='eval "$(appback --completions)"'
+
+  case "$shell_name" in
+    bash) local rc="$HOME/.bashrc" ;;
+    zsh)  local rc="$HOME/.zshrc" ;;
+    *)    die "지원하지 않는 셸: $shell_name (bash, zsh만 지원)" ;;
+  esac
+
+  if grep -qF 'appback --completions' "$rc" 2>/dev/null; then
+    info "이미 설치되어 있습니다: $rc"
+    return 0
+  fi
+
+  printf '\n# appback completions\n%s\n' "$line" >> "$rc"
+  success "자동완성 설치 완료: $rc"
+  info "적용하려면: source $rc"
+}
+
+# === Main ===
+
+main() {
+  case "${1:-}" in
+    export)  shift; cmd_export "$@" ;;
+    import)  shift; cmd_import "$@" ;;
+    list)    list_apps ;;
+    install-completions) cmd_install_completions ;;
+    --help|-h)       cmd_help ;;
+    --version|-v)    cmd_version ;;
+    --completions)   cmd_completions ;;
+    "")              cmd_help ;;
+    *)               die "알 수 없는 명령: $1 (--help 참조)" ;;
+  esac
+}
+
+main "$@"

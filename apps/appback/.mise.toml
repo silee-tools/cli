@@ -1,0 +1,15 @@
+[tasks.test]
+description = "Run bats tests"
+run = "bats test/"
+
+[tasks.lint]
+description = "Run shellcheck on all scripts"
+run = "shellcheck appback apps/*.sh"
+
+[tasks.fmt]
+description = "Format shell scripts with shfmt"
+run = "shfmt -w -i 2 appback apps/*.sh"
+
+[tasks.fmt-check]
+description = "Check shell script formatting (CI)"
+run = "shfmt -d -i 2 appback apps/*.sh"

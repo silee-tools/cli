@@ -12,8 +12,9 @@
 ## 모노레포 컨벤션
 
 - 한 도구 = `apps/<tool>/` 한 디렉토리. 도구 사이 코드 공유 금지 (각자 독립).
+- totp / saml2aws-auto 는 기존 zsh 함수에서 standalone Go CLI 로 재작성한다. 두 도구 사이의 결합은 saml2aws-auto-login 이 PATH 에서 totp 바이너리 존재만 확인하는 한 줄 의존이 전부다.
 - 도구 추가: `apps/<new-tool>/` 생성, 그 안에 `.mise.toml` + `README.md` + 진입점. 루트 `README.md` 의 도구 표 갱신.
-- 릴리스 태그: `<tool>/v<MAJOR>.<MINOR>.<PATCH>` prefix 스킴. 모든 도구는 모노레포에서 v0.1.0 부터 시작.
+- 릴리스 태그: `<tool>/v<MAJOR>.<MINOR>.<PATCH>` prefix 스킴. 기존 5개 도구(appback/beautiful-mermaid-cli/jg/mydesk/unid)는 구 레포의 마지막 태그에서 patch bump 한 버전을 첫 모노레포 릴리스로 잡는다 (예: 구 `appback v0.2.3` → 모노레포 `appback/v0.2.4`). totp / saml2aws-auto 는 신규 Go CLI 로 재작성하므로 `v0.1.0` 부터 시작.
 - CI: 도구별 `.github/workflows/<tool>-ci.yml` + paths 필터로 자기 디렉토리만 트리거.
 - Homebrew formula 는 별도 레포 `silee-tools/homebrew-tap` 에서 관리. 본 레포의 source URL/buildpath 만 갱신 대상.
 
@@ -22,4 +23,4 @@
 1. `apps/<tool>/` 생성, 도구 코드 + `.mise.toml` + README 추가
 2. `.github/workflows/<tool>-ci.yml` 추가 (paths 필터: `apps/<tool>/**`)
 3. 루트 `README.md` / `docs/README_ko.md` 의 도구 표 갱신
-4. 첫 릴리스 시 `<tool>/v0.1.0` 태그 push
+4. 첫 릴리스 시 `<tool>/v<MAJOR>.<MINOR>.<PATCH>` 태그 push (기존 도구는 구 레포 마지막 태그에서 patch bump, 신규 도구는 v0.1.0)

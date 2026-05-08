@@ -1,0 +1,17 @@
+* text=auto
+
+# Keep source, docs, and automation files with LF line endings.
+.gitattributes text eol=lf
+*.go text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.zsh text eol=lf
+
+# Shell/completion files without standard extensions.
+completions/_jg text eol=lf

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mydesk</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="bg-gray-50 text-gray-900 min-h-screen flex">
+
+<!-- Sidebar -->
+<nav id="sidebar" class="w-56 bg-gray-900 text-gray-300 min-h-screen flex flex-col">
+  <div class="p-4 border-b border-gray-700">
+    <h1 class="text-lg font-bold text-white">mydesk</h1>
+    <p id="nav-version" class="text-xs text-gray-500 mt-1"></p>
+  </div>
+  <div class="flex-1 py-4">
+    <a href="#/" class="nav-link block px-4 py-2 hover:bg-gray-800 hover:text-white" data-page="dashboard">
+      <span class="mr-2">&#9633;</span> Dashboard
+    </a>
+    <a href="#/links" class="nav-link block px-4 py-2 hover:bg-gray-800 hover:text-white" data-page="links">
+      <span class="mr-2">&#128279;</span> Links
+    </a>
+    <a href="#/config" class="nav-link block px-4 py-2 hover:bg-gray-800 hover:text-white" data-page="config">
+      <span class="mr-2">&#9881;</span> Config
+    </a>
+    <a href="#/provision" class="nav-link block px-4 py-2 hover:bg-gray-800 hover:text-white" data-page="provision">
+      <span class="mr-2">&#128230;</span> Provision
+    </a>
+  </div>
+  <div class="p-4 border-t border-gray-700">
+    <p id="nav-config-dir" class="text-xs text-gray-500 truncate" title=""></p>
+  </div>
+</nav>
+
+<!-- Main content -->
+<main class="flex-1 flex flex-col">
+  <header class="bg-white border-b px-6 py-3 flex items-center justify-between">
+    <h2 id="page-title" class="text-lg font-semibold"></h2>
+    <div class="flex items-center gap-3">
+      <label class="flex items-center gap-2 text-sm">
+        <input type="checkbox" id="global-dry-run" class="rounded">
+        <span>Dry Run</span>
+      </label>
+      <button onclick="location.reload()" class="text-sm text-gray-500 hover:text-gray-700">Refresh</button>
+    </div>
+  </header>
+  <div id="content" class="flex-1 p-6 overflow-auto"></div>
+</main>
+
+<!-- Toast container -->
+<div id="toast-container" class="fixed bottom-4 right-4 flex flex-col gap-2 z-50"></div>
+
+<script src="/app.js"></script>
+<script src="/pages/dashboard.js"></script>
+<script src="/pages/links.js"></script>
+<script src="/pages/config.js"></script>
+<script src="/pages/provision.js"></script>
+<script>App.init();</script>
+</body>
+</html>

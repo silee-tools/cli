@@ -1,0 +1,17 @@
+{
+  "name": "beautiful-mermaid-cli",
+  "module": "src/cli.ts",
+  "type": "module",
+  "bin": {
+    "bmm": "./src/cli.ts"
+  },
+  "dependencies": {
+    "beautiful-mermaid": "^1.1.3"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

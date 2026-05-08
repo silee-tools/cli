@@ -1,0 +1,38 @@
+[tools]
+go = "1.23"
+
+[tasks.build]
+description = "Build the project"
+run = "go build ./cmd/jg"
+
+[tasks.test]
+description = "Run tests"
+run = "go test ./..."
+
+[tasks.lint]
+description = "Run linter"
+run = "golangci-lint run"
+
+[tasks.fmt]
+description = "Format code"
+run = "gofmt -w ."
+
+[tasks.fmt-check]
+description = "Check formatting (CI)"
+run = "test -z \"$(gofmt -l .)\""
+
+[tasks.install]
+description = "Build and install to ~/.local/bin"
+run = "go build -o ~/.local/bin/jg ./cmd/jg"
+
+[tasks.uninstall]
+description = "Remove local dev build, revert to brew version"
+run = """
+rm -f ~/.local/bin/jg
+echo "Removed ~/.local/bin/jg — now using brew version"
+"""
+
+[tasks.release]
+description = "Interactive release (version bump, tag, push)"
+raw = true
+run = "bash scripts/release.sh"

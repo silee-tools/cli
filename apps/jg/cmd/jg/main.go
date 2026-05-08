@@ -1,0 +1,241 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/silee-tools/jg/internal/entry"
+	"github.com/silee-tools/jg/internal/frecency"
+	"github.com/silee-tools/jg/internal/fzf"
+	"github.com/silee-tools/jg/internal/shell"
+)
+
+var version = "dev"
+
+func main() {
+	args := os.Args[1:]
+
+	if len(args) == 0 {
+		runJump(nil)
+		return
+	}
+
+	switch args[0] {
+	case "init":
+		runInit(args[1:])
+	case "setup":
+		runSetup(args[1:])
+	case "--add", "-add":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: jg --add <path>")
+			os.Exit(1)
+		}
+		runAdd(args[1])
+	case "--remove", "-remove":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: jg --remove <path>")
+			os.Exit(1)
+		}
+		runRemove(args[1])
+	case "-l", "--list":
+		runList()
+	case "--clean", "-clean":
+		runClean()
+	case "-v", "--version", "-version":
+		fmt.Printf("jg v%s © 2026 silee-tools\n", version)
+	case "-h", "--help", "-help":
+		printHelp()
+	default:
+		runJump(args)
+	}
+}
+
+func printHelp() {
+	fmt.Print(`Usage: jg [command] [options]
+
+A frecency-based CLI for quickly jumping to Git repositories.
+
+Commands:
+  jg [query...]          Interactive jump with fzf
+  jg init <shell>        Output shell integration code (zsh, bash)
+  jg setup [shell]       Set up shell integration (auto-detects shell)
+
+Options:
+  --add <path>           Add/update entry for path
+  --remove <path>        Remove entry for path
+  --clean                Remove entries for non-existent directories
+  -l, --list             List all repos with frecency scores
+  -v, --version          Show version
+  -h, --help             Show this help
+`)
+}
+
+func runInit(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: jg init <shell>  (zsh, bash)")
+		os.Exit(1)
+	}
+	code, err := shell.Init(args[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(code)
+}
+
+func runSetup(args []string) {
+	var shellOverride string
+	if len(args) > 0 {
+		shellOverride = args[0]
+	}
+	result, err := shell.Setup(shellOverride)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+	if len(result.Actions) == 0 {
+		fmt.Fprintf(os.Stderr, "jg is already set up for %s. Nothing to do.\n", result.Shell)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "jg setup complete for %s:\n", result.Shell)
+	for _, action := range result.Actions {
+		fmt.Fprintf(os.Stderr, "  ✓ %s\n", action)
+	}
+	fmt.Fprintln(os.Stderr, "\nRestart your shell or run: exec $SHELL")
+}
+
+func isSubmodule(repoPath string) bool {
+	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--show-superproject-working-tree")
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) != ""
+}
+
+func runAdd(path string) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return
+	}
+
+	cmd := exec.Command("git", "-C", absPath, "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+
+	repoRoot := strings.TrimSpace(string(out))
+	if isSubmodule(repoRoot) {
+		return
+	}
+	entry.AddOrUpdate(repoRoot)
+}
+
+func runRemove(path string) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	removed, err := entry.Remove(absPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if removed {
+		fmt.Fprintf(os.Stderr, "Removed: %s\n", absPath)
+	} else {
+		fmt.Fprintf(os.Stderr, "Not found: %s\n", absPath)
+	}
+}
+
+func runList() {
+	entries, err := entry.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(entries) == 0 {
+		fmt.Fprintln(os.Stderr, "No entries. cd into git repos to start tracking.")
+		return
+	}
+
+	sorted := frecency.Sort(entries)
+	now := time.Now().Unix()
+	for _, e := range sorted {
+		score := frecency.Score(e.Rank, e.Timestamp, now)
+		fmt.Printf("%8.1f  %4.0f  %s\n", score, e.Rank, e.Path)
+	}
+}
+
+func runClean() {
+	entries, err := entry.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	var kept []entry.Entry
+	for _, e := range entries {
+		info, statErr := os.Stat(e.Path)
+		if statErr != nil || !info.IsDir() {
+			continue
+		}
+		if isSubmodule(e.Path) {
+			continue
+		}
+		kept = append(kept, e)
+	}
+
+	removed := len(entries) - len(kept)
+	if removed > 0 {
+		if err := entry.Save(kept); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Cleaned %d stale entries.\n", removed)
+}
+
+func runJump(queryArgs []string) {
+	entries, err := entry.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	var valid []entry.Entry
+	for _, e := range entries {
+		info, statErr := os.Stat(e.Path)
+		if statErr == nil && info.IsDir() {
+			valid = append(valid, e)
+		}
+	}
+	if len(valid) != len(entries) {
+		_ = entry.Save(valid)
+	}
+
+	if len(valid) == 0 {
+		fmt.Fprintln(os.Stderr, "No entries. cd into git repos to start tracking.")
+		os.Exit(0)
+	}
+
+	query := strings.Join(queryArgs, " ")
+	sorted := frecency.SortWithBoost(valid, query)
+
+	selected, err := fzf.Run(sorted, query)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if selected == "" {
+		os.Exit(1)
+	}
+
+	fmt.Println(selected)
+}
