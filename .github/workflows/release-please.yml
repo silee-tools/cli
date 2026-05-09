@@ -84,10 +84,12 @@ jobs:
             case "$version" in v*) ;; *) version="v$version" ;; esac
             tag="${tool}/${version}"
           else
-            # push 경로: release-please 가 만든 tag 를 git 에서 찾기.
-            tag="$(git tag --points-at HEAD --list "${tool}/v*" | sort -V | tail -1)"
+            # push 경로: 여러 PR 이 같은 push 에 squash-merge 된 경우 HEAD 에 모든 tag 가
+            # 매달려 있지 않다(release-please 가 PR 별로 다른 commit 에 tag 부여).
+            # 그래서 HEAD 제약 없이 tool prefix 의 가장 최신(semver sort) tag 를 사용.
+            tag="$(git tag --list "${tool}/v*" | sort -V | tail -1)"
             if [ -z "$tag" ]; then
-              echo "tag for ${tool} not found at HEAD — release-please should have created it" >&2
+              echo "tag for ${tool} not found in repo — release-please should have created it" >&2
               exit 1
             fi
             version="${tag#${tool}/}"
