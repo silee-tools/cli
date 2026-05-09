@@ -1,0 +1,19 @@
+name: Commit Lint
+
+# Conventional Commits 강제. PR 의 모든 commit + main push 를 검증한다.
+# 절대 원칙: 위반 시 PR merge 차단. main 직접 push 는 force-push 로만 우회 가능.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: wagoid/commitlint-github-action@v6
+        with:
+          configFile: .commitlintrc.yml

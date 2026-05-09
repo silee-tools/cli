@@ -1,0 +1,21 @@
+# Conventional Commits 강제. wagoid/commitlint-github-action@v6 가 PR 마다 검사.
+# 자세한 규칙: https://www.conventionalcommits.org/
+extends:
+  - "@commitlint/config-conventional"
+
+# 모노레포 도구명을 scope 로 권장 (강제 아님 — 빈 scope 도 허용).
+# 예: feat(jg), fix(totp), docs(saml2aws-auto)
+rules:
+  # type 은 enum 으로 강제 (config-conventional 기본값을 명시적으로 선언)
+  type-enum:
+    - 2  # error
+    - always
+    - [feat, fix, docs, style, refactor, perf, test, chore, ci, build, revert]
+  # 한국어 본문 허용 — subject 의 case 검사 비활성
+  subject-case:
+    - 0  # disabled
+  # subject 길이 — 한국어는 영어보다 정보 밀도가 높아 100 자까지 허용
+  header-max-length:
+    - 2
+    - always
+    - 100

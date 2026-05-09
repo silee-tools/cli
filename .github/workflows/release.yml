@@ -52,6 +52,31 @@ jobs:
           echo "category=$category" >> "$GITHUB_OUTPUT"
           echo "Releasing $tool $version (category: $category)"
 
+      # ─── CHANGELOG.md 생성 (git-cliff, Conventional Commits) ───
+      - name: Setup git-cliff
+        uses: kenji-miyake/setup-git-cliff@v2
+
+      - name: Generate CHANGELOG and release notes
+        run: |
+          set -euo pipefail
+          tool="${{ steps.parse.outputs.tool }}"
+          # 전체 CHANGELOG (도구 디렉토리 안)
+          mkdir -p "apps/${tool}"
+          git cliff \
+            --config cliff.toml \
+            --include-path "apps/${tool}/**" \
+            --tag-pattern "${tool}/v[0-9]*" \
+            -o "apps/${tool}/CHANGELOG.md"
+          # 이번 릴리스만 (release notes 용)
+          git cliff \
+            --config cliff.toml \
+            --include-path "apps/${tool}/**" \
+            --tag-pattern "${tool}/v[0-9]*" \
+            --latest \
+            -o /tmp/release-notes.md
+          echo "─── release notes preview ───"
+          cat /tmp/release-notes.md
+
       # ─── Go 도구 (GoReleaser) ───
       - name: Setup Go
         if: steps.parse.outputs.category == 'goreleaser'
@@ -65,7 +90,7 @@ jobs:
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean -f apps/${{ steps.parse.outputs.tool }}/.goreleaser.yaml
+          args: release --clean -f apps/${{ steps.parse.outputs.tool }}/.goreleaser.yaml --release-notes /tmp/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -106,7 +131,7 @@ jobs:
           tool="${{ steps.parse.outputs.tool }}"
           gh release create "${GITHUB_REF_NAME}" \
             --title "${tool} ${{ steps.parse.outputs.version }}" \
-            --generate-notes \
+            --notes-file /tmp/release-notes.md \
             apps/${tool}/dist/*.tar.gz \
             apps/${tool}/dist/checksums.txt
 
@@ -134,7 +159,7 @@ jobs:
           tool="${{ steps.parse.outputs.tool }}"
           gh release create "${GITHUB_REF_NAME}" \
             --title "${tool} ${{ steps.parse.outputs.version }}" \
-            --generate-notes \
+            --notes-file /tmp/release-notes.md \
             apps/${tool}/dist/*.tar.gz \
             apps/${tool}/dist/checksums.txt
 
@@ -143,6 +168,32 @@ jobs:
         run: |
           echo "apps/${{ steps.parse.outputs.tool }} 의 빌드 카테고리를 결정할 수 없음 — .goreleaser.yaml / package.json / 셸 스크립트 중 하나가 있어야 함" >&2
           exit 1
+
+      # ─── CHANGELOG.md 를 main 으로 commit ───
+      # 멱등성: 같은 태그 재실행 시 동일 내용이 생성되어 변경 0 이면 push skip.
+      - name: Commit CHANGELOG to main
+        if: steps.parse.outputs.category != 'unknown'
+        run: |
+          set -euo pipefail
+          tool="${{ steps.parse.outputs.tool }}"
+          version="${{ steps.parse.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          # 태그 시점의 커밋이 main 에 이미 있을 것이므로 CHANGELOG 만 새로 생성해 add
+          git cliff \
+            --config cliff.toml \
+            --include-path "apps/${tool}/**" \
+            --tag-pattern "${tool}/v[0-9]*" \
+            -o "apps/${tool}/CHANGELOG.md"
+          git add "apps/${tool}/CHANGELOG.md"
+          if git diff --cached --quiet; then
+            echo "CHANGELOG 변경 없음 — push skip"
+            exit 0
+          fi
+          git commit -m "docs(${tool}): update CHANGELOG for ${version} [skip ci]"
+          git push origin main
 
       # ─── homebrew-tap formula sha256 자동 갱신 ───
       # release artifact 의 checksums.txt 를 읽어 homebrew-tap 의

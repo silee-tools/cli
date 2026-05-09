@@ -1,0 +1,58 @@
+# git-cliff config — 모노레포 공용. release.yml 이 도구별로
+#   git cliff --config cliff.toml --include-path "apps/<tool>/**" --tag-pattern "<tool>/v[0-9]*"
+# 형태로 호출하여 apps/<tool>/CHANGELOG.md 를 생성한다.
+
+[changelog]
+header = """
+# Changelog
+
+이 파일은 git-cliff 가 Conventional Commits 로부터 자동 생성한다. 직접 수정하지 말 것.\n
+"""
+
+# Tera 템플릿 (https://keats.github.io/tera/docs/)
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="*/v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## Unreleased
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {{ commit.message | split(pat="\\n") | first | upper_first }}\
+  {% if commit.scope %} _(scope: {{ commit.scope }})_{% endif %}\
+  {% if commit.id %} ({{ commit.id | truncate(length=7, end="") }}){% endif %}
+{% endfor %}
+{% endfor %}\n
+"""
+
+footer = ""
+trim = true
+
+[git]
+# Conventional Commits 가 아닌 commit 은 의도적으로 changelog 에서 누락
+# (commitlint 가 PR 단계에서 차단하지만, 만에 하나 main 직접 push 한 경우 대비)
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+protect_breaking_commits = false
+
+# type → group 매핑 (한국어 친화 그룹명)
+commit_parsers = [
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Bug Fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Refactoring" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Tests" },
+  { message = "^build", group = "Build" },
+  { message = "^ci", group = "CI" },
+  { message = "^revert", group = "Reverts" },
+  # chore / style 은 changelog 에 노출하지 않음
+  { message = "^chore", skip = true },
+  { message = "^style", skip = true },
+]
+
+filter_commits = false
+# tag_pattern 은 CLI 인자로 전달 (도구별로 다름)
+sort_commits = "newest"
