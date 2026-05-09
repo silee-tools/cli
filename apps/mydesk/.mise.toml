@@ -1,5 +1,6 @@
 [tools]
 go = "latest"
+"aqua:golangci/golangci-lint" = "latest"
 
 [tasks.build]
 run = "go build -o mydesk ."

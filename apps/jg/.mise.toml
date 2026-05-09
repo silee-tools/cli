@@ -1,5 +1,6 @@
 [tools]
 go = "1.23"
+"aqua:golangci/golangci-lint" = "latest"
 
 [tasks.build]
 description = "Build the project"
