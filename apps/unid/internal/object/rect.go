@@ -36,15 +36,15 @@ const (
 )
 
 type Rect struct {
-	Col, Row       int
-	Width, Height  int // inner dimensions
-	ID             string
-	Content        string
-	HasContent     bool
-	Style          BorderStyle
+	Col, Row        int
+	Width, Height   int // inner dimensions
+	ID              string
+	Content         string
+	HasContent      bool
+	Style           BorderStyle
 	ContentOverflow ContentOverflow
-	ContentAlign   ContentAlign
-	Legend         *Legend
+	ContentAlign    ContentAlign
+	Legend          *Legend
 }
 
 func NewRect(col, row, w, h int) *Rect {

@@ -8,10 +8,10 @@ import (
 )
 
 const (
-	LinksConfFile      = "links.conf"
-	DefaultConfigDir   = "~/.config/mydesk"
-	EnvConfigDir       = "MYDESK_CONFIG_DIR"
-	EnvRepos           = "MYDESK_REPOS"
+	LinksConfFile    = "links.conf"
+	DefaultConfigDir = "~/.config/mydesk"
+	EnvConfigDir     = "MYDESK_CONFIG_DIR"
+	EnvRepos         = "MYDESK_REPOS"
 )
 
 type Config struct {

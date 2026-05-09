@@ -42,8 +42,8 @@ func TestMatchTier(t *testing.T) {
 		{"/repos/noteks", "eks", 4},
 
 		// two-word basename: middle tier unreachable
-		{"/repos/foo-bar", "bar", 3},  // last word, not middle
-		{"/repos/bar-foo", "bar", 1},  // first word
+		{"/repos/foo-bar", "bar", 3}, // last word, not middle
+		{"/repos/bar-foo", "bar", 1}, // first word
 
 		// query with separator: compared as-is, only exact match possible
 		{"/repos/eks-tools", "eks-tools", 0},
@@ -132,20 +132,20 @@ func TestSortWithBoostTierOrdering(t *testing.T) {
 
 	// All entries have same high frecency to isolate tier effect
 	entries := []entry.Entry{
-		{Path: "/repos/infrastructure", Rank: 100, Timestamp: now},  // tier 4
-		{Path: "/repos/my-eks-tools", Rank: 100, Timestamp: now},    // tier 2
-		{Path: "/repos/eks-cluster", Rank: 100, Timestamp: now},     // tier 1
-		{Path: "/repos/tools-eks", Rank: 100, Timestamp: now},       // tier 3
-		{Path: "/repos/eks", Rank: 100, Timestamp: now},             // tier 0
+		{Path: "/repos/infrastructure", Rank: 100, Timestamp: now}, // tier 4
+		{Path: "/repos/my-eks-tools", Rank: 100, Timestamp: now},   // tier 2
+		{Path: "/repos/eks-cluster", Rank: 100, Timestamp: now},    // tier 1
+		{Path: "/repos/tools-eks", Rank: 100, Timestamp: now},      // tier 3
+		{Path: "/repos/eks", Rank: 100, Timestamp: now},            // tier 0
 	}
 
 	result := SortWithBoost(entries, "eks")
 
 	expected := []string{
-		"/repos/eks",           // tier 0
-		"/repos/eks-cluster",   // tier 1
-		"/repos/my-eks-tools",  // tier 2
-		"/repos/tools-eks",     // tier 3
+		"/repos/eks",            // tier 0
+		"/repos/eks-cluster",    // tier 1
+		"/repos/my-eks-tools",   // tier 2
+		"/repos/tools-eks",      // tier 3
 		"/repos/infrastructure", // tier 4
 	}
 
@@ -161,9 +161,9 @@ func TestSortWithBoostFrecencyPreservedWithinTier(t *testing.T) {
 
 	// Two tier-1 entries with clearly different frecency
 	entries := []entry.Entry{
-		{Path: "/repos/eks-low", Rank: 1, Timestamp: now - 86400},   // tier 1, low frecency
-		{Path: "/repos/eks-high", Rank: 100, Timestamp: now - 60},   // tier 1, high frecency
-		{Path: "/repos/other", Rank: 200, Timestamp: now},           // tier 4, highest frecency
+		{Path: "/repos/eks-low", Rank: 1, Timestamp: now - 86400}, // tier 1, low frecency
+		{Path: "/repos/eks-high", Rank: 100, Timestamp: now - 60}, // tier 1, high frecency
+		{Path: "/repos/other", Rank: 200, Timestamp: now},         // tier 4, highest frecency
 	}
 
 	result := SortWithBoost(entries, "eks")
@@ -199,8 +199,8 @@ func TestSortWithBoostNoWordBoundaryNoBoost(t *testing.T) {
 	now := time.Now().Unix()
 
 	entries := []entry.Entry{
-		{Path: "/repos/dekstools", Rank: 50, Timestamp: now},  // "eks" embedded, no word boundary
-		{Path: "/repos/other", Rank: 100, Timestamp: now},     // higher frecency
+		{Path: "/repos/dekstools", Rank: 50, Timestamp: now}, // "eks" embedded, no word boundary
+		{Path: "/repos/other", Rank: 100, Timestamp: now},    // higher frecency
 	}
 
 	result := SortWithBoost(entries, "eks")

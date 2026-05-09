@@ -11,11 +11,11 @@ import (
 const BackupSuffix = ".mydesk-backup"
 
 type LinkReport struct {
-	Linked  int
-	Skipped int
+	Linked   int
+	Skipped  int
 	BackedUp int
-	Failed  int
-	Errors  []error
+	Failed   int
+	Errors   []error
 }
 
 type Linker struct {

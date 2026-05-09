@@ -16,16 +16,16 @@ func (e *OutOfBoundsError) Error() string {
 }
 
 type CollisionError struct {
-	IncomingIdx  int
-	IncomingDesc string
-	ExistingIdx  int
-	ExistingDesc string
-	OverlapCol   int
-	OverlapRow   int
+	IncomingIdx   int
+	IncomingDesc  string
+	ExistingIdx   int
+	ExistingDesc  string
+	OverlapCol    int
+	OverlapRow    int
 	OverlapEndCol int
 	OverlapEndRow int
-	OverlapW     int
-	OverlapH     int
+	OverlapW      int
+	OverlapH      int
 }
 
 func (e *CollisionError) Error() string {

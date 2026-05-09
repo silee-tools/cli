@@ -88,7 +88,7 @@ func (t *Text) Summary() string {
 	return fmt.Sprintf("text (%d,%d) \"%s\"", t.Col, t.Row, t.Content)
 }
 
-func (h *HLine) Bounds() (int, int) { return h.Col + h.Length, h.Row + 1 }
+func (h *HLine) Bounds() (int, int)   { return h.Col + h.Length, h.Row + 1 }
 func (h *HLine) Position() (int, int) { return h.Col, h.Row }
 func (h *HLine) TypeName() string     { return "hline" }
 
@@ -100,7 +100,7 @@ func (h *HLine) Summary() string {
 	return fmt.Sprintf("hline (%d,%d) len=%d %s", h.Col, h.Row, h.Length, lineStyleName(h.Style))
 }
 
-func (v *VLine) Bounds() (int, int) { return v.Col + 1, v.Row + v.Length }
+func (v *VLine) Bounds() (int, int)   { return v.Col + 1, v.Row + v.Length }
 func (v *VLine) Position() (int, int) { return v.Col, v.Row }
 func (v *VLine) TypeName() string     { return "vline" }
 

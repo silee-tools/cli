@@ -10,8 +10,8 @@ const (
 )
 
 type NativeDir struct {
-	Dir        string     // directory name in config repo (e.g., "home")
-	TargetBase string     // system target path (e.g., "~")
+	Dir        string // directory name in config repo (e.g., "home")
+	TargetBase string // system target path (e.g., "~")
 	Mode       NativeMode
 }
 

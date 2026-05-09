@@ -21,6 +21,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
+        with:
+          working_directory: apps/totp
       - run: mise run fmt-check
       - run: mise run lint
       - run: mise run test
