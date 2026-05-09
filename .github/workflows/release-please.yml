@@ -56,6 +56,9 @@ jobs:
       (github.event_name == 'push' && needs.release-please.outputs.releases_created == 'true') ||
       (github.event_name == 'workflow_dispatch' && inputs.tool != '' && inputs.version != '')
     strategy:
+      # homebrew-tap formula 갱신은 같은 외부 저장소의 main 브랜치에 push 하므로,
+      # 여러 도구 릴리스가 동시에 발생해도 non-fast-forward 경합이 나지 않도록 순차 실행한다.
+      max-parallel: 1
       fail-fast: false
       matrix:
         # workflow_dispatch 경로일 때는 단일 path, push 경로일 때는 release-please 출력 사용.
