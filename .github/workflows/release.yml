@@ -143,3 +143,86 @@ jobs:
         run: |
           echo "apps/${{ steps.parse.outputs.tool }} 의 빌드 카테고리를 결정할 수 없음 — .goreleaser.yaml / package.json / 셸 스크립트 중 하나가 있어야 함" >&2
           exit 1
+
+      # ─── homebrew-tap formula sha256 자동 갱신 ───
+      # release artifact 의 checksums.txt 를 읽어 homebrew-tap 의
+      # Formula/<tool>.rb 안 placeholder sha256 을 실제 값으로 교체하고 push.
+      # secrets.HOMEBREW_TAP_TOKEN 이 없으면 step 자체가 skip (수동 갱신 fallback).
+      - name: Update homebrew-tap formula
+        if: steps.parse.outputs.category != 'unknown' && env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          tool="${{ steps.parse.outputs.tool }}"
+          version="${{ steps.parse.outputs.version }}"
+
+          # 도구명 → formula 파일명 매핑 (대부분 동일, beautiful-mermaid-cli 만 bmm)
+          case "$tool" in
+            beautiful-mermaid-cli) formula_name="bmm" ;;
+            *) formula_name="$tool" ;;
+          esac
+
+          # checksums.txt 위치 — goreleaser/bun/bash 모두 apps/<tool>/dist/ 또는
+          # 루트 dist/ 에 둔다. 둘 다 검색.
+          checksums=""
+          for candidate in "apps/${tool}/dist/checksums.txt" "dist/checksums.txt"; do
+            if [ -f "$candidate" ]; then
+              checksums="$candidate"
+              break
+            fi
+          done
+          if [ -z "$checksums" ]; then
+            echo "checksums.txt 를 찾을 수 없음 — 빌드 step 의 출력 경로 확인 필요" >&2
+            exit 1
+          fi
+          echo "Using checksums: $checksums"
+
+          # homebrew-tap 클론 (PAT 필요: contents:write)
+          tap_dir="$(mktemp -d)/homebrew-tap"
+          git clone --depth=1 \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/silee-tools/homebrew-tap.git" \
+            "$tap_dir"
+
+          formula_path="${tap_dir}/Formula/${formula_name}.rb"
+          if [ ! -f "$formula_path" ]; then
+            echo "Formula/${formula_name}.rb 가 homebrew-tap 에 없음 — skip (신규 도구라면 수동으로 추가)" >&2
+            exit 0
+          fi
+
+          python3 scripts/update-homebrew-formula.py "$formula_path" "$checksums"
+
+          # version 도 함께 갱신 (단순 line 교체: `version "X.Y.Z"` → 새 버전)
+          # X.Y.Z 부분만 교체해 들여쓰기/포매팅 보존.
+          # version 은 'v' 접두사 제거.
+          ver_strip="${version#v}"
+          python3 - "$formula_path" "$ver_strip" <<'PY'
+          import re, sys
+          path, ver = sys.argv[1], sys.argv[2]
+          src = open(path).read()
+          new = re.sub(r'(version\s+")[^"]+(")', rf'\g<1>{ver}\g<2>', src, count=1)
+          if new != src:
+              open(path, "w").write(new)
+              print(f"version → {ver}")
+          else:
+              print("version 라인 변경 없음 (이미 최신이거나 version 라인 없음)")
+          PY
+
+          # 변경이 있을 때만 commit + push (멱등성)
+          cd "$tap_dir"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "Formula/${formula_name}.rb"
+          if git diff --cached --quiet; then
+            echo "Formula 변경 없음 — push skip"
+            exit 0
+          fi
+          git commit -m "chore(${formula_name}): bump to ${version} from silee-tools/cli release"
+          git push origin HEAD
+
+      - name: Manual update notice
+        if: steps.parse.outputs.category != 'unknown' && env.HOMEBREW_TAP_TOKEN == ''
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          echo "::notice title=Homebrew formula 수동 갱신 필요::HOMEBREW_TAP_TOKEN secret 미설정 — release 의 checksums.txt 를 받아 silee-tools/homebrew-tap 의 Formula/${{ steps.parse.outputs.tool }}.rb 를 수동으로 갱신하세요. 자동화하려면 repo settings 에서 HOMEBREW_TAP_TOKEN (homebrew-tap repo contents:write 권한) 을 추가."
