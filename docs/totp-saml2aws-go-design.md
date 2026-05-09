@@ -1,9 +1,19 @@
 # totp / saml2aws-auto Go 재작성 설계 라운드
 
-작성일: 2026-05-09
-상태: 결정 대기 (실행 전 사용자 검토)
+작성일: 2026-05-09 (결정 확정 2026-05-09 08:39 KST)
+상태: 결정 확정 — 작성 진입 가능
 
-## 0. 문서의 목적
+## 0. 저장소 원칙 (선행 적용)
+
+이 저장소(silee-tools/cli) 의 모든 설계·구현 결정에서 다음 세 원칙을 우선 적용한다 (사용자 명시, 2026-05-09).
+
+- **범용성**: 특정 환경 가정에 의존하지 않고 다양한 사용자/머신에서 동일하게 동작. 사용자 머신의 toolchain 의존을 줄이는 prebuilt 배포가 source build 보다 우선.
+- **멱등성**: 같은 입력에 대해 몇 번 실행해도 같은 결과. 설치/업그레이드/마이그레이션 절차가 중간 상태에 의존하지 않도록 작성.
+- **안정성**: 깨지기 쉬운 텍스트 파싱·잠재적 race·외부 명령 형식 의존을 줄이고, 라이브러리 호출 등 구조화된 인터페이스를 선택. 하위 호환성을 가급적 유지.
+
+이 원칙은 본 문서의 결정 항목 평가에 반영되었으며, 향후 다른 결정에서도 가산점 기준으로 동작한다.
+
+## 0a. 문서의 목적
 
 기존 `silee9019/zsh-plugins` 안의 `totp.plugin.zsh` 와 `saml2aws-auto.plugin.zsh` 를 silee-tools/cli 모노레포의 `apps/totp/` 와 `apps/saml2aws-auto/` 안에 standalone Go CLI 로 재작성한다. 이 문서는 작성 시작 전에 결정해야 하는 설계 항목 다섯 가지를 정리하고, 각각에 대한 권고안과 트레이드오프를 제시해 사용자 확정을 받기 위한 자료다.
 
@@ -83,15 +93,35 @@ TOTP 계산은 base32 → HMAC-SHA1 → 30초 윈도우의 표준 RFC 6238.
 
 권고: **(a) 기존 이름 유지**. 본인 환경 변경을 최소화. 별칭이 필요해지면 나중에 추가.
 
-## 3. 권고안 종합
+## 3. 결정 (확정)
 
-| 항목 | 결정 (권고) |
-|---|---|
-| Keychain 접근 | go-keychain 라이브러리 |
-| TOTP | pquerna/otp |
-| 모듈 구조 | 각자 독립 go.mod |
-| 빌드/배포 | Source build (homebrew formula 가 빌드) |
-| 환경변수 | 기존 이름 그대로 유지 |
+2026-05-09 08:39 KST 사용자 결정. 저장소 원칙(§0) 의 범용성/멱등성/안정성을 반영해 빌드 방식과 환경변수 prefix 가 권고안과 다른 항목이 있다.
+
+| 항목 | 결정 | 비고 |
+|---|---|---|
+| 2.1 Keychain 접근 | (b) go-keychain 라이브러리 | 안정성 우선 — 텍스트 파싱 회피 |
+| 2.2 TOTP | (b) pquerna/otp | 안정성 — RFC 검증된 구현 |
+| 2.3 모듈 구조 | (b) 각자 독립 go.mod | 범용성 — 도구 사이 결합 0 |
+| 2.4 빌드/배포 | **(c) Prebuilt 바이너리 (GoReleaser)** | 범용성/멱등성 — 사용자 toolchain 의존 제거. 동일 release 가 동일 바이너리 보장 |
+| 2.5 환경변수 | **(b) `SAML2AWS_AUTO_*` prefix 통일** (단, saml2aws CLI native 변수는 예외) | 안정성 — 도구 출처 명확. saml2aws 가 직접 읽는 `SAML2AWS_USERNAME`, `SAML2AWS_PASSWORD`, `SAML2AWS_SESSION_DURATION` 은 외부 도구가 이름을 강제하므로 그대로 유지 |
+
+### 2.5 부연: 환경변수 prefix 적용 범위
+
+| 변수 | 출처 | 처리 |
+|---|---|---|
+| `SAML2AWS_USERNAME` | saml2aws CLI native | 그대로 유지 (이름 변경 불가) |
+| `SAML2AWS_PASSWORD` | saml2aws CLI native | 그대로 유지 |
+| `SAML2AWS_SESSION_DURATION` | saml2aws CLI native | 그대로 유지 |
+| `SAML2AWS_AUTO_TOTP_NAME` | saml2aws-auto-login 전용 | 이름 그대로 (이미 prefix 가 붙어 있음) |
+| 향후 추가되는 우리 도구 전용 변수 | saml2aws-auto-login 전용 | `SAML2AWS_AUTO_*` prefix 강제 |
+
+### 2.6 결정 #4 (c) 가 끌어오는 후속 작업
+
+prebuilt 바이너리 배포로 전환하면 다음이 함께 바뀐다 (저장소 일관성 유지).
+
+- `.github/workflows/release.yml` 을 mise build 단순 패턴 → GoReleaser 기반 multi-arch 빌드 + 첨부 패턴으로 재작성. macOS arm64/amd64 + linux amd64/arm64 빌드.
+- 기존 4개 homebrew formula(appback/bmm/jg/mydesk) 도 source build 에서 prebuilt URL 패턴으로 재전환 (Task #5 commit amend/revert). 모든 도구가 동일한 빌드/배포 경로를 갖도록 통일.
+- appback 은 Bash 스크립트라 Go 빌드 대상이 아니므로 source archive + bin.install 패턴 유지하거나, release.yml 에서 별도 archive 첨부 단계 추가.
 
 ## 4. 명령 표면 호환
 
@@ -101,16 +131,30 @@ TOTP 계산은 base32 → HMAC-SHA1 → 30초 윈도우의 표준 RFC 6238.
 
 ## 5. 작성 작업 순서 (결정 후)
 
-이 문서의 권고안이 확정되면 다음 순서로 진행한다.
+결정 #4 (c) prebuilt + 저장소 일관성 원칙을 반영한 순서.
 
-1. `apps/totp/` 신규 생성 — go.mod, cmd/totp/main.go, internal/keychain, internal/totp 골격
-2. 기존 zsh 함수 동작을 표준 입출력 단위로 옮기는 단위 테스트 (Keychain mock + RFC 6238 표준 벡터)
-3. `apps/saml2aws-auto/` 신규 생성 — go.mod, cmd/saml2aws-auto-login/main.go, exec.LookPath("totp") + os/exec
-4. 두 도구 mise 태스크 (`fmt-check`, `lint`, `test`, `build`) 작성, 루트 README 도구 표 갱신
-5. `.github/workflows/totp-ci.yml`, `.github/workflows/saml2aws-auto-ci.yml` 추가
-6. homebrew-tap 에 `totp.rb`, `saml2aws-auto.rb` 신규 formula 추가
-7. 첫 릴리스 (`totp/v0.1.0`, `saml2aws-auto/v0.1.0`) 후 `.zshrc` 마이그레이션 가이드 (docs/migration-zshrc.md) 따라 PATH 전환
+### 5.1 인프라 정렬 (먼저)
+
+1. `release.yml` 을 GoReleaser 기반으로 재작성 — macOS arm64/amd64 + linux amd64/arm64 빌드 + GitHub Release 첨부. 도구별 `apps/<tool>/.goreleaser.yaml` 또는 release.yml 안에서 도구별 matrix.
+2. 기존 4개 homebrew formula(appback/bmm/jg/mydesk) 를 prebuilt URL 패턴으로 재전환. Task #5 의 source-build 로컬 commit 을 amend/revert 후 prebuilt 패턴으로 재작성. sha256 은 placeholder 유지.
+
+### 5.2 totp / saml2aws-auto 신규 작성
+
+3. `apps/totp/` 신규 생성 — `go.mod` (`go-keychain` + `pquerna/otp`), `cmd/totp/main.go`, `internal/store` (Keychain wrapper), `internal/code` (TOTP wrapper).
+4. 기존 zsh 함수의 명령 표면(`totp`, `totp <name>`, `totp add/rm/ls/tag`, `totp ls --all`) 을 1:1 동등 재현. fzf picker 는 stdout 명령 호출(`exec.Command("fzf", ...)`) 로 처리.
+5. 단위 테스트 — Keychain mock + RFC 6238 표준 벡터(RFC 부록 B 의 SHA1 케이스).
+6. `apps/saml2aws-auto/` 신규 생성 — `go.mod` (외부 의존 0, 표준 `os/exec` 만), `cmd/saml2aws-auto-login/main.go` 단일 파일. 환경변수 처리 + `exec.LookPath("totp")` + `exec.Command("saml2aws", "login", ...)`.
+7. 두 도구 mise 태스크(fmt-check/lint/test/build) 작성, 루트 README 도구 표 갱신, `.goreleaser.yaml` 추가.
+8. `.github/workflows/totp-ci.yml`, `.github/workflows/saml2aws-auto-ci.yml` 추가.
+9. homebrew-tap 에 `totp.rb`, `saml2aws-auto.rb` 신규 formula 추가 (prebuilt 패턴).
+
+### 5.3 릴리스 + 사용자 환경 전환
+
+10. 첫 릴리스 — `appback/v0.2.4` ... `unid/v0.3.7` + `totp/v0.1.0`, `saml2aws-auto/v0.1.0` 태그 push. release.yml 이 prebuilt 첨부 자동 생성.
+11. homebrew-tap formula 의 sha256 placeholder 를 실제 archive 해시로 갱신 후 push.
+12. `.zshrc` 마이그레이션 가이드(`docs/migration-zshrc.md`) 따라 PATH 전환.
+13. Task #8 archive 체크리스트 (`docs/archive-checklist.md`) 의 §0 조건 만족 후 구 레포 archive.
 
 ## 6. 다음 세션 진입점
 
-이 문서를 다시 열고 §3 권고안을 그대로 채택할지, 일부 항목을 (a)/(c) 로 바꿀지만 결정하면 작성 작업으로 곧장 진입할 수 있다.
+§5.1 인프라 정렬(release.yml GoReleaser 화 + 4개 formula prebuilt 재전환) 부터 시작. 그 다음 §5.2 totp 작성으로 진입.
