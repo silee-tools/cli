@@ -22,7 +22,7 @@
 - 한 도구 = `apps/<tool>/` 한 디렉토리. 도구 사이 코드 공유 금지 (각자 독립).
 - totp / saml2aws-auto 는 기존 zsh 함수에서 standalone Go CLI 로 재작성한다. 두 도구 사이의 결합은 saml2aws-auto-login 이 PATH 에서 totp 바이너리 존재만 확인하는 한 줄 의존이 전부다.
 - 도구 추가: `apps/<new-tool>/` 생성, 그 안에 `.mise.toml` + `README.md` + 진입점. 루트 `README.md` 의 도구 표 갱신.
-- 릴리스 태그: `<tool>/v<MAJOR>.<MINOR>.<PATCH>` prefix 스킴. 기존 5개 도구(appback/beautiful-mermaid-cli/jg/mydesk/unid)는 구 레포의 마지막 태그에서 patch bump 한 버전을 첫 모노레포 릴리스로 잡는다 (예: 구 `appback v0.2.3` → 모노레포 `appback/v0.2.4`). totp / saml2aws-auto 는 신규 Go CLI 로 재작성하므로 `v0.1.0` 부터 시작.
+- 릴리스: 태그를 직접 만들지 않는다. main 의 Conventional Commits 가 누적되면 release-please-action 이 도구별 Release PR 을 자동 생성/갱신하므로, 그 PR 의 본문(다음 버전 + CHANGELOG 변경분) 을 review 하고 merge 하는 것이 곧 릴리스 결정이다. PR merge 시 `<tool>/v<MAJOR>.<MINOR>.<PATCH>` 태그와 빈 GitHub Release 가 자동 생성되고, 후속 matrix job 이 GoReleaser/bun/bash 로 artifact 를 빌드해 첨부한 뒤 homebrew-tap formula 의 sha256/version 을 자동 commit + push 한다. 기존 5개 도구는 manifest 의 기준선(예: `appback 0.2.3`) 에서 commit 종류에 따라 자연 bump 된다. totp / saml2aws-auto 는 manifest 0.0.0 에서 첫 `feat` commit 이 0.1.0 으로 올린다.
 - CI: 도구별 `.github/workflows/<tool>-ci.yml` + paths 필터로 자기 디렉토리만 트리거.
 - Homebrew formula 는 별도 레포 `silee-tools/homebrew-tap` 에서 관리. 본 레포의 source URL/buildpath 만 갱신 대상.
 
@@ -31,4 +31,6 @@
 1. `apps/<tool>/` 생성, 도구 코드 + `.mise.toml` + README 추가
 2. `.github/workflows/<tool>-ci.yml` 추가 (paths 필터: `apps/<tool>/**`)
 3. 루트 `README.md` / `docs/README_ko.md` 의 도구 표 갱신
-4. 첫 릴리스 시 `<tool>/v<MAJOR>.<MINOR>.<PATCH>` 태그 push (기존 도구는 구 레포 마지막 태그에서 patch bump, 신규 도구는 v0.1.0)
+4. `release-please-config.json` 의 `packages` 에 `"apps/<new-tool>": {"package-name": "<new-tool>"}` 추가
+5. `.release-please-manifest.json` 에 `"apps/<new-tool>": "0.0.0"` 추가 (첫 `feat` commit 이 0.1.0 으로 자동 bump)
+6. homebrew-tap 에 `Formula/<new-tool>.rb` 골격 작성 (sha256 placeholder). 첫 릴리스 후 release-please.yml 의 후속 step 이 sha256/version 자동 갱신.

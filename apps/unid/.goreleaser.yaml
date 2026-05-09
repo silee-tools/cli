@@ -33,3 +33,8 @@ changelog:
     exclude:
       - "^docs:"
       - "^chore:"
+
+# release-please 가 GitHub Release 객체를 만들고, 우리는 dist/ 에 산출물만 둔다.
+# 이후 release-please.yml 의 다음 step 이 gh release upload 로 첨부.
+release:
+  disable: true

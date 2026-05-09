@@ -1,0 +1,236 @@
+name: release-please
+
+# 정석 패턴: release-please 가 Conventional Commits 분석 → Release PR 자동 생성/갱신.
+# 사람은 PR 을 review/merge 함으로써 릴리스 결정. merge 후 자동으로 tag + 빈 release 생성 →
+# matrix build job 이 도구별 artifact 생성 + release 첨부 + homebrew-tap 갱신.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ${{ vars.RUNNER_LINUX || 'ubuntu-latest' }}
+    outputs:
+      releases_created: ${{ steps.rp.outputs.releases_created }}
+      paths_released: ${{ steps.rp.outputs.paths_released }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build-and-upload:
+    needs: release-please
+    if: needs.release-please.outputs.releases_created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        path: ${{ fromJSON(needs.release-please.outputs.paths_released) }}
+    # totp 만 cgo+Keychain 으로 macOS 필요. 그 외엔 ubuntu.
+    # vars.RUNNER_MACOS / RUNNER_LINUX 가 설정되어 있으면 self-hosted 라벨 우선 사용.
+    runs-on: ${{ matrix.path == 'apps/totp' && (vars.RUNNER_MACOS || 'macos-latest') || (vars.RUNNER_LINUX || 'ubuntu-latest') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tool / version / category
+        id: ctx
+        run: |
+          set -euo pipefail
+          path="${{ matrix.path }}"
+          tool="${path#apps/}"
+          # release-please 의 outputs 에서 해당 path 의 tag 를 꺼낸다.
+          # outputs 형식: <path>--tag_name = "<tool>/v<X.Y.Z>"
+          # 여기서는 manifest 의 갱신된 버전이 곧 새 태그 버전이므로
+          # release-please 가 이미 만든 태그명을 git describe 로 찾는다.
+          tag="$(git tag --points-at HEAD --list "${tool}/v*" | sort -V | tail -1)"
+          if [ -z "$tag" ]; then
+            echo "tag for ${tool} not found at HEAD — release-please should have created it" >&2
+            exit 1
+          fi
+          version="${tag#${tool}/}"   # v0.1.28
+          ver_strip="${version#v}"    # 0.1.28
+
+          category=unknown
+          if [ -f "${path}/.goreleaser.yaml" ]; then
+            category=goreleaser
+          elif [ -f "${path}/package.json" ]; then
+            category=bun
+          elif [ -x "${path}/${tool}" ] && head -1 "${path}/${tool}" | grep -q '^#!.*sh'; then
+            category=bash
+          fi
+
+          echo "tool=$tool"           >> "$GITHUB_OUTPUT"
+          echo "tag=$tag"              >> "$GITHUB_OUTPUT"
+          echo "version=$version"      >> "$GITHUB_OUTPUT"
+          echo "ver_strip=$ver_strip"  >> "$GITHUB_OUTPUT"
+          echo "category=$category"    >> "$GITHUB_OUTPUT"
+          echo "Releasing ${tool} ${version} (category: ${category})"
+
+      # ─── Go 도구 (GoReleaser) ───
+      - name: Setup Go
+        if: steps.ctx.outputs.category == 'goreleaser'
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run GoReleaser (artifact only, release.disable=true)
+        if: steps.ctx.outputs.category == 'goreleaser'
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean -f apps/${{ steps.ctx.outputs.tool }}/.goreleaser.yaml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # release-please 가 만든 tag 를 GoReleaser 에게 명시 — git describe 가 monorepo
+          # prefix tag 와 호환되지 않을 수 있어 안전하게 주입.
+          GORELEASER_CURRENT_TAG: ${{ steps.ctx.outputs.tag }}
+
+      # ─── Bun 도구 (beautiful-mermaid-cli) ───
+      - name: Setup Bun
+        if: steps.ctx.outputs.category == 'bun'
+        uses: oven-sh/setup-bun@v2
+
+      - name: Bun build multi-target
+        if: steps.ctx.outputs.category == 'bun'
+        working-directory: apps/${{ steps.ctx.outputs.tool }}
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          version="${{ steps.ctx.outputs.version }}"
+          tool="${{ steps.ctx.outputs.tool }}"
+          binname=bmm
+          mkdir -p dist
+          for target in bun-darwin-arm64 bun-darwin-x64 bun-linux-x64 bun-linux-arm64; do
+            os="${target#bun-}"; os="${os%-*}"
+            arch="${target##*-}"
+            case "$arch" in x64) arch=amd64;; esac
+            outdir="${tool}-${version}-${os}-${arch}"
+            mkdir -p "dist/$outdir"
+            bun build src/index.ts --compile --minify --target="$target" --outfile="dist/$outdir/$binname"
+            tar -czf "dist/${outdir}.tar.gz" -C dist "$outdir"
+          done
+          (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
+
+      # ─── Bash 도구 (appback) ───
+      - name: Bash tool tar.gz
+        if: steps.ctx.outputs.category == 'bash'
+        working-directory: apps/${{ steps.ctx.outputs.tool }}
+        run: |
+          set -euo pipefail
+          tool="${{ steps.ctx.outputs.tool }}"
+          version="${{ steps.ctx.outputs.version }}"
+          name="${tool}-${version}"
+          mkdir -p dist
+          rsync -a --exclude='dist' --exclude='.gitignore' --exclude='CLAUDE.md' --exclude='AGENTS.md' --exclude='.mise.toml' ./ "dist/${name}/"
+          tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+          (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
+
+      # ─── 모든 카테고리 공통: release-please 가 만든 release 에 artifact 첨부 ───
+      - name: Upload artifacts to release
+        if: steps.ctx.outputs.category != 'unknown'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tool="${{ steps.ctx.outputs.tool }}"
+          tag="${{ steps.ctx.outputs.tag }}"
+          # GoReleaser 의 dist 위치는 apps/<tool>/dist (monorepo dir 설정으로) 이지만,
+          # 간혹 루트 dist/ 에 떨어질 수 있어 둘 다 시도.
+          shopt -s nullglob
+          assets=()
+          for d in "apps/${tool}/dist" "dist"; do
+            for f in "$d"/*.tar.gz "$d"/checksums.txt; do
+              [ -f "$f" ] && assets+=("$f")
+            done
+          done
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "no artifacts found in apps/${tool}/dist or ./dist" >&2
+            exit 1
+          fi
+          gh release upload "$tag" "${assets[@]}" --clobber
+
+      - name: Fail if unknown category
+        if: steps.ctx.outputs.category == 'unknown'
+        run: |
+          echo "apps/${{ steps.ctx.outputs.tool }} 의 빌드 카테고리를 결정할 수 없음 — .goreleaser.yaml / package.json / 셸 스크립트 중 하나가 있어야 함" >&2
+          exit 1
+
+      # ─── homebrew-tap formula sha256 + version 자동 갱신 ───
+      - name: Update homebrew-tap formula
+        if: steps.ctx.outputs.category != 'unknown' && env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          tool="${{ steps.ctx.outputs.tool }}"
+          version="${{ steps.ctx.outputs.version }}"
+          ver_strip="${{ steps.ctx.outputs.ver_strip }}"
+
+          case "$tool" in
+            beautiful-mermaid-cli) formula_name="bmm" ;;
+            *) formula_name="$tool" ;;
+          esac
+
+          checksums=""
+          for candidate in "apps/${tool}/dist/checksums.txt" "dist/checksums.txt"; do
+            if [ -f "$candidate" ]; then
+              checksums="$candidate"
+              break
+            fi
+          done
+          if [ -z "$checksums" ]; then
+            echo "checksums.txt 를 찾을 수 없음" >&2
+            exit 1
+          fi
+
+          tap_dir="$(mktemp -d)/homebrew-tap"
+          git clone --depth=1 \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/silee-tools/homebrew-tap.git" \
+            "$tap_dir"
+
+          formula_path="${tap_dir}/Formula/${formula_name}.rb"
+          if [ ! -f "$formula_path" ]; then
+            echo "Formula/${formula_name}.rb 없음 — 신규 도구 첫 릴리스라면 수동으로 추가 필요" >&2
+            exit 0
+          fi
+
+          python3 scripts/update-homebrew-formula.py "$formula_path" "$checksums"
+
+          python3 - "$formula_path" "$ver_strip" <<'PY'
+          import re, sys
+          path, ver = sys.argv[1], sys.argv[2]
+          src = open(path).read()
+          new = re.sub(r'(version\s+")[^"]+(")', rf'\g<1>{ver}\g<2>', src, count=1)
+          if new != src:
+              open(path, "w").write(new)
+              print(f"version → {ver}")
+          else:
+              print("version 라인 변경 없음")
+          PY
+
+          cd "$tap_dir"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "Formula/${formula_name}.rb"
+          if git diff --cached --quiet; then
+            echo "Formula 변경 없음 — push skip"
+            exit 0
+          fi
+          git commit -m "chore(${formula_name}): bump to ${version} from silee-tools/cli release"
+          git push origin HEAD
+
+      - name: Manual update notice
+        if: steps.ctx.outputs.category != 'unknown' && env.HOMEBREW_TAP_TOKEN == ''
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          echo "::notice title=Homebrew formula 수동 갱신 필요::HOMEBREW_TAP_TOKEN secret 미설정. release 의 checksums.txt 로 silee-tools/homebrew-tap 의 Formula/${{ steps.ctx.outputs.tool }}.rb 를 수동 갱신하세요."
