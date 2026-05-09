@@ -1,0 +1,25 @@
+name: saml2aws-auto CI
+
+on:
+  push:
+    paths:
+      - 'apps/saml2aws-auto/**'
+      - '.github/workflows/saml2aws-auto-ci.yml'
+  pull_request:
+    paths:
+      - 'apps/saml2aws-auto/**'
+      - '.github/workflows/saml2aws-auto-ci.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/saml2aws-auto
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: mise run fmt-check
+      - run: mise run lint
+      - run: mise run test
+      - run: mise run build

@@ -422,9 +422,16 @@ $RECYCLE.BIN/
 apps/jg/jg
 apps/mydesk/mydesk
 apps/unid/unid
+apps/totp/totp
+apps/saml2aws-auto/saml2aws-auto-login
 # appback is a Bash script (source, not binary) — tracked
 # beautiful-mermaid-cli is bun-based (no top-level binary)
+# Per-tool dist/ (release artifacts)
+apps/*/dist/
 
 # Per-tool transient/build dirs
 apps/beautiful-mermaid-cli/node_modules/
 apps/beautiful-mermaid-cli/dist/
+
+# Claude Code session state
+.claude/

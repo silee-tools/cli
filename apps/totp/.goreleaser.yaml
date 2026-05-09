@@ -1,0 +1,38 @@
+version: 2
+
+project_name: totp
+
+# 모노레포 설정: 태그 prefix `totp/` 를 인식하고, 본 디렉토리(`apps/totp`)
+# 안의 build context 만 빌드 대상으로 삼는다.
+monorepo:
+  tag_prefix: totp/
+  dir: apps/totp
+
+# macOS 전용: go-keychain 은 cgo + Apple Security framework 를 직접 호출하므로
+# Linux cross-compile 은 지원하지 않는다. darwin/amd64 + darwin/arm64 만 빌드.
+builds:
+  - main: ./cmd/totp
+    binary: totp
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}-v{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"

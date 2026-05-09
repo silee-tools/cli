@@ -1,0 +1,33 @@
+[tools]
+go = "1.23"
+
+[tasks.build]
+description = "Build the project"
+run = "go build ./cmd/totp"
+
+[tasks.test]
+description = "Run tests"
+run = "go test ./..."
+
+[tasks.lint]
+description = "Run go vet (lightweight lint)"
+run = "go vet ./..."
+
+[tasks.fmt]
+description = "Format code"
+run = "gofmt -w ."
+
+[tasks.fmt-check]
+description = "Check formatting (CI)"
+run = "test -z \"$(gofmt -l .)\""
+
+[tasks.install]
+description = "Build and install to ~/.local/bin"
+run = "go build -o ~/.local/bin/totp ./cmd/totp"
+
+[tasks.uninstall]
+description = "Remove local dev build, revert to brew version"
+run = """
+rm -f ~/.local/bin/totp
+echo "Removed ~/.local/bin/totp — now using brew version"
+"""

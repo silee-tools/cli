@@ -1,0 +1,27 @@
+name: totp CI
+
+on:
+  push:
+    paths:
+      - 'apps/totp/**'
+      - '.github/workflows/totp-ci.yml'
+  pull_request:
+    paths:
+      - 'apps/totp/**'
+      - '.github/workflows/totp-ci.yml'
+
+jobs:
+  # macOS 전용: go-keychain 은 cgo + Apple Security framework 가 필요하므로
+  # ubuntu 러너에서는 빌드/테스트가 불가능하다.
+  test:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/totp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: mise run fmt-check
+      - run: mise run lint
+      - run: mise run test
+      - run: mise run build

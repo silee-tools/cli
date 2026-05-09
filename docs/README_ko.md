@@ -8,7 +8,9 @@
 
 | 도구 | 언어 | 설명 |
 |------|------|------|
-| (이후 커밋으로 이주 예정) | | |
+| [saml2aws-auto](../apps/saml2aws-auto/) | Go | `saml2aws` AzureAD 로그인에 TOTP MFA 코드를 자동 주입. |
+| [totp](../apps/totp/) | Go | macOS Keychain 기반 TOTP 코드 생성기 (macOS 전용). |
+| (그 외 도구는 이후 커밋으로 이주 예정) | | |
 
 ## 기술 스택
 

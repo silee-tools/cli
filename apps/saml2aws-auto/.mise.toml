@@ -1,0 +1,33 @@
+[tools]
+go = "1.23"
+
+[tasks.build]
+description = "Build the project"
+run = "go build ./cmd/saml2aws-auto-login"
+
+[tasks.test]
+description = "Run tests"
+run = "go test ./..."
+
+[tasks.lint]
+description = "Run linter"
+run = "go vet ./..."
+
+[tasks.fmt]
+description = "Format code"
+run = "gofmt -w ."
+
+[tasks.fmt-check]
+description = "Check formatting (CI)"
+run = "test -z \"$(gofmt -l .)\""
+
+[tasks.install]
+description = "Build and install to ~/.local/bin"
+run = "go build -o ~/.local/bin/saml2aws-auto-login ./cmd/saml2aws-auto-login"
+
+[tasks.uninstall]
+description = "Remove local dev build"
+run = """
+rm -f ~/.local/bin/saml2aws-auto-login
+echo "Removed ~/.local/bin/saml2aws-auto-login"
+"""

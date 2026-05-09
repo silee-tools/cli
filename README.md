@@ -8,7 +8,9 @@ Monorepo of personal CLI tools under the `silee-tools` GitHub organization. Each
 
 | Tool | Language | Description |
 |------|----------|-------------|
-| (apps will be migrated in subsequent commits) | | |
+| [saml2aws-auto](apps/saml2aws-auto/) | Go | Auto-injects a TOTP MFA code into `saml2aws` AzureAD login. |
+| [totp](apps/totp/) | Go | macOS Keychain-backed TOTP code generator (macOS only). |
+| (other apps will be migrated in subsequent commits) | | |
 
 ## Tech Stack
 
