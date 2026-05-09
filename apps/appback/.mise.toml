@@ -1,3 +1,6 @@
+[tools]
+"aqua:bats-core/bats-core" = "latest"
+
 [tasks.test]
 description = "Run bats tests"
 run = "bats test/"
