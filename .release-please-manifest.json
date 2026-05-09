@@ -2,7 +2,7 @@
   "apps/appback": "0.3.0",
   "apps/beautiful-mermaid-cli": "0.1.7",
   "apps/jg": "0.2.0",
-  "apps/mydesk": "0.2.4",
+  "apps/mydesk": "0.3.0",
   "apps/unid": "0.4.0",
   "apps/totp": "0.0.0",
   "apps/saml2aws-auto": "1.0.0"
