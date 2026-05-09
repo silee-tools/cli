@@ -7,6 +7,16 @@ name: release-please
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      tool:
+        description: '재빌드할 도구명 (예: jg). 비우면 release-please job 만 실행.'
+        required: false
+        type: string
+      version:
+        description: '재빌드 버전 (예: v0.2.0). tool 이 있을 때 필수.'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -27,11 +37,14 @@ jobs:
 
   build-and-upload:
     needs: release-please
-    if: needs.release-please.outputs.releases_created == 'true'
+    if: |
+      (github.event_name == 'push' && needs.release-please.outputs.releases_created == 'true') ||
+      (github.event_name == 'workflow_dispatch' && inputs.tool != '' && inputs.version != '')
     strategy:
       fail-fast: false
       matrix:
-        path: ${{ fromJSON(needs.release-please.outputs.paths_released) }}
+        # workflow_dispatch 경로일 때는 단일 path, push 경로일 때는 release-please 출력 사용
+        path: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('[\"apps/{0}\"]', inputs.tool || 'placeholder')) || fromJSON(needs.release-please.outputs.paths_released || '[]') }}
     # totp 만 cgo+Keychain 으로 macOS 필요. 그 외엔 ubuntu.
     # vars.RUNNER_MACOS / RUNNER_LINUX 가 설정되어 있으면 self-hosted 라벨 우선 사용.
     runs-on: ${{ matrix.path == 'apps/totp' && (vars.RUNNER_MACOS || 'macos-latest') || (vars.RUNNER_LINUX || 'ubuntu-latest') }}
@@ -42,21 +55,28 @@ jobs:
 
       - name: Resolve tool / version / category
         id: ctx
+        env:
+          DISPATCH_TOOL: ${{ inputs.tool }}
+          DISPATCH_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           path="${{ matrix.path }}"
           tool="${path#apps/}"
-          # release-please 의 outputs 에서 해당 path 의 tag 를 꺼낸다.
-          # outputs 형식: <path>--tag_name = "<tool>/v<X.Y.Z>"
-          # 여기서는 manifest 의 갱신된 버전이 곧 새 태그 버전이므로
-          # release-please 가 이미 만든 태그명을 git describe 로 찾는다.
-          tag="$(git tag --points-at HEAD --list "${tool}/v*" | sort -V | tail -1)"
-          if [ -z "$tag" ]; then
-            echo "tag for ${tool} not found at HEAD — release-please should have created it" >&2
-            exit 1
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # 사용자가 명시한 tool/version 사용. tag 도 그것으로 재구성.
+            version="$DISPATCH_VERSION"
+            case "$version" in v*) ;; *) version="v$version" ;; esac
+            tag="${tool}/${version}"
+          else
+            # push 경로: release-please 가 만든 tag 를 git 에서 찾기.
+            tag="$(git tag --points-at HEAD --list "${tool}/v*" | sort -V | tail -1)"
+            if [ -z "$tag" ]; then
+              echo "tag for ${tool} not found at HEAD — release-please should have created it" >&2
+              exit 1
+            fi
+            version="${tag#${tool}/}"
           fi
-          version="${tag#${tool}/}"   # v0.1.28
-          ver_strip="${version#v}"    # 0.1.28
+          ver_strip="${version#v}"
 
           category=unknown
           if [ -f "${path}/.goreleaser.yaml" ]; then
@@ -87,12 +107,15 @@ jobs:
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean -f apps/${{ steps.ctx.outputs.tool }}/.goreleaser.yaml
+          # workdir 로 도구 디렉토리 진입 → .goreleaser.yaml 의 main: ./cmd/<tool>,
+          # archives.files 가 모두 도구 디렉토리 기준 상대 경로로 동작.
+          workdir: apps/${{ steps.ctx.outputs.tool }}
+          args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # release-please 가 만든 tag 를 GoReleaser 에게 명시 — git describe 가 monorepo
-          # prefix tag 와 호환되지 않을 수 있어 안전하게 주입.
-          GORELEASER_CURRENT_TAG: ${{ steps.ctx.outputs.tag }}
+          # release-please tag(예: jg/v0.2.0) 의 슬래시는 GoReleaser OSS 가 파싱하지
+          # 못한다 (monorepo 블록은 Pro 전용). 슬래시 뒤 버전 부분(v0.2.0) 만 넘긴다.
+          GORELEASER_CURRENT_TAG: v${{ steps.ctx.outputs.ver_strip }}
 
       # ─── Bun 도구 (beautiful-mermaid-cli) ───
       - name: Setup Bun

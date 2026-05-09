@@ -2,10 +2,6 @@ version: 2
 
 project_name: mydesk
 
-monorepo:
-  tag_prefix: mydesk/
-  dir: apps/mydesk
-
 builds:
   - main: .
     binary: mydesk

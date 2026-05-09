@@ -2,10 +2,6 @@ version: 2
 
 project_name: unid
 
-monorepo:
-  tag_prefix: unid/
-  dir: apps/unid
-
 builds:
   - main: ./cmd/unid
     binary: unid
