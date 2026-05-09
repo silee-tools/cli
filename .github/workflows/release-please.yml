@@ -69,7 +69,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve tool / version / category
+      - name: Resolve tool / version
         id: ctx
         env:
           DISPATCH_TOOL: ${{ inputs.tool }}
@@ -79,14 +79,12 @@ jobs:
           path="${{ matrix.path }}"
           tool="${path#apps/}"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # 사용자가 명시한 tool/version 사용. tag 도 그것으로 재구성.
             version="$DISPATCH_VERSION"
             case "$version" in v*) ;; *) version="v$version" ;; esac
             tag="${tool}/${version}"
           else
             # push 경로: 여러 PR 이 같은 push 에 squash-merge 된 경우 HEAD 에 모든 tag 가
-            # 매달려 있지 않다(release-please 가 PR 별로 다른 commit 에 tag 부여).
-            # 그래서 HEAD 제약 없이 tool prefix 의 가장 최신(semver sort) tag 를 사용.
+            # 매달려 있지 않을 수 있다. tool prefix 의 가장 최신(semver) tag 를 사용.
             tag="$(git tag --list "${tool}/v*" | sort -V | tail -1)"
             if [ -z "$tag" ]; then
               echo "tag for ${tool} not found in repo — release-please should have created it" >&2
@@ -96,31 +94,23 @@ jobs:
           fi
           ver_strip="${version#v}"
 
-          category=unknown
-          if [ -f "${path}/.goreleaser.yaml" ]; then
-            category=goreleaser
-          elif [ -f "${path}/package.json" ]; then
-            category=bun
-          elif [ -x "${path}/${tool}" ] && head -1 "${path}/${tool}" | grep -q '^#!.*sh'; then
-            category=bash
+          if [ ! -f "${path}/.goreleaser.yaml" ]; then
+            echo "${path}/.goreleaser.yaml 가 없음 — 모든 도구는 GoReleaser 기반이어야 함" >&2
+            exit 1
           fi
 
           echo "tool=$tool"           >> "$GITHUB_OUTPUT"
           echo "tag=$tag"              >> "$GITHUB_OUTPUT"
           echo "version=$version"      >> "$GITHUB_OUTPUT"
           echo "ver_strip=$ver_strip"  >> "$GITHUB_OUTPUT"
-          echo "category=$category"    >> "$GITHUB_OUTPUT"
-          echo "Releasing ${tool} ${version} (category: ${category})"
+          echo "Releasing ${tool} ${version}"
 
-      # ─── Go 도구 (GoReleaser) ───
       - name: Setup Go
-        if: steps.ctx.outputs.category == 'goreleaser'
         uses: actions/setup-go@v5
         with:
           go-version: stable
 
       - name: Run GoReleaser (artifact only, release.disable=true)
-        if: steps.ctx.outputs.category == 'goreleaser'
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -137,57 +127,14 @@ jobs:
           # 못한다 (monorepo 블록은 Pro 전용). 슬래시 뒤 버전 부분(v0.2.0) 만 넘긴다.
           GORELEASER_CURRENT_TAG: v${{ steps.ctx.outputs.ver_strip }}
 
-      # ─── Bun 도구 (beautiful-mermaid-cli) ───
-      - name: Setup Bun
-        if: steps.ctx.outputs.category == 'bun'
-        uses: oven-sh/setup-bun@v2
-
-      - name: Bun build multi-target
-        if: steps.ctx.outputs.category == 'bun'
-        working-directory: apps/${{ steps.ctx.outputs.tool }}
-        run: |
-          set -euo pipefail
-          bun install --frozen-lockfile
-          version="${{ steps.ctx.outputs.version }}"
-          tool="${{ steps.ctx.outputs.tool }}"
-          binname=bmm
-          mkdir -p dist
-          for target in bun-darwin-arm64 bun-darwin-x64 bun-linux-x64 bun-linux-arm64; do
-            os="${target#bun-}"; os="${os%-*}"
-            arch="${target##*-}"
-            case "$arch" in x64) arch=amd64;; esac
-            outdir="${tool}-${version}-${os}-${arch}"
-            mkdir -p "dist/$outdir"
-            bun build src/cli.ts --compile --minify --target="$target" --outfile="dist/$outdir/$binname"
-            tar -czf "dist/${outdir}.tar.gz" -C dist "$outdir"
-          done
-          (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
-
-      # ─── Bash 도구 (appback) ───
-      - name: Bash tool tar.gz
-        if: steps.ctx.outputs.category == 'bash'
-        working-directory: apps/${{ steps.ctx.outputs.tool }}
-        run: |
-          set -euo pipefail
-          tool="${{ steps.ctx.outputs.tool }}"
-          version="${{ steps.ctx.outputs.version }}"
-          name="${tool}-${version}"
-          mkdir -p dist
-          rsync -a --exclude='dist' --exclude='.gitignore' --exclude='CLAUDE.md' --exclude='AGENTS.md' --exclude='.mise.toml' ./ "dist/${name}/"
-          tar -czf "dist/${name}.tar.gz" -C dist "${name}"
-          (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
-
-      # ─── 모든 카테고리 공통: release-please 가 만든 release 에 artifact 첨부 ───
+      # ─── release-please 가 만든 release 에 artifact 첨부 ───
       - name: Upload artifacts to release
-        if: steps.ctx.outputs.category != 'unknown'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tool="${{ steps.ctx.outputs.tool }}"
           tag="${{ steps.ctx.outputs.tag }}"
-          # GoReleaser 의 dist 위치는 apps/<tool>/dist (monorepo dir 설정으로) 이지만,
-          # 간혹 루트 dist/ 에 떨어질 수 있어 둘 다 시도.
           shopt -s nullglob
           assets=()
           for d in "apps/${tool}/dist" "dist"; do
@@ -201,15 +148,9 @@ jobs:
           fi
           gh release upload "$tag" "${assets[@]}" --clobber
 
-      - name: Fail if unknown category
-        if: steps.ctx.outputs.category == 'unknown'
-        run: |
-          echo "apps/${{ steps.ctx.outputs.tool }} 의 빌드 카테고리를 결정할 수 없음 — .goreleaser.yaml / package.json / 셸 스크립트 중 하나가 있어야 함" >&2
-          exit 1
-
       # ─── homebrew-tap formula sha256 + version 자동 갱신 ───
       - name: Update homebrew-tap formula
-        if: steps.ctx.outputs.category != 'unknown' && env.HOMEBREW_TAP_TOKEN != ''
+        if: env.HOMEBREW_TAP_TOKEN != ''
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
@@ -273,7 +214,7 @@ jobs:
           git push origin HEAD
 
       - name: Manual update notice
-        if: steps.ctx.outputs.category != 'unknown' && env.HOMEBREW_TAP_TOKEN == ''
+        if: env.HOMEBREW_TAP_TOKEN == ''
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
