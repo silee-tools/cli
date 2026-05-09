@@ -158,7 +158,7 @@ jobs:
             case "$arch" in x64) arch=amd64;; esac
             outdir="${tool}-${version}-${os}-${arch}"
             mkdir -p "dist/$outdir"
-            bun build src/index.ts --compile --minify --target="$target" --outfile="dist/$outdir/$binname"
+            bun build src/cli.ts --compile --minify --target="$target" --outfile="dist/$outdir/$binname"
             tar -czf "dist/${outdir}.tar.gz" -C dist "$outdir"
           done
           (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
