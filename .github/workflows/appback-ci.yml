@@ -12,7 +12,9 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # appback 은 macOS 앱 설정 백업 도구 (Keychain, App Bundle, 사용자 Library
+    # 경로 의존). 테스트가 실제 macOS 경로를 다루므로 macOS 러너 필수.
+    runs-on: ${{ vars.RUNNER_MACOS || 'macos-latest' }}
     defaults:
       run:
         working-directory: apps/appback
