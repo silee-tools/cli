@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/silee-tools/cli/compare/jg/v0.2.0...jg/v0.2.1) (2026-05-09)
+
+
+### Bug Fixes
+
+* **release:** GoReleaser monorepo 블록 제거 (Pro 전용) + workflow_dispatch 추가 ([eb70b2b](https://github.com/silee-tools/cli/commit/eb70b2b196d98a9e13700825181765b7aa40eb00))
+
 ## [0.2.0](https://github.com/silee-tools/cli/compare/jg/v0.1.27...jg/v0.2.0) (2026-05-09)
 
 
