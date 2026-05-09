@@ -214,7 +214,14 @@ jobs:
             exit 0
           fi
           git commit -m "chore(${formula_name}): bump to ${version} from silee-tools/cli release"
-          git push origin HEAD
+
+          # Multiple release jobs can update the tap repository close together.
+          # Rebase once on a non-fast-forward race so independent formula bumps do
+          # not fail solely because another job pushed first.
+          if ! git push origin HEAD; then
+            git pull --rebase origin main
+            git push origin HEAD
+          fi
 
       - name: Manual update notice
         if: env.HOMEBREW_TAP_TOKEN == ''
