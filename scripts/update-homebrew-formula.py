@@ -42,18 +42,36 @@ def parse_checksums(path: Path) -> dict[str, str]:
     return mapping
 
 
-def url_filename(url: str) -> str:
-    """formula url 라인에서 마지막 path 컴포넌트 추출."""
-    # 예: url "https://.../jg-v0.1.28-darwin-arm64.tar.gz" → jg-v0.1.28-darwin-arm64.tar.gz
+def url_filename(url: str, version: str | None) -> str:
+    """formula url 라인에서 마지막 path 컴포넌트 추출. Ruby 의 #{version}
+    인터폴레이션은 인자로 주어진 version 으로 치환한 뒤 추출."""
+    # 예: url "https://.../jg-v#{version}-darwin-arm64.tar.gz" + version="0.2.0"
+    #     → jg-v0.2.0-darwin-arm64.tar.gz
     m = re.search(r'"([^"]+)"', url)
     if not m:
         return ""
     full = m.group(1)
+    if version is not None:
+        full = full.replace("#{version}", version)
     return full.rsplit("/", 1)[-1]
 
 
-def update_formula(formula_path: Path, checksums: dict[str, str]) -> int:
-    """formula 의 sha256 라인을 갱신하고 변경된 라인 수 반환."""
+def current_version(formula_path: Path) -> str | None:
+    """formula 의 `version "X.Y.Z"` 라인 추출."""
+    src = formula_path.read_text(encoding="utf-8")
+    m = re.search(r'^\s*version\s+"([^"]+)"', src, flags=re.M)
+    return m.group(1) if m else None
+
+
+def update_formula(formula_path: Path, checksums: dict[str, str], version: str | None = None) -> int:
+    """formula 의 sha256 라인을 갱신하고 변경된 라인 수 반환.
+
+    version 이 주어지면 url 안의 #{version} 을 그 값으로 치환한 뒤 filename 추출.
+    주어지지 않으면 formula 의 version "X.Y.Z" 라인에서 자동 추출.
+    """
+    if version is None:
+        version = current_version(formula_path)
+
     lines = formula_path.read_text(encoding="utf-8").splitlines(keepends=True)
     updated = 0
     pending_filename: str | None = None
@@ -61,7 +79,7 @@ def update_formula(formula_path: Path, checksums: dict[str, str]) -> int:
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("url "):
-            pending_filename = url_filename(stripped)
+            pending_filename = url_filename(stripped, version)
             continue
         if pending_filename and stripped.startswith("sha256 "):
             sha = checksums.get(pending_filename)

@@ -126,7 +126,9 @@ jobs:
           # workdir 로 도구 디렉토리 진입 → .goreleaser.yaml 의 main: ./cmd/<tool>,
           # archives.files 가 모두 도구 디렉토리 기준 상대 경로로 동작.
           workdir: apps/${{ steps.ctx.outputs.tool }}
-          args: release --clean
+          # --skip=validate: GoReleaser OSS 가 GORELEASER_CURRENT_TAG (v0.2.0) 를
+          # 실제 git tag (jg/v0.2.0) 와 매칭하지 못하므로 tag 검증 단계 skip.
+          args: release --clean --skip=validate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # release-please tag(예: jg/v0.2.0) 의 슬래시는 GoReleaser OSS 가 파싱하지
@@ -242,8 +244,7 @@ jobs:
             exit 0
           fi
 
-          python3 scripts/update-homebrew-formula.py "$formula_path" "$checksums"
-
+          # version 라인 먼저 갱신, 그 다음 sha256 (script 가 갱신된 version 으로 #{version} 치환).
           python3 - "$formula_path" "$ver_strip" <<'PY'
           import re, sys
           path, ver = sys.argv[1], sys.argv[2]
@@ -255,6 +256,8 @@ jobs:
           else:
               print("version 라인 변경 없음")
           PY
+
+          python3 scripts/update-homebrew-formula.py "$formula_path" "$checksums"
 
           cd "$tap_dir"
           git config user.name "github-actions[bot]"
