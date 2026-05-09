@@ -1,9 +1,5 @@
 {
-  "apps/appback": "0.3.0",
-  "apps/beautiful-mermaid-cli": "0.2.0",
   "apps/jg": "0.2.1",
-  "apps/mydesk": "0.3.0",
-  "apps/unid": "0.4.1",
   "apps/totp": "1.0.0",
   "apps/saml2aws-auto": "1.0.1"
 }

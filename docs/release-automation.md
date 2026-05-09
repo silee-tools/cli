@@ -24,7 +24,7 @@ release-please 는 main 의 commit history 를 보고 각 도구별로 마지막
 
 `bump-minor-pre-major: true` 는 `0.x` 구간에서 `feat!:` 도 minor bump(0.1.0 → 0.2.0) 로 처리하라는 옵션이다. 1.0 미만 도구의 breaking 변경을 minor 로 흡수해 `1.0` 까지의 도달 시점을 사람이 직접 결정하게 한다.
 
-manifest 의 초기값은 도구마다 다르다. 기존 다섯 개 도구는 구 레포 마지막 태그(`appback 0.2.3` 등) 를 기준선으로 잡고 다음 commit 종류에 따라 patch/minor 로 자연 bump 된다. 신규 도구 두 개(totp, saml2aws-auto) 는 0.0.0 에서 시작하므로 첫 `feat:` commit 한 건이 0.1.0 으로 올린다.
+manifest 의 초기값은 마지막 릴리스된 버전을 그대로 둔다. 다음 commit 의 종류(feat/fix 등) 에 따라 release-please 가 patch/minor/major 로 자동 bump 한다.
 
 ## 자동/수동 단계 표
 
@@ -83,15 +83,11 @@ gh variable set RUNNER_MACOS --repo silee-tools/cli --body "self-hosted"
 
 ## 도구명 → formula 파일명 매핑
 
-대부분 도구 디렉토리명과 formula 파일명이 같지만, `beautiful-mermaid-cli` 만 명령 이름인 `bmm` 을 따른다.
+도구 디렉토리명과 formula 파일명이 같다.
 
 | 도구 (apps/<tool>) | Formula |
 |---|---|
-| appback | `appback.rb` |
-| beautiful-mermaid-cli | `bmm.rb` |
 | jg | `jg.rb` |
-| mydesk | `mydesk.rb` |
-| unid | (formula 없음 — 신규 추가 필요) |
 | totp | `totp.rb` |
 | saml2aws-auto | `saml2aws-auto.rb` |
 

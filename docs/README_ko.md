@@ -8,13 +8,13 @@
 
 | 도구 | 언어 | 설명 |
 |------|------|------|
+| [jg](../apps/jg/) | Go | 디렉토리 frecency 기반 빠른 git 저장소 점프 CLI. |
 | [saml2aws-auto](../apps/saml2aws-auto/) | Go | `saml2aws` AzureAD 로그인에 TOTP MFA 코드를 자동 주입. |
 | [totp](../apps/totp/) | Go | macOS Keychain 기반 TOTP 코드 생성기 (macOS 전용). |
-| (그 외 도구는 이후 커밋으로 이주 예정) | | |
 
 ## 기술 스택
 
-- 다중 언어 모노레포 (Bash, Bun/TypeScript, Go, Zsh)
+- Go 모노레포 (각 도구 독립)
 - Task Runner: [mise](https://mise.jdx.dev/) (도구별 `.mise.toml`)
 - CI: GitHub Actions, 도구별 `paths:` 필터
 - 배포: [silee-tools/homebrew-tap](https://github.com/silee-tools/homebrew-tap) (별도 레포)

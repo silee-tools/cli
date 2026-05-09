@@ -1,8 +1,0 @@
-# 원본 silee-tools/appback 레포는 shellcheck 를 강제하지 않았음. 모노레포 이주 시
-# 동일한 정책을 유지하기 위해 다음 규칙을 무시:
-# - SC2148: shebang 없는 sourced 파일 (apps/raycast.sh, apps/dia.sh 는 main appback
-#   이 source 로 읽는 설정 파일이므로 shebang 불필요)
-# - SC2034: unused 변수 (위 sourced 파일들이 정의하는 변수들은 main 에서 읽지만
-#   shellcheck 는 cross-file 분석을 하지 못해 unused 로 잘못 보고)
-# - SC2016: single-quote 안 expression (의도적으로 expand 시키지 않는 케이스)
-disable=SC2148,SC2034,SC2016

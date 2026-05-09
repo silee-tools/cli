@@ -8,13 +8,13 @@ Monorepo of personal CLI tools under the `silee-tools` GitHub organization. Each
 
 | Tool | Language | Description |
 |------|----------|-------------|
+| [jg](apps/jg/) | Go | Frecency-based CLI for quickly jumping to git repositories. |
 | [saml2aws-auto](apps/saml2aws-auto/) | Go | Auto-injects a TOTP MFA code into `saml2aws` AzureAD login. |
 | [totp](apps/totp/) | Go | macOS Keychain-backed TOTP code generator (macOS only). |
-| (other apps will be migrated in subsequent commits) | | |
 
 ## Tech Stack
 
-- Multi-language monorepo (Bash, Bun/TypeScript, Go, Zsh)
+- Go monorepo (each tool independent)
 - Task Runner: [mise](https://mise.jdx.dev/) (per-tool `.mise.toml`)
 - CI: GitHub Actions with `paths:` filters per tool
 - Distribution: [silee-tools/homebrew-tap](https://github.com/silee-tools/homebrew-tap) (separate repo)

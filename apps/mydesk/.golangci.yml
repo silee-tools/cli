@@ -1,7 +1,0 @@
-# 원본 silee-tools/mydesk 레포는 golangci-lint 를 강제하지 않았음. 모노레포 이주 시
-# 동일 정책 유지를 위해 errcheck 전체 비활성화. 다른 lint rule 은 enforce.
-version: "2"
-linters:
-  default: standard
-  disable:
-    - errcheck

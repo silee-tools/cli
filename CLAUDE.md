@@ -20,9 +20,9 @@
 ## 모노레포 컨벤션
 
 - 한 도구 = `apps/<tool>/` 한 디렉토리. 도구 사이 코드 공유 금지 (각자 독립).
-- totp / saml2aws-auto 는 기존 zsh 함수에서 standalone Go CLI 로 재작성한다. 두 도구 사이의 결합은 saml2aws-auto-login 이 PATH 에서 totp 바이너리 존재만 확인하는 한 줄 의존이 전부다.
+- 현재 등록된 도구: jg, totp, saml2aws-auto. saml2aws-auto-login 은 PATH 에서 totp 바이너리 존재만 확인하는 한 줄 의존이 전부.
 - 도구 추가: `apps/<new-tool>/` 생성, 그 안에 `.mise.toml` + `README.md` + 진입점. 루트 `README.md` 의 도구 표 갱신.
-- 릴리스: 태그를 직접 만들지 않는다. main 의 Conventional Commits 가 누적되면 release-please-action 이 도구별 Release PR 을 자동 생성/갱신하므로, 그 PR 의 본문(다음 버전 + CHANGELOG 변경분) 을 review 하고 merge 하는 것이 곧 릴리스 결정이다. PR merge 시 `<tool>/v<MAJOR>.<MINOR>.<PATCH>` 태그와 빈 GitHub Release 가 자동 생성되고, 후속 matrix job 이 GoReleaser/bun/bash 로 artifact 를 빌드해 첨부한 뒤 homebrew-tap formula 의 sha256/version 을 자동 commit + push 한다. 기존 5개 도구는 manifest 의 기준선(예: `appback 0.2.3`) 에서 commit 종류에 따라 자연 bump 된다. totp / saml2aws-auto 는 manifest 0.0.0 에서 첫 `feat` commit 이 0.1.0 으로 올린다.
+- 릴리스: 태그를 직접 만들지 않는다. main 의 Conventional Commits 가 누적되면 release-please-action 이 도구별 Release PR 을 자동 생성/갱신하므로, 그 PR 의 본문(다음 버전 + CHANGELOG 변경분) 을 review 하고 merge 하는 것이 곧 릴리스 결정이다. PR merge 시 `<tool>/v<MAJOR>.<MINOR>.<PATCH>` 태그와 빈 GitHub Release 가 자동 생성되고, 후속 matrix job 이 GoReleaser 로 artifact 를 빌드해 첨부한 뒤 homebrew-tap formula 의 sha256/version 을 자동 commit + push 한다.
 - CI: 도구별 `.github/workflows/<tool>-ci.yml` + paths 필터로 자기 디렉토리만 트리거.
 - Homebrew formula 는 별도 레포 `silee-tools/homebrew-tap` 에서 관리. 본 레포의 source URL/buildpath 만 갱신 대상.
 

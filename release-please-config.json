@@ -20,11 +20,7 @@
     {"type": "style", "hidden": true}
   ],
   "packages": {
-    "apps/appback": {"package-name": "appback"},
-    "apps/beautiful-mermaid-cli": {"package-name": "beautiful-mermaid-cli"},
     "apps/jg": {"package-name": "jg"},
-    "apps/mydesk": {"package-name": "mydesk"},
-    "apps/unid": {"package-name": "unid"},
     "apps/totp": {"package-name": "totp"},
     "apps/saml2aws-auto": {"package-name": "saml2aws-auto"}
   }
