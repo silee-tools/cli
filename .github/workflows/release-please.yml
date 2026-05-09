@@ -28,12 +28,27 @@ jobs:
     outputs:
       releases_created: ${{ steps.rp.outputs.releases_created }}
       paths_released: ${{ steps.rp.outputs.paths_released }}
+      matrix_paths: ${{ steps.matrix.outputs.paths }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: rp
+        if: github.event_name == 'push'
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      - id: matrix
+        env:
+          DISPATCH_TOOL: ${{ inputs.tool }}
+          PATHS_RELEASED: ${{ steps.rp.outputs.paths_released }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$DISPATCH_TOOL" ]; then
+            paths=$(printf '["apps/%s"]' "$DISPATCH_TOOL")
+          else
+            paths="${PATHS_RELEASED:-[]}"
+          fi
+          echo "paths=$paths" >> "$GITHUB_OUTPUT"
+          echo "matrix paths: $paths"
 
   build-and-upload:
     needs: release-please
@@ -43,8 +58,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # workflow_dispatch 경로일 때는 단일 path, push 경로일 때는 release-please 출력 사용
-        path: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('[\"apps/{0}\"]', inputs.tool || 'placeholder')) || fromJSON(needs.release-please.outputs.paths_released || '[]') }}
+        # workflow_dispatch 경로일 때는 단일 path, push 경로일 때는 release-please 출력 사용.
+        # JSON 문자열은 release-please job 의 outputs.matrix_paths 로 미리 만들어 둔다 (expression 안 quote escape 회피).
+        path: ${{ fromJSON(needs.release-please.outputs.matrix_paths) }}
     # totp 만 cgo+Keychain 으로 macOS 필요. 그 외엔 ubuntu.
     # vars.RUNNER_MACOS / RUNNER_LINUX 가 설정되어 있으면 self-hosted 라벨 우선 사용.
     runs-on: ${{ matrix.path == 'apps/totp' && (vars.RUNNER_MACOS || 'macos-latest') || (vars.RUNNER_LINUX || 'ubuntu-latest') }}
