@@ -5,5 +5,5 @@
   "apps/mydesk": "0.2.4",
   "apps/unid": "0.3.6",
   "apps/totp": "0.0.0",
-  "apps/saml2aws-auto": "0.0.0"
+  "apps/saml2aws-auto": "1.0.0"
 }
