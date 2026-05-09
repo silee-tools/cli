@@ -2,7 +2,10 @@ name: Release
 
 # 모노레포 공통 릴리스 워크플로우.
 # 태그 형식: <tool>/v<MAJOR>.<MINOR>.<PATCH> (예: jg/v0.1.28)
-# prefix 부분(slash 앞)을 도구 이름으로 추출하여 apps/<tool>/ 디렉토리에서 빌드한다.
+# 도구별 빌드/패키징 패턴:
+#   - Go 도구 (jg, mydesk, unid, totp, saml2aws-auto): GoReleaser monorepo 모드
+#   - Bun 도구 (beautiful-mermaid-cli): bun build --compile multi-target
+#   - Bash 도구 (appback): tar.gz source archive
 
 on:
   push:
@@ -35,29 +38,108 @@ jobs:
             echo "apps/$tool 가 존재하지 않음 — 태그 prefix 확인 필요" >&2
             exit 1
           fi
+          # 빌드 카테고리 결정
+          category=unknown
+          if [ -f "apps/$tool/.goreleaser.yaml" ]; then
+            category=goreleaser
+          elif [ -f "apps/$tool/package.json" ]; then
+            category=bun
+          elif [ -x "apps/$tool/$tool" ] && head -1 "apps/$tool/$tool" | grep -q '^#!.*sh'; then
+            category=bash
+          fi
           echo "tool=$tool" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Releasing $tool $version"
+          echo "category=$category" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tool $version (category: $category)"
 
-      - uses: jdx/mise-action@v2
+      # ─── Go 도구 (GoReleaser) ───
+      - name: Setup Go
+        if: steps.parse.outputs.category == 'goreleaser'
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
 
-      - name: Build
+      - name: Run GoReleaser
+        if: steps.parse.outputs.category == 'goreleaser'
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean -f apps/${{ steps.parse.outputs.tool }}/.goreleaser.yaml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ─── Bun 도구 (beautiful-mermaid-cli) ───
+      - name: Setup Bun
+        if: steps.parse.outputs.category == 'bun'
+        uses: oven-sh/setup-bun@v2
+
+      - name: Bun build multi-target
+        if: steps.parse.outputs.category == 'bun'
         working-directory: apps/${{ steps.parse.outputs.tool }}
         run: |
           set -euo pipefail
-          if mise tasks | awk '{print $1}' | grep -qx build; then
-            mise run build
-          else
-            echo "build task 없음 — 빌드 단계 skip"
-          fi
+          bun install --frozen-lockfile
+          version="${{ steps.parse.outputs.version }}"
+          tool="${{ steps.parse.outputs.tool }}"
+          # 산출물 바이너리 이름은 도구별 README 의 명령 이름과 일치해야 한다.
+          # beautiful-mermaid-cli → bmm
+          binname=bmm
+          mkdir -p dist
+          for target in bun-darwin-arm64 bun-darwin-x64 bun-linux-x64 bun-linux-arm64; do
+            os="${target#bun-}"; os="${os%-*}"
+            arch="${target##*-}"
+            case "$arch" in x64) arch=amd64;; esac
+            outdir="${tool}-${version}-${os}-${arch}"
+            mkdir -p "dist/$outdir"
+            bun build src/index.ts --compile --minify --target="$target" --outfile="dist/$outdir/$binname"
+            tar -czf "dist/${outdir}.tar.gz" -C dist "$outdir"
+          done
+          (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
 
-      - name: Create GitHub Release
+      - name: Upload bun artifacts
+        if: steps.parse.outputs.category == 'bun'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tool="${{ steps.parse.outputs.tool }}"
-          version="${{ steps.parse.outputs.version }}"
           gh release create "${GITHUB_REF_NAME}" \
-            --title "${tool} ${version}" \
-            --generate-notes
+            --title "${tool} ${{ steps.parse.outputs.version }}" \
+            --generate-notes \
+            apps/${tool}/dist/*.tar.gz \
+            apps/${tool}/dist/checksums.txt
+
+      # ─── Bash 도구 (appback) ───
+      - name: Bash tool tar.gz
+        if: steps.parse.outputs.category == 'bash'
+        working-directory: apps/${{ steps.parse.outputs.tool }}
+        run: |
+          set -euo pipefail
+          tool="${{ steps.parse.outputs.tool }}"
+          version="${{ steps.parse.outputs.version }}"
+          name="${tool}-${version}"
+          mkdir -p dist
+          # CLAUDE.md/AGENTS.md/.gitignore 등 메타 파일은 archive 에 포함하지 않음
+          rsync -a --exclude='dist' --exclude='.gitignore' --exclude='CLAUDE.md' --exclude='AGENTS.md' --exclude='.mise.toml' ./ "dist/${name}/"
+          tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+          (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
+
+      - name: Upload bash artifact
+        if: steps.parse.outputs.category == 'bash'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tool="${{ steps.parse.outputs.tool }}"
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${tool} ${{ steps.parse.outputs.version }}" \
+            --generate-notes \
+            apps/${tool}/dist/*.tar.gz \
+            apps/${tool}/dist/checksums.txt
+
+      - name: Fail if unknown category
+        if: steps.parse.outputs.category == 'unknown'
+        run: |
+          echo "apps/${{ steps.parse.outputs.tool }} 의 빌드 카테고리를 결정할 수 없음 — .goreleaser.yaml / package.json / 셸 스크립트 중 하나가 있어야 함" >&2
+          exit 1

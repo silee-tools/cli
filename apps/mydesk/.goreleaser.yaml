@@ -1,17 +1,14 @@
 version: 2
 
-project_name: jg
+project_name: mydesk
 
-# 모노레포: 태그 prefix `jg/` 와 디렉토리 매핑.
-# 루트에서 `goreleaser release -f apps/jg/.goreleaser.yaml` 호출 시 이 블록이 활성화되어
-# tag `jg/v0.1.28` 형식을 인식한다.
 monorepo:
-  tag_prefix: jg/
-  dir: apps/jg
+  tag_prefix: mydesk/
+  dir: apps/mydesk
 
 builds:
-  - main: ./cmd/jg
-    binary: jg
+  - main: .
+    binary: mydesk
     ldflags:
       - -s -w -X main.version={{.Version}}
     env:
@@ -26,9 +23,6 @@ builds:
 archives:
   - format: tar.gz
     name_template: "{{ .ProjectName }}-v{{ .Version }}-{{ .Os }}-{{ .Arch }}"
-    files:
-      - completions/*
-      - plugin/*
 
 checksum:
   name_template: "checksums.txt"
