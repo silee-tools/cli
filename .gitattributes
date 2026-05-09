@@ -1,0 +1,22 @@
+* text=auto
+
+# Repository docs and metadata
+*.md text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+.gitattributes text eol=lf
+.editorconfig text eol=lf
+.gitignore text eol=lf
+.commitlintrc.yml text eol=lf
+
+# Runtime and automation sources
+*.go text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.zsh text eol=lf
+*.plugin.zsh text eol=lf
