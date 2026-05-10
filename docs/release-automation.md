@@ -95,7 +95,7 @@ gh variable set RUNNER_MACOS --repo silee-tools/cli --body "self-hosted"
 
 ## 신규 도구 추가 절차
 
-1. `apps/<new-tool>/` 디렉토리에 도구 코드 + `.mise.toml` + README + (Go 라면 `.goreleaser.yaml`) 작성
+1. `apps/<new-tool>/` 디렉토리에 도구 코드 + `.mise.toml` + README + `.goreleaser.yaml` 작성. 현재 공통 릴리스 workflow 는 모든 도구가 GoReleaser 기반이라고 가정하며, GoReleaser 설정이 없으면 build-and-upload 단계가 실패하도록 검증한다.
 2. `.github/workflows/<new-tool>-ci.yml` paths 필터 CI 추가
 3. `release-please-config.json` 의 `packages` 에 `"apps/<new-tool>": {"package-name": "<new-tool>"}` 추가
 4. `.release-please-manifest.json` 에 `"apps/<new-tool>": "0.0.0"` 추가
