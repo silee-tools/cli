@@ -8,4 +8,4 @@
 
 ## 릴리스
 
-`saml2aws-auto/v<MAJOR>.<MINOR>.<PATCH>` 태그. 루트 `release.yml` workflow + GoReleaser → homebrew-tap 자동 갱신.
+`saml2aws-auto/v<MAJOR>.<MINOR>.<PATCH>` 태그. 루트 `release-please.yml` workflow + GoReleaser → homebrew-tap 자동 갱신.

@@ -34,6 +34,6 @@ echo "Removed ~/.local/bin/jg — now using brew version"
 """
 
 [tasks.release]
-description = "Interactive release (version bump, tag, push)"
+description = "Dispatch release-please.yml to rebuild an existing jg release"
 raw = true
 run = "bash scripts/release.sh"
