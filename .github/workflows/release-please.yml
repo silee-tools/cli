@@ -162,10 +162,7 @@ jobs:
           version="${{ steps.ctx.outputs.version }}"
           ver_strip="${{ steps.ctx.outputs.ver_strip }}"
 
-          case "$tool" in
-            beautiful-mermaid-cli) formula_name="bmm" ;;
-            *) formula_name="$tool" ;;
-          esac
+          formula_name="$tool"
 
           checksums=""
           for candidate in "apps/${tool}/dist/checksums.txt" "dist/checksums.txt"; do
