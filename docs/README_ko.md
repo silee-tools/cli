@@ -28,7 +28,7 @@ silee-tools/cli/
 │       ├── .mise.toml
 │       ├── README.md
 │       └── ...
-├── .github/workflows/ # 도구별 CI + 공통 release.yml
+├── .github/workflows/ # 도구별 CI + 공통 release-please.yml
 ├── .mise.toml         # 공통 개발 도구만
 └── README.md
 ```
