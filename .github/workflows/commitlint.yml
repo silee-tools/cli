@@ -7,6 +7,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   commitlint:
     runs-on: ubuntu-latest
@@ -14,6 +17,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: wagoid/commitlint-github-action@v6
-        with:
-          configFile: .commitlintrc.yml
+      - name: Lint PR commits
+        if: github.event_name == 'pull_request'
+        run: >-
+          python3 scripts/check-commit-messages.py
+          --from "${{ github.event.pull_request.base.sha }}"
+          --to "${{ github.event.pull_request.head.sha }}"
+      - name: Lint pushed commits
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            BEFORE="HEAD~1"
+          fi
+          python3 scripts/check-commit-messages.py --from "$BEFORE" --to "${{ github.sha }}"
