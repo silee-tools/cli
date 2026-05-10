@@ -427,3 +427,7 @@ apps/*/dist/
 
 # Claude Code session state
 .claude/
+
+# Local automation scratch
+.pr-body.md
+.worktrees/
