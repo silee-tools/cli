@@ -11,7 +11,7 @@
 3. **개발자가 Release PR 의 본문을 검토한다.** 어느 도구가 어떤 commit 들을 받아 어떤 버전으로 가는지가 PR 본문에 그대로 보인다. 의도와 다르면 PR 을 수정하거나(commit 추가/회수) 그냥 두고 Release PR merge 만 미룬다.
 4. **개발자가 Release PR 을 merge 한다.** release-please-action 이 즉시 `<tool>/v<MAJOR>.<MINOR>.<PATCH>` 태그를 만들고, 빈 GitHub Release(노트는 CHANGELOG 변경분으로 자동 채워짐) 를 생성한다. CHANGELOG.md 갱신은 PR merge 와 함께 main 에 들어가 있다.
 5. **같은 release-please.yml 안의 build-and-upload matrix job 이 도구별로 한 번씩 실행된다.** 각 도구의 `.goreleaser.yaml` 로 GoReleaser 가 dist 산출물(tar.gz × 4 + checksums.txt) 을 만든 뒤 release-please 가 만들어 둔 release 에 `gh release upload` 로 첨부한다. GoReleaser 는 `release.disable: true` 로 release 객체 자체를 건드리지 않는다.
-6. **같은 job 마지막 step 이 homebrew-tap 의 `Formula/<tool>.rb` 의 sha256 placeholder 와 version 라인을 새 값으로 자동 갱신하고 commit + push 한다.** `HOMEBREW_TAP_TOKEN` secret 이 설정된 경우에만 동작하며, 미설정 시 step 자체가 skip 되고 `notice` 로 수동 갱신 안내가 출력된다.
+6. **같은 job 마지막 step 이 homebrew-tap 의 `Formula/<tool>.rb` 의 sha256 placeholder 와 version 라인을 새 값으로 자동 갱신하고 commit + push 한다.** `HOMEBREW_TAP_TOKEN` secret 이 설정된 경우에만 동작하며, 여러 도구 릴리스가 가까운 시점에 tap 저장소를 갱신하더라도 non-fast-forward 경합은 `git pull --rebase` 후 재시도한다. 미설정 시 step 자체가 skip 되고 `notice` 로 수동 갱신 안내가 출력된다.
 7. **사용자 머신에서 `brew update && brew upgrade silee-tools/tap/<tool>` 로 새 버전 설치.**
 
 ## release-please 의 동작 원리
