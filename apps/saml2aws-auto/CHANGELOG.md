@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.0.0](https://github.com/silee-tools/cli/compare/saml2aws-auto/v1.0.1...saml2aws-auto/v2.0.0) (2026-05-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **saml2aws-auto:** saml2aws-auto-login is removed. Use saml2aws-auto login/check/init zsh instead.
+
+### Features
+
+* **saml2aws-auto:** replace login wrapper with unified CLI ([813af4d](https://github.com/silee-tools/cli/commit/813af4d70ef9302f70c6bf9ede65dbc7cbb0bd05))
+
+
+### Bug Fixes
+
+* **jg:** dispatch release rebuild workflow correctly ([#23](https://github.com/silee-tools/cli/issues/23)) ([5b06ae3](https://github.com/silee-tools/cli/commit/5b06ae3ca401bb551a7565cc0b1245a891adc4fc))
+
+
+### CI
+
+* update goreleaser archive format metadata ([#31](https://github.com/silee-tools/cli/issues/31)) ([a1d5ea5](https://github.com/silee-tools/cli/commit/a1d5ea5493b2fc33be2484d32fe7a2d7ba287af2))
+
 ## [1.0.1](https://github.com/silee-tools/cli/compare/saml2aws-auto/v1.0.0...saml2aws-auto/v1.0.1) (2026-05-09)
 
 
