@@ -505,26 +505,30 @@ func printZshInit(stdout, stderr io.Writer, env map[string]string) int {
 	pluginPath := installedPluginPath(env)
 	fmt.Fprintf(stdout, `# saml2aws-auto found username in %s: %s
 
-# zinit
-zinit snippet "%s"
-
-# manual source
-source "%s"
-`, paths.saml2awsConfig, username, pluginPath, pluginPath)
+local saml2aws_auto_plugin="%s"
+[[ -f "$saml2aws_auto_plugin" ]] && source "$saml2aws_auto_plugin"
+unset saml2aws_auto_plugin
+`, paths.saml2awsConfig, username, pluginPath)
 	return 0
 }
 
 func installedPluginPath(env map[string]string) string {
 	if exe, err := os.Executable(); err == nil {
 		if realExe, err := filepath.EvalSymlinks(exe); err == nil {
+			if strings.Contains(realExe, string(filepath.Separator)+"Cellar"+string(filepath.Separator)+"saml2aws-auto"+string(filepath.Separator)) {
+				prefix := realExe[:strings.Index(realExe, string(filepath.Separator)+"Cellar"+string(filepath.Separator)+"saml2aws-auto"+string(filepath.Separator))]
+				return filepath.Join(prefix, "opt", "saml2aws-auto", "share", "saml2aws-auto", "saml2aws-auto.plugin.zsh")
+			}
 			prefix := filepath.Dir(filepath.Dir(realExe))
 			candidate := filepath.Join(prefix, "share", "saml2aws-auto", "saml2aws-auto.plugin.zsh")
-			if strings.Contains(realExe, string(filepath.Separator)+"Cellar"+string(filepath.Separator)+"saml2aws-auto"+string(filepath.Separator)) {
-				return candidate
-			}
 			if _, err := os.Stat(candidate); err == nil {
 				return candidate
 			}
+		}
+		prefix := filepath.Dir(filepath.Dir(exe))
+		candidate := filepath.Join(prefix, "share", "saml2aws-auto", "saml2aws-auto.plugin.zsh")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
 		}
 	}
 

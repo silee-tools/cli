@@ -223,6 +223,12 @@ func TestPrintZshInitUsesSaml2awsConfig(t *testing.T) {
 	if !strings.Contains(got, "alice@example.com") || !strings.Contains(got, "saml2aws-auto.plugin.zsh") {
 		t.Fatalf("stdout=%q", got)
 	}
+	if !strings.Contains(got, `local saml2aws_auto_plugin=`) || !strings.Contains(got, `unset saml2aws_auto_plugin`) {
+		t.Fatalf("stdout missing direct zsh setup snippet: %q", got)
+	}
+	if strings.Contains(got, "zinit snippet") {
+		t.Fatalf("stdout should not prefer zinit snippet: %q", got)
+	}
 }
 
 func TestInstalledPluginPathFallsBackToXDG(t *testing.T) {
