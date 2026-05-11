@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.2](https://github.com/silee-tools/cli/compare/saml2aws-auto/v2.0.1...saml2aws-auto/v2.0.2) (2026-05-11)
+
+
+### Bug Fixes
+
+* **saml2aws-auto:** print direct zsh init snippet ([eef2346](https://github.com/silee-tools/cli/commit/eef2346a4ecd06fa75e60cc96156d9cbaccdab7f))
+
 ## [2.0.1](https://github.com/silee-tools/cli/compare/saml2aws-auto/v2.0.0...saml2aws-auto/v2.0.1) (2026-05-11)
 
 
