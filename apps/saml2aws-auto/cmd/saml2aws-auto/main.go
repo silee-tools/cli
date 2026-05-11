@@ -200,6 +200,23 @@ func checkSession(credentialsPath string, now time.Time) sessionStatus {
 	return sessionStatus{kind: statusValid}
 }
 
+func (s sessionStatus) promptText() string {
+	switch s.kind {
+	case statusExpiring:
+		return fmt.Sprintf("%s:%d", statusExpiring, s.minutes)
+	case statusExpired, statusValid, statusUnknown:
+		return s.kind
+	default:
+		return statusUnknown
+	}
+}
+
+func runStatus(env map[string]string, stdout io.Writer, now time.Time) int {
+	status := checkSession(resolvePaths(env).credentials, now)
+	fmt.Fprintln(stdout, status.promptText())
+	return 0
+}
+
 func parseCredentialTime(raw string) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339, raw); err == nil {
 		return t, nil
@@ -476,6 +493,7 @@ func usage(stderr io.Writer) {
 
 Commands:
   check       Check the current saml2aws session and prompt before expiry.
+  status      Print session status for shell prompts.
   login       Run saml2aws login with a TOTP MFA token from the totp binary.
   init zsh    Print zsh plugin setup guidance.
 
@@ -544,6 +562,8 @@ func main() {
 		os.Exit(runLogin(r, env, os.Stderr))
 	case "check":
 		os.Exit(runCheck(r, env, os.Stdin, os.Stdout, os.Stderr, time.Now()))
+	case "status":
+		os.Exit(runStatus(env, os.Stdout, time.Now()))
 	case "init":
 		if flags.NArg() == 2 && flags.Arg(1) == "zsh" {
 			os.Exit(printZshInit(os.Stdout, os.Stderr, env))

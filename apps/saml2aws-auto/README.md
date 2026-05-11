@@ -57,6 +57,14 @@ saml2aws-auto check
 
 이 명령은 `~/.aws/credentials`의 `x_security_token_expires`를 읽는다. 세션이 이미 만료됐거나 1시간 이내에 만료될 때만 로그인 여부를 묻는다. `오늘 그만 물어보기` 상태는 `${XDG_DATA_HOME:-$HOME/.local/share}/saml2aws-login-suppress`에 저장한다.
 
+프롬프트용 상태만 출력:
+
+```bash
+saml2aws-auto status
+```
+
+출력은 `valid`, `expiring_soon:<분>`, `expired`, `unknown` 중 하나다. zsh plugin은 이 명령을 `_saml2aws_check_session` 함수로 노출해서 기존 프롬프트 세그먼트가 그대로 사용할 수 있게 한다.
+
 `SAML2AWS_USERNAME`처럼 사용자마다 다른 값은 zsh plugin이 설정하지 않는다. 기본값은 `~/.saml2aws`에서 읽고, 특별히 덮어써야 할 때만 환경변수를 사용한다.
 
 ## zsh plugin
@@ -99,7 +107,7 @@ Homebrew 릴리스 설치 후에는 같은 파일이 formula의 `share/saml2aws-
 ## 옵션
 
 ```text
-saml2aws-auto <check|login|init zsh> [-h|--help] [-v|--version]
+saml2aws-auto <check|status|login|init zsh> [-h|--help] [-v|--version]
 ```
 
 ## 개발

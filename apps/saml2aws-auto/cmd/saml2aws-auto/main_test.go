@@ -263,6 +263,45 @@ func TestCheckSession(t *testing.T) {
 	}
 }
 
+func TestSessionStatusPromptText(t *testing.T) {
+	tests := []struct {
+		status sessionStatus
+		want   string
+	}{
+		{sessionStatus{kind: statusUnknown}, "unknown"},
+		{sessionStatus{kind: statusValid}, "valid"},
+		{sessionStatus{kind: statusExpired}, "expired"},
+		{sessionStatus{kind: statusExpiring, minutes: 12}, "expiring_soon:12"},
+		{sessionStatus{kind: "broken"}, "unknown"},
+	}
+	for _, tt := range tests {
+		if got := tt.status.promptText(); got != tt.want {
+			t.Fatalf("got=%q want=%q", got, tt.want)
+		}
+	}
+}
+
+func TestRunStatusPrintsPromptCompatibleStatus(t *testing.T) {
+	home := t.TempDir()
+	awsDir := filepath.Join(home, ".aws")
+	if err := os.MkdirAll(awsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "x_security_token_expires = 2026-05-11T12:30:00+09:00\n"
+	if err := os.WriteFile(filepath.Join(awsDir, "credentials"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.FixedZone("KST", 9*60*60))
+	if code := runStatus(map[string]string{"HOME": home}, &stdout, now); code != 0 {
+		t.Fatalf("exit=%d", code)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "expiring_soon:30" {
+		t.Fatalf("got=%q", got)
+	}
+}
+
 func TestShouldPromptSuppressExpired(t *testing.T) {
 	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "suppress")

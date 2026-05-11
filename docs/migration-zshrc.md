@@ -6,8 +6,8 @@
 
 `saml2aws-auto`가 다음 두 가지를 함께 관리한다.
 
-- `saml2aws-auto` Go 바이너리: `login`, `check`, `init zsh` 하위 명령 제공
-- `saml2aws-auto.plugin.zsh`: zsh 시작 시 `saml2aws-auto check`만 호출하는 얇은 plugin
+- `saml2aws-auto` Go 바이너리: `login`, `check`, `status`, `init zsh` 하위 명령 제공
+- `saml2aws-auto.plugin.zsh`: zsh 시작 시 `saml2aws-auto check`를 호출하고, 프롬프트용 `_saml2aws_check_session` 함수를 제공하는 얇은 plugin
 
 기존 `saml2aws-auto-login` 명령은 더 이상 제공하지 않는다.
 
@@ -47,6 +47,8 @@ fi
 saml2aws-auto init zsh
 ```
 
+기존 프롬프트가 `_saml2aws_check_session` 함수를 호출한다면 별도 수정 없이 `valid`, `expiring_soon:<분>`, `expired`, `unknown` 상태를 계속 받을 수 있다.
+
 ## 기존 설정 정리
 
 기존 `~/.config/zsh/saml2aws.zsh`에 있던 세션 판정, suppress 파일 처리, 프롬프트 로직은 제거한다. 사용자별 username 은 새 파일을 만들지 않고 기존 `~/.saml2aws`에서 읽는다.
@@ -65,6 +67,7 @@ fi
 ```bash
 zsh -n "${XDG_DATA_HOME:-$HOME/.local/share}/saml2aws-auto/saml2aws-auto.plugin.zsh"
 saml2aws-auto check
+saml2aws-auto status
 saml2aws-auto login
 ```
 
