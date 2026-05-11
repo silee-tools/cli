@@ -63,7 +63,7 @@ saml2aws-auto check
 saml2aws-auto status
 ```
 
-출력은 `valid`, `expiring_soon:<분>`, `expired`, `unknown` 중 하나다. zsh plugin은 이 명령을 `_saml2aws_check_session` 함수로 노출해서 기존 프롬프트 세그먼트가 그대로 사용할 수 있게 한다.
+출력은 `valid`, `expiring_soon:<분>`, `expired`, `unknown` 중 하나다. 프롬프트에서 AWS 상태를 보여주려면 이 명령을 직접 호출한다.
 
 `SAML2AWS_USERNAME`처럼 사용자마다 다른 값은 zsh plugin이 설정하지 않는다. 기본값은 `~/.saml2aws`에서 읽고, 특별히 덮어써야 할 때만 환경변수를 사용한다.
 

@@ -7,7 +7,7 @@
 `saml2aws-auto`가 다음 두 가지를 함께 관리한다.
 
 - `saml2aws-auto` Go 바이너리: `login`, `check`, `status`, `init zsh` 하위 명령 제공
-- `saml2aws-auto.plugin.zsh`: zsh 시작 시 `saml2aws-auto check`를 호출하고, 프롬프트용 `_saml2aws_check_session` 함수를 제공하는 얇은 plugin
+- `saml2aws-auto.plugin.zsh`: zsh 시작 시 `saml2aws-auto check`를 호출하는 얇은 plugin
 
 기존 `saml2aws-auto-login` 명령은 더 이상 제공하지 않는다.
 
@@ -47,7 +47,7 @@ fi
 saml2aws-auto init zsh
 ```
 
-기존 프롬프트가 `_saml2aws_check_session` 함수를 호출한다면 별도 수정 없이 `valid`, `expiring_soon:<분>`, `expired`, `unknown` 상태를 계속 받을 수 있다.
+프롬프트에서 AWS 상태를 보여주려면 `_saml2aws_check_session` 같은 래퍼 함수 대신 `saml2aws-auto status` 명령을 직접 호출한다. 출력은 `valid`, `expiring_soon:<분>`, `expired`, `unknown` 중 하나다.
 
 ## 기존 설정 정리
 
