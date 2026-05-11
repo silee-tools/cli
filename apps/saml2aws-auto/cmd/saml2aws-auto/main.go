@@ -502,15 +502,43 @@ func printZshInit(stdout, stderr io.Writer, env map[string]string) int {
 		return 1
 	}
 
+	pluginPath := installedPluginPath(env)
 	fmt.Fprintf(stdout, `# saml2aws-auto found username in %s: %s
 
 # zinit
-zinit snippet "${XDG_DATA_HOME:-$HOME/.local/share}/saml2aws-auto/saml2aws-auto.plugin.zsh"
+zinit snippet "%s"
 
 # manual source
-source "${XDG_DATA_HOME:-$HOME/.local/share}/saml2aws-auto/saml2aws-auto.plugin.zsh"
-`, paths.saml2awsConfig, username)
+source "%s"
+`, paths.saml2awsConfig, username, pluginPath, pluginPath)
 	return 0
+}
+
+func installedPluginPath(env map[string]string) string {
+	if exe, err := os.Executable(); err == nil {
+		if realExe, err := filepath.EvalSymlinks(exe); err == nil {
+			prefix := filepath.Dir(filepath.Dir(realExe))
+			candidate := filepath.Join(prefix, "share", "saml2aws-auto", "saml2aws-auto.plugin.zsh")
+			if strings.Contains(realExe, string(filepath.Separator)+"Cellar"+string(filepath.Separator)+"saml2aws-auto"+string(filepath.Separator)) {
+				return candidate
+			}
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+		}
+	}
+
+	dataHome := env["XDG_DATA_HOME"]
+	home := env["HOME"]
+	if home == "" {
+		if resolved, err := os.UserHomeDir(); err == nil {
+			home = resolved
+		}
+	}
+	if dataHome == "" {
+		dataHome = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dataHome, "saml2aws-auto", "saml2aws-auto.plugin.zsh")
 }
 
 func main() {

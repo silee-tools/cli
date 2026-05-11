@@ -225,6 +225,15 @@ func TestPrintZshInitUsesSaml2awsConfig(t *testing.T) {
 	}
 }
 
+func TestInstalledPluginPathFallsBackToXDG(t *testing.T) {
+	home := t.TempDir()
+	got := installedPluginPath(map[string]string{"HOME": home})
+	want := filepath.Join(home, ".local", "share", "saml2aws-auto", "saml2aws-auto.plugin.zsh")
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
 func TestCheckSession(t *testing.T) {
 	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.FixedZone("KST", 9*60*60))
 	tests := []struct {
