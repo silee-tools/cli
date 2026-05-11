@@ -4,8 +4,8 @@ project_name: saml2aws-auto
 
 
 builds:
-  - main: ./cmd/saml2aws-auto-login
-    binary: saml2aws-auto-login
+  - main: ./cmd/saml2aws-auto
+    binary: saml2aws-auto
     ldflags:
       - -s -w -X main.version={{.Version}}
     env:
@@ -20,6 +20,11 @@ builds:
 archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}-v{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    files:
+      - README.md
+      - CHANGELOG.md
+      - src: zsh/saml2aws-auto.plugin.zsh
+        dst: saml2aws-auto.plugin.zsh
 
 checksum:
   name_template: "checksums.txt"

@@ -200,6 +200,41 @@ jobs:
               print("version 라인 변경 없음")
           PY
 
+          if [ "$tool" = "saml2aws-auto" ]; then
+          python3 - "$formula_path" <<'PY'
+          import sys
+          path = sys.argv[1]
+          src = open(path).read()
+          replacements = {
+              '# saml2aws-auto-login (formula 명: saml2aws-auto). 외부 의존 0 의 Go CLI.':
+                  '# saml2aws-auto. saml2aws 로그인 자동화와 zsh 세션 체크를 제공하는 Go CLI.',
+              '    bin.install "saml2aws-auto-login"':
+                  '    bin.install "saml2aws-auto"\n    (share/"saml2aws-auto").install "saml2aws-auto.plugin.zsh"',
+              '      saml2aws-auto-login 은 saml2aws CLI 를 별도로 요구합니다:':
+                  '      saml2aws-auto 는 saml2aws CLI 를 별도로 요구합니다:',
+              '    assert_match "saml2aws-auto-login", shell_output("#{bin}/saml2aws-auto-login --help 2>&1")':
+                  '    assert_match "saml2aws-auto", shell_output("#{bin}/saml2aws-auto --help 2>&1")\n    assert_path_exists share/"saml2aws-auto/saml2aws-auto.plugin.zsh"',
+          }
+          new = src
+          for old, replacement in replacements.items():
+              new = new.replace(old, replacement)
+          marker = '      환경변수:\n'
+          plugin = (
+              '      zsh plugin:\n'
+              '        zinit snippet "#{share}/saml2aws-auto/saml2aws-auto.plugin.zsh"\n'
+              '        # 또는\n'
+              '        source "#{share}/saml2aws-auto/saml2aws-auto.plugin.zsh"\n\n'
+          )
+          if plugin not in new:
+              new = new.replace(marker, plugin + marker, 1)
+          if new != src:
+              open(path, "w").write(new)
+              print("saml2aws-auto formula install/test 로직 갱신")
+          else:
+              print("saml2aws-auto formula install/test 로직 변경 없음")
+          PY
+          fi
+
           python3 scripts/update-homebrew-formula.py "$formula_path" "$checksums"
 
           cd "$tap_dir"

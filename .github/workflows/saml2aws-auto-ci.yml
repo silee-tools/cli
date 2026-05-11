@@ -23,5 +23,6 @@ jobs:
           working_directory: apps/saml2aws-auto
       - run: mise run fmt-check
       - run: mise run lint
+      - run: mise run shell-check
       - run: mise run test
       - run: mise run build

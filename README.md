@@ -9,7 +9,7 @@ Monorepo of personal CLI tools under the `silee-tools` GitHub organization. Each
 | Tool | Language | Description |
 |------|----------|-------------|
 | [jg](apps/jg/) | Go | Frecency-based CLI for quickly jumping to git repositories. |
-| [saml2aws-auto](apps/saml2aws-auto/) | Go | Auto-injects a TOTP MFA code into `saml2aws` AzureAD login. |
+| [saml2aws-auto](apps/saml2aws-auto/) | Go | Auto-injects a TOTP MFA code into `saml2aws` AzureAD login and checks session expiry from zsh. |
 | [totp](apps/totp/) | Go | macOS Keychain-backed TOTP code generator (macOS only). |
 
 ## Tech Stack

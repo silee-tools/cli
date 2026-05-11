@@ -3,7 +3,7 @@ go = "1.23"
 
 [tasks.build]
 description = "Build the project"
-run = "go build ./cmd/saml2aws-auto-login"
+run = "go build ./cmd/saml2aws-auto"
 
 [tasks.test]
 description = "Run tests"
@@ -12,6 +12,13 @@ run = "go test ./..."
 [tasks.lint]
 description = "Run linter"
 run = "go vet ./..."
+
+[tasks.shell-check]
+description = "Check zsh plugin syntax"
+run = """
+zsh -n zsh/saml2aws-auto.plugin.zsh
+shellcheck -s bash zsh/saml2aws-auto.plugin.zsh
+"""
 
 [tasks.fmt]
 description = "Format code"
@@ -22,12 +29,24 @@ description = "Check formatting (CI)"
 run = "test -z \"$(gofmt -l .)\""
 
 [tasks.install]
-description = "Build and install to ~/.local/bin"
-run = "go build -o ~/.local/bin/saml2aws-auto-login ./cmd/saml2aws-auto-login"
+description = "Build and install binary plus zsh plugin to local XDG paths"
+run = """
+set -euo pipefail
+data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+mkdir -p "$HOME/.local/bin" "$data_home/saml2aws-auto"
+go build -o "$HOME/.local/bin/saml2aws-auto" ./cmd/saml2aws-auto
+cp zsh/saml2aws-auto.plugin.zsh "$data_home/saml2aws-auto/saml2aws-auto.plugin.zsh"
+echo "Installed $HOME/.local/bin/saml2aws-auto"
+echo "Installed $data_home/saml2aws-auto/saml2aws-auto.plugin.zsh"
+"""
 
 [tasks.uninstall]
-description = "Remove local dev build"
+description = "Remove local dev build and zsh plugin"
 run = """
-rm -f ~/.local/bin/saml2aws-auto-login
-echo "Removed ~/.local/bin/saml2aws-auto-login"
+data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+rm -f "$HOME/.local/bin/saml2aws-auto"
+rm -f "$data_home/saml2aws-auto/saml2aws-auto.plugin.zsh"
+rmdir "$data_home/saml2aws-auto" 2>/dev/null || true
+echo "Removed $HOME/.local/bin/saml2aws-auto"
+echo "Removed $data_home/saml2aws-auto/saml2aws-auto.plugin.zsh"
 """

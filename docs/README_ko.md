@@ -9,7 +9,7 @@
 | 도구 | 언어 | 설명 |
 |------|------|------|
 | [jg](../apps/jg/) | Go | 디렉토리 frecency 기반 빠른 git 저장소 점프 CLI. |
-| [saml2aws-auto](../apps/saml2aws-auto/) | Go | `saml2aws` AzureAD 로그인에 TOTP MFA 코드를 자동 주입. |
+| [saml2aws-auto](../apps/saml2aws-auto/) | Go | `saml2aws` AzureAD 로그인에 TOTP MFA 코드를 자동 주입하고 zsh 시작 시 세션 만료를 확인. |
 | [totp](../apps/totp/) | Go | macOS Keychain 기반 TOTP 코드 생성기 (macOS 전용). |
 
 ## 기술 스택

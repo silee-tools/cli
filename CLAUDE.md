@@ -20,7 +20,7 @@
 ## 모노레포 컨벤션
 
 - 한 도구 = `apps/<tool>/` 한 디렉토리. 도구 사이 코드 공유 금지 (각자 독립).
-- 현재 등록된 도구: jg, totp, saml2aws-auto. saml2aws-auto-login 은 PATH 에서 totp 바이너리 존재만 확인하는 한 줄 의존이 전부.
+- 현재 등록된 도구: jg, totp, saml2aws-auto. saml2aws-auto 는 `login`/`check`/`init zsh` 하위 명령과 zsh plugin 을 함께 제공한다.
 - 도구 추가: `apps/<new-tool>/` 생성, 그 안에 `.mise.toml` + `README.md` + 진입점 + `.goreleaser.yaml` 를 둔다. 공통 릴리스 workflow 는 모든 도구가 GoReleaser 기반이라고 가정하므로, GoReleaser 설정 없이 추가하지 않는다. 루트 `README.md` 의 도구 표도 갱신한다.
 - 릴리스: 태그를 직접 만들지 않는다. main 의 Conventional Commits 가 누적되면 release-please-action 이 도구별 Release PR 을 자동 생성/갱신하므로, 그 PR 의 본문(다음 버전 + CHANGELOG 변경분) 을 review 하고 merge 하는 것이 곧 릴리스 결정이다. PR merge 시 `<tool>/v<MAJOR>.<MINOR>.<PATCH>` 태그와 빈 GitHub Release 가 자동 생성되고, 후속 matrix job 이 GoReleaser 로 artifact 를 빌드해 첨부한 뒤 homebrew-tap formula 의 sha256/version 을 자동 commit + push 한다.
 - CI: 도구별 `.github/workflows/<tool>-ci.yml` + paths 필터로 자기 디렉토리만 트리거.
