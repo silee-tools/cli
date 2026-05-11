@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/silee-tools/cli/compare/saml2aws-auto/v2.0.0...saml2aws-auto/v2.0.1) (2026-05-11)
+
+
+### Bug Fixes
+
+* **saml2aws-auto:** print installed zsh plugin path ([8b2da46](https://github.com/silee-tools/cli/commit/8b2da4689c02691c61028b8581e299c6d2991458))
+
 ## [2.0.0](https://github.com/silee-tools/cli/compare/saml2aws-auto/v1.0.1...saml2aws-auto/v2.0.0) (2026-05-11)
 
 
