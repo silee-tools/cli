@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2](https://github.com/silee-tools/cli/compare/jg/v0.2.1...jg/v0.2.2) (2026-05-11)
+
+
+### Bug Fixes
+
+* **jg:** dispatch release rebuild workflow correctly ([#23](https://github.com/silee-tools/cli/issues/23)) ([5b06ae3](https://github.com/silee-tools/cli/commit/5b06ae3ca401bb551a7565cc0b1245a891adc4fc))
+
+
+### CI
+
+* update goreleaser archive format metadata ([#31](https://github.com/silee-tools/cli/issues/31)) ([a1d5ea5](https://github.com/silee-tools/cli/commit/a1d5ea5493b2fc33be2484d32fe7a2d7ba287af2))
+
 ## [0.2.1](https://github.com/silee-tools/cli/compare/jg/v0.2.0...jg/v0.2.1) (2026-05-09)
 
 
