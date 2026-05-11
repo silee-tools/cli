@@ -88,7 +88,7 @@ func TestResolveUsername(t *testing.T) {
 func TestRun_MissingSaml2aws(t *testing.T) {
 	r := &fakeRunner{missing: map[string]bool{"saml2aws": true}}
 	var stderr bytes.Buffer
-	code := runLogin(r, map[string]string{"SAML2AWS_USERNAME": "alice"}, &stderr)
+	code := runLogin(r, map[string]string{"SAML2AWS_USERNAME": "alice"}, &stderr, "")
 	if code != 127 {
 		t.Fatalf("exit=%d want 127", code)
 	}
@@ -100,7 +100,7 @@ func TestRun_MissingSaml2aws(t *testing.T) {
 func TestRun_MissingTotp(t *testing.T) {
 	r := &fakeRunner{missing: map[string]bool{"totp": true}}
 	var stderr bytes.Buffer
-	code := runLogin(r, map[string]string{"SAML2AWS_USERNAME": "alice"}, &stderr)
+	code := runLogin(r, map[string]string{"SAML2AWS_USERNAME": "alice"}, &stderr, "")
 	if code != 127 {
 		t.Fatalf("exit=%d want 127", code)
 	}
@@ -112,7 +112,7 @@ func TestRun_MissingTotp(t *testing.T) {
 func TestRun_MissingUsernameAndOverride(t *testing.T) {
 	r := &fakeRunner{}
 	var stderr bytes.Buffer
-	code := runLogin(r, map[string]string{"HOME": t.TempDir()}, &stderr)
+	code := runLogin(r, map[string]string{"HOME": t.TempDir()}, &stderr, "")
 	if code != 1 {
 		t.Fatalf("exit=%d want 1", code)
 	}
@@ -124,7 +124,7 @@ func TestRun_MissingUsernameAndOverride(t *testing.T) {
 func TestRun_TOTPFailure(t *testing.T) {
 	r := &fakeRunner{captureErr: errors.New("no entry")}
 	var stderr bytes.Buffer
-	code := runLogin(r, map[string]string{"SAML2AWS_USERNAME": "alice"}, &stderr)
+	code := runLogin(r, map[string]string{"SAML2AWS_USERNAME": "alice"}, &stderr, "")
 	if code != 1 {
 		t.Fatalf("exit=%d want 1", code)
 	}
@@ -140,7 +140,7 @@ func TestRun_TOTPFailure(t *testing.T) {
 func TestRun_TOTPEmptyOutput(t *testing.T) {
 	r := &fakeRunner{captureOut: "   \n"}
 	var stderr bytes.Buffer
-	code := runLogin(r, map[string]string{"SAML2AWS_USERNAME": "alice"}, &stderr)
+	code := runLogin(r, map[string]string{"SAML2AWS_USERNAME": "alice"}, &stderr, "")
 	if code != 1 {
 		t.Fatalf("exit=%d want 1", code)
 	}
@@ -153,7 +153,7 @@ func TestRun_HappyPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".saml2aws"), []byte("username = alice\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	code := runLogin(r, map[string]string{"HOME": home}, &stderr)
+	code := runLogin(r, map[string]string{"HOME": home}, &stderr, "")
 	if code != 0 {
 		t.Fatalf("exit=%d want 0, stderr=%q", code, stderr.String())
 	}
@@ -164,7 +164,7 @@ func TestRun_HappyPath(t *testing.T) {
 		t.Fatalf("runCalls=%v", r.runCalls)
 	}
 	got := r.runCalls[0]
-	want := []string{"saml2aws", "login", "--force", "--skip-prompt", "--session-duration=43200", "--password=", "--mfa-token=123456"}
+	want := []string{"saml2aws", "login", "--force", "--skip-prompt", "--password=", "--mfa-token=123456"}
 	if len(got) != len(want) {
 		t.Fatalf("got=%v want=%v", got, want)
 	}
@@ -175,19 +175,38 @@ func TestRun_HappyPath(t *testing.T) {
 	}
 }
 
-func TestRun_UsesSessionDurationEnv(t *testing.T) {
+func TestRun_UsesSessionDurationFromSaml2awsConfig(t *testing.T) {
 	r := &fakeRunner{captureOut: "123456\n", runExit: 0}
 	var stderr bytes.Buffer
 	home := t.TempDir()
-	if err := os.WriteFile(filepath.Join(home, ".saml2aws"), []byte("username = alice\n"), 0644); err != nil {
+	config := "username = alice\naws_session_duration = 43200\n"
+	if err := os.WriteFile(filepath.Join(home, ".saml2aws"), []byte(config), 0644); err != nil {
 		t.Fatal(err)
 	}
-	code := runLogin(r, map[string]string{"HOME": home, "SAML2AWS_SESSION_DURATION": "7200"}, &stderr)
+	code := runLogin(r, map[string]string{"HOME": home}, &stderr, "")
 	if code != 0 {
 		t.Fatalf("exit=%d want 0, stderr=%q", code, stderr.String())
 	}
 	got := r.runCalls[0]
-	if !slices.Contains(got, "--session-duration=7200") {
+	if !slices.Contains(got, "--session-duration=43200") {
+		t.Fatalf("run args=%v", got)
+	}
+}
+
+func TestRun_SessionDurationFlagOverridesSaml2awsConfig(t *testing.T) {
+	r := &fakeRunner{captureOut: "123456\n", runExit: 0}
+	var stderr bytes.Buffer
+	home := t.TempDir()
+	config := "username = alice\naws_session_duration = 43200\n"
+	if err := os.WriteFile(filepath.Join(home, ".saml2aws"), []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+	code := runLogin(r, map[string]string{"HOME": home}, &stderr, "7200")
+	if code != 0 {
+		t.Fatalf("exit=%d want 0, stderr=%q", code, stderr.String())
+	}
+	got := r.runCalls[0]
+	if !slices.Contains(got, "--session-duration=7200") || slices.Contains(got, "--session-duration=43200") {
 		t.Fatalf("run args=%v", got)
 	}
 }
@@ -195,7 +214,7 @@ func TestRun_UsesSessionDurationEnv(t *testing.T) {
 func TestRun_PropagatesSaml2awsExitCode(t *testing.T) {
 	r := &fakeRunner{captureOut: "123456", runExit: 42}
 	var stderr bytes.Buffer
-	code := runLogin(r, map[string]string{"SAML2AWS_USERNAME": "alice"}, &stderr)
+	code := runLogin(r, map[string]string{"SAML2AWS_USERNAME": "alice"}, &stderr, "")
 	if code != 42 {
 		t.Fatalf("exit=%d want 42", code)
 	}
@@ -207,7 +226,7 @@ func TestRun_OverrideTakesPrecedence(t *testing.T) {
 	code := runLogin(r, map[string]string{
 		"SAML2AWS_USERNAME":       "alice",
 		"SAML2AWS_AUTO_TOTP_NAME": "Custom Entry",
-	}, &stderr)
+	}, &stderr, "")
 	if code != 0 {
 		t.Fatalf("exit=%d want 0, stderr=%q", code, stderr.String())
 	}

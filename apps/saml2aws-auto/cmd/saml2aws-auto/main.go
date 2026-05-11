@@ -23,15 +23,14 @@ import (
 var version = "dev"
 
 const (
-	statusExpired          = "expired"
-	statusExpiring         = "expiring_soon"
-	statusValid            = "valid"
-	statusUnknown          = "unknown"
-	suppressFileName       = "saml2aws-login-suppress"
-	credentialsRel         = ".aws/credentials"
-	saml2awsConfigRel      = ".saml2aws"
-	expiringThreshold      = time.Hour
-	defaultSessionDuration = "43200"
+	statusExpired     = "expired"
+	statusExpiring    = "expiring_soon"
+	statusValid       = "valid"
+	statusUnknown     = "unknown"
+	suppressFileName  = "saml2aws-login-suppress"
+	credentialsRel    = ".aws/credentials"
+	saml2awsConfigRel = ".saml2aws"
+	expiringThreshold = time.Hour
 )
 
 type commandRunner interface {
@@ -92,11 +91,13 @@ func resolveUsername(env map[string]string) string {
 	return username
 }
 
-func resolveSessionDuration(env map[string]string) string {
-	if env["SAML2AWS_SESSION_DURATION"] != "" {
-		return env["SAML2AWS_SESSION_DURATION"]
+func resolveSessionDuration(env map[string]string, override string) string {
+	if override != "" {
+		return override
 	}
-	return defaultSessionDuration
+	paths := resolvePaths(env)
+	duration, _ := readSaml2awsConfigValue(paths.saml2awsConfig, "aws_session_duration")
+	return duration
 }
 
 func readSaml2awsConfigValue(path, key string) (string, bool) {
@@ -123,7 +124,7 @@ func readSaml2awsConfigValue(path, key string) (string, bool) {
 	return "", false
 }
 
-func runLogin(r commandRunner, env map[string]string, stderr io.Writer) int {
+func runLogin(r commandRunner, env map[string]string, stderr io.Writer, sessionDurationOverride string) int {
 	if err := r.LookPath("saml2aws"); err != nil {
 		fmt.Fprintln(stderr, "saml2aws-auto: saml2aws not installed")
 		return 127
@@ -150,13 +151,18 @@ func runLogin(r commandRunner, env map[string]string, stderr io.Writer) int {
 		return 1
 	}
 
-	exitCode, err := r.Run("saml2aws", "login",
+	args := []string{
+		"login",
 		"--force",
 		"--skip-prompt",
-		"--session-duration="+resolveSessionDuration(env),
 		"--password=",
-		"--mfa-token="+code,
-	)
+		"--mfa-token=" + code,
+	}
+	if sessionDuration := resolveSessionDuration(env, sessionDurationOverride); sessionDuration != "" {
+		args = append(args[:3], append([]string{"--session-duration=" + sessionDuration}, args[3:]...)...)
+	}
+
+	exitCode, err := r.Run("saml2aws", args...)
 	if err != nil {
 		fmt.Fprintf(stderr, "saml2aws-auto: failed to invoke saml2aws: %v\n", err)
 		return 1
@@ -477,7 +483,7 @@ func runCheck(r commandRunner, env map[string]string, stdin *os.File, stdout, st
 
 	switch promptLogin(stdin, stdout, status) {
 	case choiceLogin:
-		code := runLogin(r, env, stderr)
+		code := runLogin(r, env, stderr, "")
 		_ = os.Remove(paths.suppress)
 		return code
 	case choiceSuppress:
@@ -504,6 +510,7 @@ Commands:
   check       Check the current saml2aws session and prompt before expiry.
   status      Print session status for shell prompts.
   login       Run saml2aws login with a TOTP MFA token from the totp binary.
+              Use --session-duration <seconds> to override ~/.saml2aws.
   init zsh    Print zsh plugin setup guidance.
 
 Environment:
@@ -564,11 +571,16 @@ func main() {
 	}
 
 	r := &realRunner{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}
-	env := envMap("HOME", "XDG_DATA_HOME", "SAML2AWS_USERNAME", "SAML2AWS_AUTO_TOTP_NAME", "SAML2AWS_SESSION_DURATION")
+	env := envMap("HOME", "XDG_DATA_HOME", "SAML2AWS_USERNAME", "SAML2AWS_AUTO_TOTP_NAME")
 
 	switch flags.Arg(0) {
 	case "login":
-		os.Exit(runLogin(r, env, os.Stderr))
+		loginFlags := flag.NewFlagSet("saml2aws-auto login", flag.ExitOnError)
+		sessionDuration := loginFlags.String("session-duration", "", "override AWS session duration in seconds")
+		if err := loginFlags.Parse(flags.Args()[1:]); err != nil {
+			os.Exit(2)
+		}
+		os.Exit(runLogin(r, env, os.Stderr, *sessionDuration))
 	case "check":
 		os.Exit(runCheck(r, env, os.Stdin, os.Stdout, os.Stderr, time.Now()))
 	case "status":
