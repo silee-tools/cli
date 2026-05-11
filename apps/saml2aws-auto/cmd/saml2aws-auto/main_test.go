@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -163,7 +164,7 @@ func TestRun_HappyPath(t *testing.T) {
 		t.Fatalf("runCalls=%v", r.runCalls)
 	}
 	got := r.runCalls[0]
-	want := []string{"saml2aws", "login", "--force", "--skip-prompt", "--password=", "--mfa-token=123456"}
+	want := []string{"saml2aws", "login", "--force", "--skip-prompt", "--session-duration=43200", "--password=", "--mfa-token=123456"}
 	if len(got) != len(want) {
 		t.Fatalf("got=%v want=%v", got, want)
 	}
@@ -171,6 +172,23 @@ func TestRun_HappyPath(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("arg[%d] got=%q want=%q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestRun_UsesSessionDurationEnv(t *testing.T) {
+	r := &fakeRunner{captureOut: "123456\n", runExit: 0}
+	var stderr bytes.Buffer
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".saml2aws"), []byte("username = alice\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	code := runLogin(r, map[string]string{"HOME": home, "SAML2AWS_SESSION_DURATION": "7200"}, &stderr)
+	if code != 0 {
+		t.Fatalf("exit=%d want 0, stderr=%q", code, stderr.String())
+	}
+	got := r.runCalls[0]
+	if !slices.Contains(got, "--session-duration=7200") {
+		t.Fatalf("run args=%v", got)
 	}
 }
 

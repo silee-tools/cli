@@ -30,7 +30,8 @@ mise run install   # ~/.local/bin/saml2aws-auto
 |---|---|---|
 | `SAML2AWS_USERNAME` | saml2aws CLI 표준 | 빈 값이 아니면 TOTP 항목 이름 기본값 `MS: $SAML2AWS_USERNAME` 산출에 사용. 비어 있으면 `~/.saml2aws`의 `username`을 읽음. |
 | `SAML2AWS_AUTO_TOTP_NAME` | 본 도구 전용 | 빈 값이 아니면 그대로 TOTP 항목 이름으로 사용 (`SAML2AWS_USERNAME` 폴백보다 우선). |
-| `SAML2AWS_PASSWORD`, `SAML2AWS_SESSION_DURATION` | saml2aws CLI 표준 | 본 도구는 읽지 않음. 필요 시 saml2aws 본체가 직접 읽는다. |
+| `SAML2AWS_SESSION_DURATION` | saml2aws CLI 표준 | 로그인 시 `--session-duration`으로 명시 전달. 비어 있으면 12시간(`43200`)을 사용한다. |
+| `SAML2AWS_PASSWORD` | saml2aws CLI 표준 | 본 도구는 비밀번호 입력을 우회하기 위해 `--password=""`를 전달한다. |
 
 ## 사용
 
@@ -40,7 +41,7 @@ mise run install   # ~/.local/bin/saml2aws-auto
 saml2aws-auto login
 ```
 
-기본적으로 `~/.saml2aws`의 `username` 값을 읽어 `totp "MS: <username>"`을 호출하고, `saml2aws login --force --skip-prompt --password="" --mfa-token=<코드>`를 실행한다. `SAML2AWS_USERNAME`이 이미 환경에 있으면 그 값을 우선한다.
+기본적으로 `~/.saml2aws`의 `username` 값을 읽어 `totp "MS: <username>"`을 호출하고, `saml2aws login --force --skip-prompt --session-duration=<초> --password="" --mfa-token=<코드>`를 실행한다. `SAML2AWS_USERNAME`이 이미 환경에 있으면 그 값을 우선한다. session duration은 `SAML2AWS_SESSION_DURATION` 값이 있으면 사용하고, 없으면 12시간(`43200`)을 사용한다.
 
 TOTP 항목 이름이 다르면:
 

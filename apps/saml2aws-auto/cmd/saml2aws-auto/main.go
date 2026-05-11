@@ -23,14 +23,15 @@ import (
 var version = "dev"
 
 const (
-	statusExpired     = "expired"
-	statusExpiring    = "expiring_soon"
-	statusValid       = "valid"
-	statusUnknown     = "unknown"
-	suppressFileName  = "saml2aws-login-suppress"
-	credentialsRel    = ".aws/credentials"
-	saml2awsConfigRel = ".saml2aws"
-	expiringThreshold = time.Hour
+	statusExpired          = "expired"
+	statusExpiring         = "expiring_soon"
+	statusValid            = "valid"
+	statusUnknown          = "unknown"
+	suppressFileName       = "saml2aws-login-suppress"
+	credentialsRel         = ".aws/credentials"
+	saml2awsConfigRel      = ".saml2aws"
+	expiringThreshold      = time.Hour
+	defaultSessionDuration = "43200"
 )
 
 type commandRunner interface {
@@ -91,6 +92,13 @@ func resolveUsername(env map[string]string) string {
 	return username
 }
 
+func resolveSessionDuration(env map[string]string) string {
+	if env["SAML2AWS_SESSION_DURATION"] != "" {
+		return env["SAML2AWS_SESSION_DURATION"]
+	}
+	return defaultSessionDuration
+}
+
 func readSaml2awsConfigValue(path, key string) (string, bool) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -145,6 +153,7 @@ func runLogin(r commandRunner, env map[string]string, stderr io.Writer) int {
 	exitCode, err := r.Run("saml2aws", "login",
 		"--force",
 		"--skip-prompt",
+		"--session-duration="+resolveSessionDuration(env),
 		"--password=",
 		"--mfa-token="+code,
 	)
@@ -555,7 +564,7 @@ func main() {
 	}
 
 	r := &realRunner{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}
-	env := envMap("HOME", "XDG_DATA_HOME", "SAML2AWS_USERNAME", "SAML2AWS_AUTO_TOTP_NAME")
+	env := envMap("HOME", "XDG_DATA_HOME", "SAML2AWS_USERNAME", "SAML2AWS_AUTO_TOTP_NAME", "SAML2AWS_SESSION_DURATION")
 
 	switch flags.Arg(0) {
 	case "login":
