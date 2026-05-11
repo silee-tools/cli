@@ -218,6 +218,13 @@ jobs:
           new = src
           for old, replacement in replacements.items():
               new = new.replace(old, replacement)
+          legacy_plugin = (
+              '      zsh plugin:\n'
+              '        zinit snippet "#{share}/saml2aws-auto/saml2aws-auto.plugin.zsh"\n'
+              '        # 또는\n'
+              '        source "#{share}/saml2aws-auto/saml2aws-auto.plugin.zsh"\n\n'
+          )
+          new = new.replace(legacy_plugin, '')
           marker = '      환경변수:\n'
           plugin = (
               '      zsh plugin:\n'
