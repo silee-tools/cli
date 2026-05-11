@@ -221,9 +221,12 @@ jobs:
           marker = '      환경변수:\n'
           plugin = (
               '      zsh plugin:\n'
-              '        zinit snippet "#{share}/saml2aws-auto/saml2aws-auto.plugin.zsh"\n'
-              '        # 또는\n'
-              '        source "#{share}/saml2aws-auto/saml2aws-auto.plugin.zsh"\n\n'
+              '        if (( $+commands[saml2aws-auto] )); then\n'
+              '          local saml2aws_auto_bin="${commands[saml2aws-auto]:A}"\n'
+              '          local saml2aws_auto_plugin="${saml2aws_auto_bin:h:h}/share/saml2aws-auto/saml2aws-auto.plugin.zsh"\n'
+              '          [[ -f "$saml2aws_auto_plugin" ]] && source "$saml2aws_auto_plugin"\n'
+              '          unset saml2aws_auto_bin saml2aws_auto_plugin\n'
+              '        fi\n\n'
           )
           if plugin not in new:
               new = new.replace(marker, plugin + marker, 1)

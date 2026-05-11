@@ -67,16 +67,15 @@ saml2aws-auto check
 ${XDG_DATA_HOME:-$HOME/.local/share}/saml2aws-auto/saml2aws-auto.plugin.zsh
 ```
 
-zinit 사용자는 다음 한 줄을 `~/.zshrc`에 추가한다.
+`~/.zshrc`에는 다음 블록을 추가한다. 설치 위치를 하드코딩하지 않고, PATH에 잡힌 `saml2aws-auto` 명령 위치에서 plugin 경로를 계산한다.
 
 ```zsh
-zinit snippet "${XDG_DATA_HOME:-$HOME/.local/share}/saml2aws-auto/saml2aws-auto.plugin.zsh"
-```
-
-plugin manager 없이 직접 source 해도 된다.
-
-```zsh
-source "${XDG_DATA_HOME:-$HOME/.local/share}/saml2aws-auto/saml2aws-auto.plugin.zsh"
+if (( $+commands[saml2aws-auto] )); then
+  local saml2aws_auto_bin="${commands[saml2aws-auto]:A}"
+  local saml2aws_auto_plugin="${saml2aws_auto_bin:h:h}/share/saml2aws-auto/saml2aws-auto.plugin.zsh"
+  [[ -f "$saml2aws_auto_plugin" ]] && source "$saml2aws_auto_plugin"
+  unset saml2aws_auto_bin saml2aws_auto_plugin
+fi
 ```
 
 설치 예시는 명령으로도 확인할 수 있다.
@@ -85,7 +84,7 @@ source "${XDG_DATA_HOME:-$HOME/.local/share}/saml2aws-auto/saml2aws-auto.plugin.
 saml2aws-auto init zsh
 ```
 
-Homebrew 릴리스 설치 후에는 같은 파일이 `$(brew --prefix)/share/saml2aws-auto/saml2aws-auto.plugin.zsh`에도 설치된다.
+Homebrew 릴리스 설치 후에는 같은 파일이 formula의 `share/saml2aws-auto/saml2aws-auto.plugin.zsh`에 설치된다.
 
 ## 종료 코드
 

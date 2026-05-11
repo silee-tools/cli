@@ -30,16 +30,15 @@ test -f "${XDG_DATA_HOME:-$HOME/.local/share}/saml2aws-auto/saml2aws-auto.plugin
 
 ## zsh 설정
 
-zinit 을 쓰는 경우 `~/.zshrc`에 다음 줄을 둔다.
+`~/.zshrc`에 다음 블록을 둔다. 설치 위치를 직접 쓰지 않고, PATH에 잡힌 `saml2aws-auto` 명령 위치에서 plugin 경로를 계산한다.
 
 ```zsh
-zinit snippet "${XDG_DATA_HOME:-$HOME/.local/share}/saml2aws-auto/saml2aws-auto.plugin.zsh"
-```
-
-plugin manager 없이 직접 source 할 수도 있다.
-
-```zsh
-source "${XDG_DATA_HOME:-$HOME/.local/share}/saml2aws-auto/saml2aws-auto.plugin.zsh"
+if (( $+commands[saml2aws-auto] )); then
+  local saml2aws_auto_bin="${commands[saml2aws-auto]:A}"
+  local saml2aws_auto_plugin="${saml2aws_auto_bin:h:h}/share/saml2aws-auto/saml2aws-auto.plugin.zsh"
+  [[ -f "$saml2aws_auto_plugin" ]] && source "$saml2aws_auto_plugin"
+  unset saml2aws_auto_bin saml2aws_auto_plugin
+fi
 ```
 
 설치 예시는 다음 명령으로도 확인할 수 있다.
@@ -53,7 +52,12 @@ saml2aws-auto init zsh
 기존 `~/.config/zsh/saml2aws.zsh`에 있던 세션 판정, suppress 파일 처리, 프롬프트 로직은 제거한다. 사용자별 username 은 새 파일을 만들지 않고 기존 `~/.saml2aws`에서 읽는다.
 
 ```zsh
-source "${XDG_DATA_HOME:-$HOME/.local/share}/saml2aws-auto/saml2aws-auto.plugin.zsh"
+if (( $+commands[saml2aws-auto] )); then
+  local saml2aws_auto_bin="${commands[saml2aws-auto]:A}"
+  local saml2aws_auto_plugin="${saml2aws_auto_bin:h:h}/share/saml2aws-auto/saml2aws-auto.plugin.zsh"
+  [[ -f "$saml2aws_auto_plugin" ]] && source "$saml2aws_auto_plugin"
+  unset saml2aws_auto_bin saml2aws_auto_plugin
+fi
 ```
 
 ## 회귀 확인

@@ -223,20 +223,14 @@ func TestPrintZshInitUsesSaml2awsConfig(t *testing.T) {
 	if !strings.Contains(got, "alice@example.com") || !strings.Contains(got, "saml2aws-auto.plugin.zsh") {
 		t.Fatalf("stdout=%q", got)
 	}
-	if !strings.Contains(got, `local saml2aws_auto_plugin=`) || !strings.Contains(got, `unset saml2aws_auto_plugin`) {
+	if !strings.Contains(got, `local saml2aws_auto_plugin`) || !strings.Contains(got, `unset saml2aws_auto_bin saml2aws_auto_plugin`) {
 		t.Fatalf("stdout missing direct zsh setup snippet: %q", got)
+	}
+	if !strings.Contains(got, `${commands[saml2aws-auto]:A}`) {
+		t.Fatalf("stdout should derive plugin path from command path: %q", got)
 	}
 	if strings.Contains(got, "zinit snippet") {
 		t.Fatalf("stdout should not prefer zinit snippet: %q", got)
-	}
-}
-
-func TestInstalledPluginPathFallsBackToXDG(t *testing.T) {
-	home := t.TempDir()
-	got := installedPluginPath(map[string]string{"HOME": home})
-	want := filepath.Join(home, ".local", "share", "saml2aws-auto", "saml2aws-auto.plugin.zsh")
-	if got != want {
-		t.Fatalf("got %q want %q", got, want)
 	}
 }
 
