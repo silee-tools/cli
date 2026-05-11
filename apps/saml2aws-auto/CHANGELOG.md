@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.6](https://github.com/silee-tools/cli/compare/saml2aws-auto/v2.0.5...saml2aws-auto/v2.0.6) (2026-05-11)
+
+
+### Bug Fixes
+
+* **saml2aws-auto:** force twelve hour sessions ([397f9c9](https://github.com/silee-tools/cli/commit/397f9c95e58a57e2c59e0b135f987d06a0654ea6))
+
 ## [2.0.5](https://github.com/silee-tools/cli/compare/saml2aws-auto/v2.0.4...saml2aws-auto/v2.0.5) (2026-05-11)
 
 
