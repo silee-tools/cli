@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.4](https://github.com/silee-tools/cli/compare/saml2aws-auto/v2.0.3...saml2aws-auto/v2.0.4) (2026-05-11)
+
+
+### Bug Fixes
+
+* **saml2aws-auto:** restore aws prompt status ([38e506f](https://github.com/silee-tools/cli/commit/38e506f4441256d5b06c6d00787f0cd2b6ea3bb4))
+
 ## [2.0.3](https://github.com/silee-tools/cli/compare/saml2aws-auto/v2.0.2...saml2aws-auto/v2.0.3) (2026-05-11)
 
 
