@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/silee-tools/cli/compare/totp/v1.0.0...totp/v1.0.1) (2026-05-11)
+
+
+### CI
+
+* update goreleaser archive format metadata ([#31](https://github.com/silee-tools/cli/issues/31)) ([a1d5ea5](https://github.com/silee-tools/cli/commit/a1d5ea5493b2fc33be2484d32fe7a2d7ba287af2))
+
 ## 1.0.0 (2026-05-09)
 
 

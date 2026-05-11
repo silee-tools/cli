@@ -1,5 +1,5 @@
 {
   "apps/jg": "0.2.2",
-  "apps/totp": "1.0.0",
+  "apps/totp": "1.0.1",
   "apps/saml2aws-auto": "2.0.7"
 }
