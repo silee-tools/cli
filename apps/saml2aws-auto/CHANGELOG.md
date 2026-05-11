@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.5](https://github.com/silee-tools/cli/compare/saml2aws-auto/v2.0.4...saml2aws-auto/v2.0.5) (2026-05-11)
+
+
+### Bug Fixes
+
+* **saml2aws-auto:** remove zsh status wrapper ([0f66f1c](https://github.com/silee-tools/cli/commit/0f66f1c89293b0c052b825e8ce471768827e444b))
+
 ## [2.0.4](https://github.com/silee-tools/cli/compare/saml2aws-auto/v2.0.3...saml2aws-auto/v2.0.4) (2026-05-11)
 
 
