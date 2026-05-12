@@ -21,6 +21,9 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           working_directory: apps/saml2aws-auto
+      - name: Install zsh for plugin syntax check
+        run: sudo apt-get update && sudo apt-get install -y zsh
+        working-directory: .
       - run: mise run fmt-check
       - run: mise run lint
       - run: mise run shell-check
