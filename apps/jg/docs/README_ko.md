@@ -16,7 +16,11 @@ brew install silee-tools/tap/jg
 
 ## 셸 설정
 
-Homebrew로 설치하면 셸 연동이 자동으로 설정됩니다.
+Homebrew로 설치한 뒤 셸 연동을 설정하려면 setup 명령을 한 번 실행합니다:
+
+```bash
+jg setup
+```
 
 ### 수동 설정
 
@@ -37,8 +41,9 @@ eval "$(jg init bash)"
 **방법 2: oh-my-zsh 플러그인** (oh-my-zsh 사용자 권장)
 
 ```zsh
-ln -sf $(brew --prefix)/share/jg/plugin/jg.plugin.zsh \
-  ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/jg/jg.plugin.zsh
+mkdir -p "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/jg"
+ln -sf "$(brew --prefix)/share/jg/plugin/jg.plugin.zsh" \
+  "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/jg/jg.plugin.zsh"
 ```
 
 `~/.zshrc`의 plugins에 `jg` 추가:
