@@ -422,7 +422,7 @@ $RECYCLE.BIN/
 # Compiled tool binaries (built artifacts; rebuild via mise run build)
 apps/jg/jg
 apps/totp/totp
-apps/saml2aws-auto/saml2aws-auto-login
+apps/saml2aws-auto/saml2aws-auto
 # Per-tool dist/ (release artifacts)
 apps/*/dist/
 
