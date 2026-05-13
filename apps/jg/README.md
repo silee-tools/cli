@@ -16,7 +16,11 @@ This automatically installs `fzf` as a dependency.
 
 ## Shell Setup
 
-Shell integration is configured automatically when installed via Homebrew.
+After installing with Homebrew, run the setup command once to configure shell integration:
+
+```bash
+jg setup
+```
 
 ### Manual Setup
 
@@ -37,8 +41,9 @@ eval "$(jg init bash)"
 **Option 2: oh-my-zsh plugin** (recommended for oh-my-zsh users)
 
 ```zsh
-ln -sf $(brew --prefix)/share/jg/plugin/jg.plugin.zsh \
-  ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/jg/jg.plugin.zsh
+mkdir -p "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/jg"
+ln -sf "$(brew --prefix)/share/jg/plugin/jg.plugin.zsh" \
+  "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/jg/jg.plugin.zsh"
 ```
 
 Then add `jg` to your plugins in `~/.zshrc`:
