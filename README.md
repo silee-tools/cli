@@ -23,13 +23,19 @@ Monorepo of personal CLI tools under the `silee-tools` GitHub organization. Each
 
 ```
 silee-tools/cli/
-├── apps/              # one subdirectory per tool, self-contained
+├── apps/                       # one subdirectory per tool, self-contained
 │   └── <tool>/
 │       ├── .mise.toml
+│       ├── .goreleaser.yaml
 │       ├── README.md
 │       └── ...
-├── .github/workflows/ # per-tool CI + shared release-please.yml
-├── .mise.toml         # common dev tools only
+├── docs/                       # shared Korean docs and migration notes
+├── scripts/                    # commit lint and release helper scripts
+├── .github/workflows/          # per-tool CI, commit lint, release automation
+├── .commitlintrc.yml           # Conventional Commits policy for CI
+├── .release-please-manifest.json
+├── release-please-config.json  # per-tool release-please packages
+├── .mise.toml                  # common dev tools only
 └── README.md
 ```
 
@@ -42,6 +48,13 @@ git clone git@github.com:silee-tools/cli.git
 cd cli/apps/<tool>
 mise run test
 ```
+
+## Commit Policy
+
+All PR and `main` push commits are checked by `Commit Lint`. Use a Conventional
+Commit header such as `feat(jg): add cleanup scheduler` or
+`ci(saml2aws-auto): install zsh in CI`; non-conforming commits block the PR
+until they are amended.
 
 ## Releases
 
