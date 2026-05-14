@@ -34,14 +34,23 @@ class Commit:
     header: str
 
 
+class GitCommandError(RuntimeError):
+    """Raised when git cannot read the requested commit range."""
+
+
 def run_git(args: list[str]) -> str:
-    completed = subprocess.run(
-        ["git", *args],
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        detail = stderr or f"git exited with status {exc.returncode}"
+        raise GitCommandError(detail) from exc
     return completed.stdout
 
 
@@ -90,7 +99,15 @@ def main() -> int:
     parser.add_argument("--to", dest="rev_to", required=True)
     args = parser.parse_args()
 
-    commits = commits_in_range(args.rev_from, args.rev_to)
+    try:
+        commits = commits_in_range(args.rev_from, args.rev_to)
+    except GitCommandError as exc:
+        print(
+            f"Unable to read commit range {args.rev_from}..{args.rev_to}: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
     if not commits:
         print(f"No commits to lint in range {args.rev_from}..{args.rev_to}")
         return 0
