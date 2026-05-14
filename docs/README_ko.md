@@ -33,6 +33,8 @@ silee-tools/cli/
 ├── scripts/                    # commit lint 와 릴리스 보조 스크립트
 ├── .github/workflows/          # 도구별 CI, commit lint, 릴리스 자동화
 ├── .commitlintrc.yml           # CI Conventional Commits 정책
+├── .editorconfig               # 공통 에디터 저장 정책
+├── .gitattributes              # 문서/설정/스크립트 LF 정규화
 ├── .release-please-manifest.json
 ├── release-please-config.json  # 도구별 release-please 패키지 설정
 ├── .mise.toml                  # 공통 개발 도구만

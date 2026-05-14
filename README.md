@@ -33,6 +33,8 @@ silee-tools/cli/
 ├── scripts/                    # commit lint and release helper scripts
 ├── .github/workflows/          # per-tool CI, commit lint, release automation
 ├── .commitlintrc.yml           # Conventional Commits policy for CI
+├── .editorconfig               # shared editor defaults for generated text files
+├── .gitattributes              # LF normalization for docs, configs, and scripts
 ├── .release-please-manifest.json
 ├── release-please-config.json  # per-tool release-please packages
 ├── .mise.toml                  # common dev tools only
