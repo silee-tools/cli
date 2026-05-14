@@ -67,6 +67,10 @@ jobs:
     # totp 만 cgo+Keychain 으로 macOS 필요. 그 외엔 ubuntu.
     # vars.RUNNER_MACOS / RUNNER_LINUX 가 설정되어 있으면 self-hosted 라벨 우선 사용.
     runs-on: ${{ matrix.path == 'apps/totp' && (vars.RUNNER_MACOS || 'macos-latest') || (vars.RUNNER_LINUX || 'ubuntu-latest') }}
+    env:
+      # 같은 step 의 env 는 그 step 의 if 평가 시점에 아직 사용할 수 없다.
+      # secret 을 job env 로 올려 갱신/수동 안내 step 이 상호 배타적으로 동작하게 한다.
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
