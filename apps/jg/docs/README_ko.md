@@ -82,5 +82,6 @@ jg --remove .   # 현재 디렉토리를 추적에서 제거
 ```bash
 mise run build      # 빌드
 mise run test       # 테스트 실행
+mise run fmt-check  # gofmt 포맷 검사 (CI와 동일)
 mise run install    # ~/.local/bin/jg에 설치
 ```

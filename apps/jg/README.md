@@ -82,5 +82,6 @@ Once shell integration is set up, repositories are automatically tracked as you 
 ```bash
 mise run build      # Build
 mise run test       # Run tests
+mise run fmt-check  # Check gofmt formatting (CI parity)
 mise run install    # Install to ~/.local/bin/jg
 ```
