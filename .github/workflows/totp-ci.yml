@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - 'apps/totp/**'
+      - '.mise.toml'
       - '.github/workflows/totp-ci.yml'
   pull_request:
     paths:
       - 'apps/totp/**'
+      - '.mise.toml'
       - '.github/workflows/totp-ci.yml'
 
 jobs:

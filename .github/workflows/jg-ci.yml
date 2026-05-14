@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - 'apps/jg/**'
+      - '.mise.toml'
       - '.github/workflows/jg-ci.yml'
   pull_request:
     paths:
       - 'apps/jg/**'
+      - '.mise.toml'
       - '.github/workflows/jg-ci.yml'
 
 jobs:

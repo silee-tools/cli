@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - 'apps/saml2aws-auto/**'
+      - '.mise.toml'
       - '.github/workflows/saml2aws-auto-ci.yml'
   pull_request:
     paths:
       - 'apps/saml2aws-auto/**'
+      - '.mise.toml'
       - '.github/workflows/saml2aws-auto-ci.yml'
 
 jobs:
