@@ -18,12 +18,13 @@ _jg() {
   case "$state" in
     first_arg)
       _alternative \
-        'subcommands:subcommand:(init setup)' \
+        'subcommands:subcommand:(init setup clean scheduler)' \
         'repos:repository:compadd -a repos'
       ;;
     rest)
       case "${words[2]}" in
         init|setup) _values 'shell' zsh bash ;;
+        scheduler) _values 'scheduler command' install remove status ;;
         *) compadd -a repos ;;
       esac
       ;;

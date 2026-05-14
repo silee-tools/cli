@@ -11,6 +11,7 @@ import (
 	"github.com/silee-tools/jg/internal/entry"
 	"github.com/silee-tools/jg/internal/frecency"
 	"github.com/silee-tools/jg/internal/fzf"
+	"github.com/silee-tools/jg/internal/scheduler"
 	"github.com/silee-tools/jg/internal/shell"
 )
 
@@ -29,6 +30,10 @@ func main() {
 		runInit(args[1:])
 	case "setup":
 		runSetup(args[1:])
+	case "clean":
+		runClean()
+	case "scheduler":
+		runScheduler(args[1:])
 	case "--add", "-add":
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "Usage: jg --add <path>")
@@ -63,11 +68,13 @@ Commands:
   jg [query...]          Interactive jump with fzf
   jg init <shell>        Output shell integration code (zsh, bash)
   jg setup [shell]       Set up shell integration (auto-detects shell)
+  jg clean               Remove stale entries
+  jg scheduler <command> Manage daily cleanup scheduler (install, remove, status)
 
 Options:
   --add <path>           Add/update entry for path
   --remove <path>        Remove entry for path
-  --clean                Remove entries for non-existent directories
+  --clean                Remove stale entries
   -l, --list             List all repos with frecency scores
   -v, --version          Show version
   -h, --help             Show this help
@@ -173,32 +180,66 @@ func runList() {
 }
 
 func runClean() {
-	entries, err := entry.Load()
+	report, err := entry.CleanWithReport()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	var kept []entry.Entry
-	for _, e := range entries {
-		info, statErr := os.Stat(e.Path)
-		if statErr != nil || !info.IsDir() {
-			continue
-		}
-		if isSubmodule(e.Path) {
-			continue
-		}
-		kept = append(kept, e)
+	fmt.Fprintf(os.Stderr, "Cleaned %d stale entries", report.Removed)
+	if report.Removed > 0 {
+		fmt.Fprintf(
+			os.Stderr,
+			": missing=%d, not-dir=%d, not-git=%d, submodule=%d",
+			report.Reasons[entry.ReasonMissing],
+			report.Reasons[entry.ReasonNotDirectory],
+			report.Reasons[entry.ReasonNotGit],
+			report.Reasons[entry.ReasonSubmodule],
+		)
+	}
+	fmt.Fprintln(os.Stderr, ".")
+}
+
+func runScheduler(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: jg scheduler <install|remove|status>")
+		os.Exit(1)
 	}
 
-	removed := len(entries) - len(kept)
-	if removed > 0 {
-		if err := entry.Save(kept); err != nil {
+	switch args[0] {
+	case "install":
+		result, err := scheduler.Install(os.Args[0])
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+		fmt.Fprintf(os.Stderr, "Scheduler installed: %s\n", result.PlistPath)
+	case "remove":
+		removed, err := scheduler.Remove()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if removed {
+			fmt.Fprintln(os.Stderr, "Scheduler removed.")
+		} else {
+			fmt.Fprintln(os.Stderr, "Scheduler is not installed.")
+		}
+	case "status":
+		status, err := scheduler.Status()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if status.Installed {
+			fmt.Fprintf(os.Stderr, "Scheduler installed: %s\n", status.PlistPath)
+		} else {
+			fmt.Fprintf(os.Stderr, "Scheduler not installed: %s\n", status.PlistPath)
+		}
+	default:
+		fmt.Fprintln(os.Stderr, "Usage: jg scheduler <install|remove|status>")
+		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "Cleaned %d stale entries.\n", removed)
 }
 
 func runJump(queryArgs []string) {
@@ -208,13 +249,7 @@ func runJump(queryArgs []string) {
 		os.Exit(1)
 	}
 
-	var valid []entry.Entry
-	for _, e := range entries {
-		info, statErr := os.Stat(e.Path)
-		if statErr == nil && info.IsDir() {
-			valid = append(valid, e)
-		}
-	}
+	valid, _ := entry.FilterValid(entries, entry.ValidatePath)
 	if len(valid) != len(entries) {
 		_ = entry.Save(valid)
 	}

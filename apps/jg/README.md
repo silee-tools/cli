@@ -58,7 +58,11 @@ plugins=(... jg)
 jg              # Interactive jump with fzf
 jg <query>      # Jump with pre-filtered query
 jg -l           # List all tracked repos with scores
-jg --clean      # Remove stale entries
+jg clean        # Remove stale entries
+jg --clean      # Remove stale entries (legacy option)
+jg scheduler install  # Register daily cleanup with macOS launchd
+jg scheduler status   # Show cleanup scheduler status
+jg scheduler remove   # Remove cleanup scheduler
 jg --remove .   # Remove current directory from tracking
 ```
 
@@ -69,7 +73,8 @@ Once shell integration is set up, repositories are automatically tracked as you 
 - **Frecency-based ranking**: Scoring that combines visit frequency and recency
 - **Automatic collection**: Automatically records Git repository visits via shell hook
 - **fzf preview**: Shows branch, recent commits, and dirty status in preview
-- **Cleanup**: Automatically removes entries for deleted directories
+- **Cleanup**: Removes entries for deleted paths, non-directories, non-Git directories, and submodules
+- **Scheduled cleanup**: Optionally registers a daily macOS launchd job with `jg scheduler install`
 - **Multi-shell support**: Works with both Zsh and Bash
 
 ## Development

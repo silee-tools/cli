@@ -5,11 +5,12 @@ _jg_completions() {
 
   case "$prev" in
     init) COMPREPLY=($(compgen -W "zsh bash" -- "$cur")); return 0 ;;
+    scheduler) COMPREPLY=($(compgen -W "install remove status" -- "$cur")); return 0 ;;
     --add|--remove) COMPREPLY=($(compgen -d -- "$cur")); return 0 ;;
   esac
 
   if [[ $COMP_CWORD -eq 1 ]]; then
-    local commands="init --add --remove --clean -l --list -v --version -h --help"
+    local commands="init setup clean scheduler --add --remove --clean -l --list -v --version -h --help"
     if [[ "$cur" == -* ]]; then
       COMPREPLY=($(compgen -W "$commands" -- "$cur"))
     else

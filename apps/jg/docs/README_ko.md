@@ -58,7 +58,11 @@ plugins=(... jg)
 jg              # fzf로 인터랙티브 점프
 jg <query>      # 쿼리로 필터링하여 점프
 jg -l           # 추적 중인 모든 레포 목록 (점수 포함)
-jg --clean      # 존재하지 않는 디렉토리 항목 제거
+jg clean        # 오래되었거나 유효하지 않은 항목 제거
+jg --clean      # 오래되었거나 유효하지 않은 항목 제거 (기존 옵션)
+jg scheduler install  # macOS launchd에 매일 정리 작업 등록
+jg scheduler status   # 정리 스케줄러 상태 확인
+jg scheduler remove   # 정리 스케줄러 제거
 jg --remove .   # 현재 디렉토리를 추적에서 제거
 ```
 
@@ -69,7 +73,8 @@ jg --remove .   # 현재 디렉토리를 추적에서 제거
 - **frecency 기반 정렬**: 방문 빈도와 최근성을 결합한 스코어링
 - **자동 수집**: 셸 hook을 통해 Git 저장소 방문 시 자동으로 기록
 - **fzf 미리보기**: 브랜치, 최근 커밋, dirty status를 미리보기로 제공
-- **정리 기능**: 삭제된 디렉토리 entry 자동 정리
+- **정리 기능**: 삭제된 경로, 디렉토리가 아닌 경로, Git 저장소가 아닌 경로, submodule 항목 정리
+- **예약 정리 기능**: `jg scheduler install` 명령으로 macOS launchd 기반 매일 정리 작업 등록
 - **멀티 셸 지원**: Zsh, Bash 모두 지원
 
 ## 개발

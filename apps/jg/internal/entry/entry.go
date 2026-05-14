@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -27,6 +28,65 @@ type Entry struct {
 	Path      string
 	Rank      float64
 	Timestamp int64
+}
+
+type InvalidReason string
+
+const (
+	ReasonMissing      InvalidReason = "missing"
+	ReasonNotDirectory InvalidReason = "not-dir"
+	ReasonNotGit       InvalidReason = "not-git"
+	ReasonSubmodule    InvalidReason = "submodule"
+)
+
+type CleanReport struct {
+	Removed int
+	Reasons map[InvalidReason]int
+}
+
+type Validator func(path string) (InvalidReason, bool)
+
+func ValidatePath(path string) (InvalidReason, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ReasonMissing, false
+	}
+	if !info.IsDir() {
+		return ReasonNotDirectory, false
+	}
+
+	if _, err := exec.LookPath("git"); err != nil {
+		return "", true
+	}
+
+	cmd := exec.Command("git", "-C", path, "rev-parse", "--is-inside-work-tree")
+	out, err := cmd.Output()
+	if err != nil || strings.TrimSpace(string(out)) != "true" {
+		return ReasonNotGit, false
+	}
+
+	cmd = exec.Command("git", "-C", path, "rev-parse", "--show-superproject-working-tree")
+	out, err = cmd.Output()
+	if err == nil && strings.TrimSpace(string(out)) != "" {
+		return ReasonSubmodule, false
+	}
+
+	return "", true
+}
+
+func FilterValid(entries []Entry, validate Validator) ([]Entry, CleanReport) {
+	report := CleanReport{Reasons: make(map[InvalidReason]int)}
+	kept := make([]Entry, 0, len(entries))
+	for _, e := range entries {
+		reason, ok := validate(e.Path)
+		if ok {
+			kept = append(kept, e)
+			continue
+		}
+		report.Removed++
+		report.Reasons[reason]++
+	}
+	return kept, report
 }
 
 func parseLine(line string) (Entry, bool) {
@@ -164,24 +224,21 @@ func Remove(path string) (bool, error) {
 	return false, nil
 }
 
-// Clean removes entries whose directories no longer exist.
+// Clean removes entries that are no longer valid jump targets.
 func Clean() (int, error) {
+	report, err := CleanWithReport()
+	return report.Removed, err
+}
+
+func CleanWithReport() (CleanReport, error) {
 	entries, err := Load()
 	if err != nil {
-		return 0, err
+		return CleanReport{}, err
 	}
 
-	var kept []Entry
-	for _, e := range entries {
-		info, err := os.Stat(e.Path)
-		if err == nil && info.IsDir() {
-			kept = append(kept, e)
-		}
+	kept, report := FilterValid(entries, ValidatePath)
+	if report.Removed > 0 {
+		return report, Save(kept)
 	}
-
-	removed := len(entries) - len(kept)
-	if removed > 0 {
-		return removed, Save(kept)
-	}
-	return 0, nil
+	return report, nil
 }

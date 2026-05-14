@@ -2,6 +2,7 @@ package entry
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,6 +13,17 @@ func setupTestFile(t *testing.T) string {
 	tmp := filepath.Join(t.TempDir(), ".jg")
 	DataFile = tmp
 	return tmp
+}
+
+func setupGitRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	cmd := exec.Command("git", "init")
+	cmd.Dir = repo
+	if err := cmd.Run(); err != nil {
+		t.Skipf("git init unavailable: %v", err)
+	}
+	return repo
 }
 
 func TestParseLineValid(t *testing.T) {
@@ -148,7 +160,7 @@ func TestRemove(t *testing.T) {
 func TestClean(t *testing.T) {
 	setupTestFile(t)
 
-	existingDir := t.TempDir()
+	existingDir := setupGitRepo(t)
 	Save([]Entry{
 		{Path: existingDir, Rank: 1, Timestamp: time.Now().Unix()},
 		{Path: "/nonexistent/path/repo", Rank: 1, Timestamp: 1700000000},
@@ -165,6 +177,68 @@ func TestClean(t *testing.T) {
 	entries, _ := Load()
 	if len(entries) != 1 || entries[0].Path != existingDir {
 		t.Fatalf("unexpected entries after clean: %+v", entries)
+	}
+}
+
+func TestCleanRemovesNonGitDirectoryAndFile(t *testing.T) {
+	setupTestFile(t)
+
+	repo := setupGitRepo(t)
+	nonGitDir := t.TempDir()
+	filePath := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	Save([]Entry{
+		{Path: repo, Rank: 1, Timestamp: time.Now().Unix()},
+		{Path: nonGitDir, Rank: 1, Timestamp: time.Now().Unix()},
+		{Path: filePath, Rank: 1, Timestamp: time.Now().Unix()},
+	})
+
+	report, err := CleanWithReport()
+	if err != nil {
+		t.Fatalf("CleanWithReport: %v", err)
+	}
+	if report.Removed != 2 {
+		t.Fatalf("expected 2 removed, got %d", report.Removed)
+	}
+	if report.Reasons[ReasonNotGit] != 1 {
+		t.Fatalf("expected 1 not-git, got %+v", report.Reasons)
+	}
+	if report.Reasons[ReasonNotDirectory] != 1 {
+		t.Fatalf("expected 1 not-dir, got %+v", report.Reasons)
+	}
+
+	entries, _ := Load()
+	if len(entries) != 1 || entries[0].Path != repo {
+		t.Fatalf("unexpected entries after clean: %+v", entries)
+	}
+}
+
+func TestFilterValidReportsReasons(t *testing.T) {
+	entries := []Entry{
+		{Path: "/repo/a"},
+		{Path: "/repo/b"},
+		{Path: "/repo/c"},
+	}
+	validate := func(path string) (InvalidReason, bool) {
+		switch path {
+		case "/repo/a":
+			return "", true
+		case "/repo/b":
+			return ReasonMissing, false
+		default:
+			return ReasonSubmodule, false
+		}
+	}
+
+	kept, report := FilterValid(entries, validate)
+	if len(kept) != 1 || kept[0].Path != "/repo/a" {
+		t.Fatalf("unexpected kept entries: %+v", kept)
+	}
+	if report.Removed != 2 || report.Reasons[ReasonMissing] != 1 || report.Reasons[ReasonSubmodule] != 1 {
+		t.Fatalf("unexpected report: %+v", report)
 	}
 }
 
