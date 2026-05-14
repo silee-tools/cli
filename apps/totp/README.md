@@ -53,8 +53,9 @@ zsh 함수에서 등록한 항목은 마커 문자열이 동일하기 때문에 
 ```bash
 mise run test    # 단위 테스트 (RFC 6238 표준 벡터 + Keychain mock 사이클)
 mise run build   # ./totp 바이너리 빌드
-mise run lint    # go vet
-mise run fmt     # gofmt -w .
+mise run lint      # go vet
+mise run fmt-check # gofmt 포맷 검사 (CI와 동일)
+mise run fmt       # gofmt -w .
 ```
 
 ## 의존 라이브러리

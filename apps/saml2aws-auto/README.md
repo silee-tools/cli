@@ -123,5 +123,6 @@ saml2aws-auto login [--session-duration <seconds>]
 cd apps/saml2aws-auto
 mise run test
 mise run shell-check
+mise run fmt-check
 mise run build
 ```
