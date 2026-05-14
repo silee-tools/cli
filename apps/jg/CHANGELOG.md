@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/silee-tools/cli/compare/jg/v0.2.2...jg/v0.3.0) (2026-05-14)
+
+
+### Features
+
+* add jg clean scheduler ([#45](https://github.com/silee-tools/cli/issues/45)) ([0280a03](https://github.com/silee-tools/cli/commit/0280a032c02a9e594300e5440d43488f28b07123))
+
+
+### Documentation
+
+* clarify jg shell setup ([#43](https://github.com/silee-tools/cli/issues/43)) ([cfe3d33](https://github.com/silee-tools/cli/commit/cfe3d33fee2d8c52fa6cefe434189a628f52d520))
+
 ## [0.2.2](https://github.com/silee-tools/cli/compare/jg/v0.2.1...jg/v0.2.2) (2026-05-11)
 
 
