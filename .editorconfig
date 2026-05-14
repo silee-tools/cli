@@ -17,6 +17,10 @@ indent_size = tab
 indent_style = space
 indent_size = 2
 
+[apps/jg/completions/_jg]
+indent_style = space
+indent_size = 2
+
 [{*.yml,*.yaml,*.json}]
 indent_style = space
 indent_size = 2
