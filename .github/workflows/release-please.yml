@@ -91,8 +91,9 @@ jobs:
             tag="${tool}/${version}"
           else
             # push 경로: 여러 PR 이 같은 push 에 squash-merge 된 경우 HEAD 에 모든 tag 가
-            # 매달려 있지 않을 수 있다. tool prefix 의 가장 최신(semver) tag 를 사용.
-            tag="$(git tag --list "${tool}/v*" | sort -V | tail -1)"
+            # 매달려 있지 않을 수 있다. macOS 러너도 지원하도록 GNU sort -V 대신
+            # Git 의 version-aware ref 정렬로 tool prefix 의 최신 tag 를 사용한다.
+            tag="$(git tag --list "${tool}/v*" --sort=-v:refname | head -n 1)"
             if [ -z "$tag" ]; then
               echo "tag for ${tool} not found in repo — release-please should have created it" >&2
               exit 1
