@@ -23,13 +23,19 @@
 
 ```
 silee-tools/cli/
-├── apps/              # 도구당 하위 디렉토리 1개, 자기 완결적
+├── apps/                       # 도구당 하위 디렉토리 1개, 자기 완결적
 │   └── <tool>/
 │       ├── .mise.toml
+│       ├── .goreleaser.yaml
 │       ├── README.md
 │       └── ...
-├── .github/workflows/ # 도구별 CI + 공통 release-please.yml
-├── .mise.toml         # 공통 개발 도구만
+├── docs/                       # 공통 한국어 문서와 마이그레이션 노트
+├── scripts/                    # commit lint 와 릴리스 보조 스크립트
+├── .github/workflows/          # 도구별 CI, commit lint, 릴리스 자동화
+├── .commitlintrc.yml           # CI Conventional Commits 정책
+├── .release-please-manifest.json
+├── release-please-config.json  # 도구별 release-please 패키지 설정
+├── .mise.toml                  # 공통 개발 도구만
 └── README.md
 ```
 
@@ -42,6 +48,10 @@ git clone git@github.com:silee-tools/cli.git
 cd cli/apps/<tool>
 mise run test
 ```
+
+## 커밋 정책
+
+모든 PR 과 `main` push commit 은 `Commit Lint` 로 검증한다. `feat(jg): add cleanup scheduler` 또는 `ci(saml2aws-auto): install zsh in CI` 같은 Conventional Commit header 를 사용해야 하며, 형식에 맞지 않는 commit 은 amend 하기 전까지 PR 을 차단한다.
 
 ## 릴리스
 
