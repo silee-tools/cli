@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/silee-tools/cli/compare/jg/v0.3.1...jg/v0.4.0) (2026-05-15)
+
+
+### Features
+
+* unify --version output format across all cli tools ([#61](https://github.com/silee-tools/cli/issues/61)) ([4616876](https://github.com/silee-tools/cli/commit/461687635330c62098f96e56118082a77a3f2eef))
+
 ## [0.3.1](https://github.com/silee-tools/cli/compare/jg/v0.3.0...jg/v0.3.1) (2026-05-15)
 
 
