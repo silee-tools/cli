@@ -2,5 +2,5 @@
   "apps/jg": "0.3.1",
   "apps/totp": "1.0.2",
   "apps/saml2aws-auto": "2.0.8",
-  "apps/git-tidy": "0.1.0"
+  "apps/git-tidy": "0.2.0"
 }
