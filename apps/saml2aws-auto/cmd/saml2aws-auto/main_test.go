@@ -409,3 +409,11 @@ func TestRunCheckSkipsValidAndUnknown(t *testing.T) {
 		}
 	}
 }
+
+// TestVersionLine 은 모노레포 공통 표준
+// "<도구> v<버전> © 2026 silee-tools" 형식을 검증한다.
+func TestVersionLine(t *testing.T) {
+	if got := versionLine("saml2aws-auto", "2.0.7"); got != "saml2aws-auto v2.0.7 © 2026 silee-tools\n" {
+		t.Errorf("versionLine = %q, want %q", got, "saml2aws-auto v2.0.7 © 2026 silee-tools\n")
+	}
+}
