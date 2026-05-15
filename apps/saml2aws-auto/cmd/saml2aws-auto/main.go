@@ -548,6 +548,12 @@ fi
 	return 0
 }
 
+// versionLine 은 모노레포 전 도구가 공유하는 표준 버전 한 줄을 만든다:
+// "<도구> v<버전> © 2026 silee-tools".
+func versionLine(name, version string) string {
+	return fmt.Sprintf("%s v%s © 2026 silee-tools\n", name, version)
+}
+
 func main() {
 	flags := flag.NewFlagSet("saml2aws-auto", flag.ExitOnError)
 	flags.Usage = func() { usage(os.Stderr) }
@@ -558,7 +564,7 @@ func main() {
 	flags.Parse(os.Args[1:])
 
 	if *showVersion {
-		fmt.Println(version)
+		fmt.Fprint(os.Stdout, versionLine("saml2aws-auto", version))
 		return
 	}
 	if *showHelp {

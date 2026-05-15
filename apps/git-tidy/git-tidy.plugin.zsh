@@ -6,12 +6,14 @@
 #   git-tidy --run        actually delete branches
 #   git-tidy --days=N     protect branches with commits within N days (default: 7)
 #   git-tidy --no-fetch   skip git fetch --prune
+#   git-tidy --version    show version
 #   git-tidy --help       show usage
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 : "${GIT_TIDY_PROTECT_DAYS:=7}"
+: "${GIT_TIDY_VERSION:=0.1.0}" # x-release-please-version
 
 # ---------------------------------------------------------------------------
 # Internal helpers (namespaced with _git_tidy_)
@@ -80,6 +82,10 @@ git-tidy() {
       --run)       run=true ;;
       --no-fetch)  fetch=false ;;
       --days=*)    protect_days="${arg#--days=}" ;;
+      --version|-v)
+        print "git-tidy v${GIT_TIDY_VERSION} © 2026 silee-tools"
+        return 0
+        ;;
       --help|-h)
         print "git-tidy: [gone] 브랜치 안전 정리 (trunk-based + squash merge)"
         print ""
@@ -88,6 +94,7 @@ git-tidy() {
         print "  git-tidy --run        실제 삭제 실행"
         print "  git-tidy --days=N     최근 N일 이내 커밋 브랜치 보호 (기본: ${GIT_TIDY_PROTECT_DAYS}일)"
         print "  git-tidy --no-fetch   git fetch --prune 건너뛰기"
+        print "  git-tidy --version    버전 출력"
         print ""
         print "Aliases:"
         print "  gtidy                 git-tidy"
@@ -263,6 +270,7 @@ _git-tidy() {
     '--run[실제 삭제 실행]' \
     '--days=[최근 커밋 보호 기간 (일)]:days:(1 3 7 14 30)' \
     '--no-fetch[fetch --prune 건너뛰기]' \
+    '--version[버전 출력]' \
     '--help[사용법 출력]'
 }
 compdef _git-tidy git-tidy

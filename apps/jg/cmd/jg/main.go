@@ -51,12 +51,18 @@ func main() {
 	case "--clean", "-clean":
 		runClean()
 	case "-v", "--version", "-version":
-		fmt.Printf("jg v%s © 2026 silee-tools\n", version)
+		fmt.Fprint(os.Stdout, versionLine("jg", version))
 	case "-h", "--help", "-help":
 		printHelp()
 	default:
 		runJump(args)
 	}
+}
+
+// versionLine 은 모노레포 전 도구가 공유하는 표준 버전 한 줄을 만든다:
+// "<도구> v<버전> © 2026 silee-tools".
+func versionLine(name, version string) string {
+	return fmt.Sprintf("%s v%s © 2026 silee-tools\n", name, version)
 }
 
 func printHelp() {

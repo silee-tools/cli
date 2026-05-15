@@ -41,6 +41,7 @@ git-tidy              # dry-run (삭제 대상만 표시, 기본 동작)
 git-tidy --run        # 실제 삭제 실행
 git-tidy --days=N     # 최근 N일 이내 커밋이 있는 브랜치 보호 (기본 7일)
 git-tidy --no-fetch   # git fetch --prune 단계 건너뛰기
+git-tidy --version    # 버전 출력 (-v 동일)
 git-tidy --help       # 사용법 출력
 ```
 

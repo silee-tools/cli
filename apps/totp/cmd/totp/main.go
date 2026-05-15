@@ -81,7 +81,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, helpText, version, store.Marker)
 		return nil
 	case "-v", "--version":
-		fmt.Fprintf(stdout, "totp %s\n", version)
+		fmt.Fprintf(stdout, "totp v%s © 2026 silee-tools\n", version)
 		return nil
 	case "add":
 		return runAdd(args[1:], stdin, stdout, stderr)
