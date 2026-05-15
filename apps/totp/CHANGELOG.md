@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/silee-tools/cli/compare/totp/v1.0.1...totp/v1.0.2) (2026-05-15)
+
+
+### Documentation
+
+* document fmt-check commands ([#50](https://github.com/silee-tools/cli/issues/50)) ([5b4ef19](https://github.com/silee-tools/cli/commit/5b4ef199938db0e8e7a99f81192cdf56d119908c))
+
 ## [1.0.1](https://github.com/silee-tools/cli/compare/totp/v1.0.0...totp/v1.0.1) (2026-05-11)
 
 
