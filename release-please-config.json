@@ -22,6 +22,7 @@
   "packages": {
     "apps/jg": {"package-name": "jg"},
     "apps/totp": {"package-name": "totp"},
-    "apps/saml2aws-auto": {"package-name": "saml2aws-auto"}
+    "apps/saml2aws-auto": {"package-name": "saml2aws-auto"},
+    "apps/git-tidy": {"package-name": "git-tidy"}
   }
 }

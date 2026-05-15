@@ -1,0 +1,27 @@
+name: git-tidy CI
+
+on:
+  push:
+    paths:
+      - 'apps/git-tidy/**'
+      - '.github/workflows/git-tidy-ci.yml'
+  pull_request:
+    paths:
+      - 'apps/git-tidy/**'
+      - '.github/workflows/git-tidy-ci.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/git-tidy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+        with:
+          working_directory: apps/git-tidy
+      - name: Install zsh for plugin syntax check
+        run: sudo apt-get update && sudo apt-get install -y zsh
+        working-directory: .
+      - run: mise run shell-check
