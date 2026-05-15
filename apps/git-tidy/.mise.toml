@@ -5,11 +5,27 @@ zsh -n git-tidy.plugin.zsh
 shellcheck -s bash git-tidy.plugin.zsh
 """
 
+[tasks.version-check]
+description = "Assert git-tidy --version output (monorepo standard format)"
+run = """
+set -eu
+expected="git-tidy v0.1.0 © 2026 silee-tools"
+for flag in --version -v; do
+  actual="$(zsh -c "compdef() { :; }; source ./git-tidy.plugin.zsh; git-tidy $flag")"
+  if [ "$actual" != "$expected" ]; then
+    echo "FAIL git-tidy $flag: got [$actual] want [$expected]" >&2
+    exit 1
+  fi
+  echo "OK git-tidy $flag: $actual"
+done
+"""
+
 [tasks.test]
-description = "Run tests (zsh-only tool: syntax check)"
+description = "Run tests (zsh-only tool: syntax check + version output)"
 run = """
 zsh -n git-tidy.plugin.zsh
 shellcheck -s bash git-tidy.plugin.zsh
+mise run version-check
 """
 
 [tasks.install]
