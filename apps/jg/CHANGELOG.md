@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/silee-tools/cli/compare/jg/v0.3.0...jg/v0.3.1) (2026-05-15)
+
+
+### Documentation
+
+* document fmt-check commands ([#50](https://github.com/silee-tools/cli/issues/50)) ([5b4ef19](https://github.com/silee-tools/cli/commit/5b4ef199938db0e8e7a99f81192cdf56d119908c))
+
 ## [0.3.0](https://github.com/silee-tools/cli/compare/jg/v0.2.2...jg/v0.3.0) (2026-05-14)
 
 
