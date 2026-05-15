@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/silee-tools/cli/compare/totp/v1.0.2...totp/v1.1.0) (2026-05-15)
+
+
+### Features
+
+* unify --version output format across all cli tools ([#61](https://github.com/silee-tools/cli/issues/61)) ([4616876](https://github.com/silee-tools/cli/commit/461687635330c62098f96e56118082a77a3f2eef))
+
 ## [1.0.2](https://github.com/silee-tools/cli/compare/totp/v1.0.1...totp/v1.0.2) (2026-05-15)
 
 

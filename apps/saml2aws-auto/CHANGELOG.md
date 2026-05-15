@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/silee-tools/cli/compare/saml2aws-auto/v2.0.8...saml2aws-auto/v2.1.0) (2026-05-15)
+
+
+### Features
+
+* unify --version output format across all cli tools ([#61](https://github.com/silee-tools/cli/issues/61)) ([4616876](https://github.com/silee-tools/cli/commit/461687635330c62098f96e56118082a77a3f2eef))
+
 ## [2.0.8](https://github.com/silee-tools/cli/compare/saml2aws-auto/v2.0.7...saml2aws-auto/v2.0.8) (2026-05-15)
 
 
