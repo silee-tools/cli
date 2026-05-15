@@ -1,0 +1,46 @@
+name: version conformance
+
+# 모노레포 전 도구의 --version 출력이 표준 형식
+# "<tool> v<version> © 2026 silee-tools" 인지 강제하는 게이트.
+# apps/<new-tool>/ 추가만으로 자동 검사 대상이 된다(도구 이름 하드코딩 없음).
+# OS 라우팅은 scripts/check-version-format.sh 가 각 도구의 .goreleaser.yaml
+# goos 로 결정한다(linux 포함→ubuntu, darwin 전용→macos, zsh→ubuntu).
+
+on:
+  push:
+    paths:
+      - 'apps/**'
+      - 'scripts/check-version-format.sh'
+      - '.github/workflows/version-conformance.yml'
+  pull_request:
+    paths:
+      - 'apps/**'
+      - 'scripts/check-version-format.sh'
+      - '.github/workflows/version-conformance.yml'
+
+jobs:
+  conformance:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            leg: ubuntu
+          - os: macos-latest
+            leg: macos
+    runs-on: ${{ matrix.os }}
+    env:
+      CONFORMANCE_LEG: ${{ matrix.leg }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - name: Trust mise configs
+        run: |
+          for f in .mise.toml apps/*/.mise.toml; do
+            [ -f "$f" ] && mise trust "$f"
+          done
+      - name: Install zsh (ubuntu leg checks zsh plugin tools)
+        if: matrix.leg == 'ubuntu'
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Run version-format conformance
+        run: bash scripts/check-version-format.sh
