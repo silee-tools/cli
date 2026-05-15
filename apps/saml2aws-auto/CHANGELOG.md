@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.8](https://github.com/silee-tools/cli/compare/saml2aws-auto/v2.0.7...saml2aws-auto/v2.0.8) (2026-05-15)
+
+
+### Documentation
+
+* document fmt-check commands ([#50](https://github.com/silee-tools/cli/issues/50)) ([5b4ef19](https://github.com/silee-tools/cli/commit/5b4ef199938db0e8e7a99f81192cdf56d119908c))
+
 ## [2.0.7](https://github.com/silee-tools/cli/compare/saml2aws-auto/v2.0.6...saml2aws-auto/v2.0.7) (2026-05-11)
 
 
