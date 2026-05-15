@@ -1,0 +1,30 @@
+version: 2
+
+project_name: git-tidy
+
+builds:
+  - skip: true
+
+archives:
+  - id: git-tidy
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}-v{{ .Version }}"
+    meta: true
+    files:
+      - README.md
+      - CHANGELOG.md
+      - git-tidy.plugin.zsh
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+
+# release-please 가 GitHub Release 객체를 만들고, 우리는 dist/ 에 산출물만 둔다.
+release:
+  disable: true
