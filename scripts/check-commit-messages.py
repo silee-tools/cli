@@ -55,7 +55,9 @@ def run_git(args: list[str]) -> str:
 
 
 def commits_in_range(rev_from: str, rev_to: str) -> list[Commit]:
-    raw = run_git(["log", "--format=%H%x00%s%x00", f"{rev_from}..{rev_to}"])
+    raw = run_git(
+        ["log", "--no-merges", "--format=%H%x00%s%x00", f"{rev_from}..{rev_to}"]
+    )
     if not raw:
         return []
 
