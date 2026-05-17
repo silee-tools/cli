@@ -32,6 +32,7 @@ MAX_HEADER_LENGTH = 100
 class Commit:
     sha: str
     header: str
+    parent_count: int
 
 
 class GitCommandError(RuntimeError):
@@ -55,22 +56,22 @@ def run_git(args: list[str]) -> str:
 
 
 def commits_in_range(rev_from: str, rev_to: str) -> list[Commit]:
-    raw = run_git(
-        ["log", "--no-merges", "--format=%H%x00%s%x00", f"{rev_from}..{rev_to}"]
-    )
+    raw = run_git(["log", "--format=%H%x00%s%x00%P%x00", f"{rev_from}..{rev_to}"])
     if not raw:
         return []
 
     parts = raw.rstrip("\0\n").split("\0")
     commits: list[Commit] = []
-    for index in range(0, len(parts), 2):
+    for index in range(0, len(parts), 3):
         try:
             sha = parts[index].strip()
             header = parts[index + 1].strip()
+            parents = parts[index + 2].strip()
         except IndexError as exc:
             raise ValueError("unexpected git log output while reading commits") from exc
         if sha:
-            commits.append(Commit(sha=sha, header=header))
+            parent_count = len(parents.split()) if parents else 0
+            commits.append(Commit(sha=sha, header=header, parent_count=parent_count))
     return commits
 
 
@@ -114,8 +115,17 @@ def main() -> int:
         print(f"No commits to lint in range {args.rev_from}..{args.rev_to}")
         return 0
 
+    lint_targets = [c for c in commits if c.parent_count < 2]
+    skipped_merges = len(commits) - len(lint_targets)
+    if skipped_merges:
+        print(f"Skipping {skipped_merges} merge commit(s) in range")
+
+    if not lint_targets:
+        print(f"No non-merge commits to lint in range {args.rev_from}..{args.rev_to}")
+        return 0
+
     failures = 0
-    for commit in commits:
+    for commit in lint_targets:
         errors = validate_header(commit.header)
         if errors:
             failures += 1
@@ -126,10 +136,10 @@ def main() -> int:
             print(f"✓ {commit.sha[:12]} {commit.header}")
 
     if failures:
-        print(f"Commit lint failed: {failures}/{len(commits)} commit(s) invalid")
+        print(f"Commit lint failed: {failures}/{len(lint_targets)} commit(s) invalid")
         return 1
 
-    print(f"Commit lint passed: {len(commits)} commit(s) valid")
+    print(f"Commit lint passed: {len(lint_targets)} commit(s) valid")
     return 0
 
 
