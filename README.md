@@ -10,7 +10,6 @@ Monorepo of personal CLI tools under the `silee-tools` GitHub organization. Each
 |------|----------|-------------|
 | [git-tidy](apps/git-tidy/) | zsh | Safely deletes local branches whose upstream is gone, for trunk-based squash-merge workflows. |
 | [jg](apps/jg/) | Go | Frecency-based CLI for quickly jumping to git repositories. |
-| [saml2aws-auto](apps/saml2aws-auto/) | Go | Auto-injects a TOTP MFA code into `saml2aws` AzureAD login and checks session expiry from zsh. |
 | [totp](apps/totp/) | Go | macOS Keychain-backed TOTP code generator (macOS only). |
 
 ## Tech Stack
@@ -56,8 +55,8 @@ mise run test
 
 All PR and `main` push commits are checked by `Commit Lint`. Use a Conventional
 Commit header such as `feat(jg): add cleanup scheduler` or
-`ci(saml2aws-auto): install zsh in CI`; non-conforming commits block the PR
-until they are amended.
+`ci(git-tidy): install zsh in CI`; non-conforming commits block the PR until
+they are amended.
 
 ## Releases
 
