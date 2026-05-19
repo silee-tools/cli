@@ -10,7 +10,6 @@
 |------|------|------|
 | [git-tidy](../apps/git-tidy/) | zsh | trunk 기반 squash merge 워크플로우에서 upstream 이 사라진 로컬 브랜치를 안전하게 정리. |
 | [jg](../apps/jg/) | Go | 디렉토리 frecency 기반 빠른 git 저장소 점프 CLI. |
-| [saml2aws-auto](../apps/saml2aws-auto/) | Go | `saml2aws` AzureAD 로그인에 TOTP MFA 코드를 자동 주입하고 zsh 시작 시 세션 만료를 확인. |
 | [totp](../apps/totp/) | Go | macOS Keychain 기반 TOTP 코드 생성기 (macOS 전용). |
 
 ## 기술 스택
@@ -54,7 +53,7 @@ mise run test
 
 ## 커밋 정책
 
-모든 PR 과 `main` push commit 은 `Commit Lint` 로 검증한다. `feat(jg): add cleanup scheduler` 또는 `ci(saml2aws-auto): install zsh in CI` 같은 Conventional Commit header 를 사용해야 하며, 형식에 맞지 않는 commit 은 amend 하기 전까지 PR 을 차단한다.
+모든 PR 과 `main` push commit 은 `Commit Lint` 로 검증한다. `feat(jg): add cleanup scheduler` 또는 `ci(git-tidy): install zsh in CI` 같은 Conventional Commit header 를 사용해야 하며, 형식에 맞지 않는 commit 은 amend 하기 전까지 PR 을 차단한다.
 
 ## 릴리스
 

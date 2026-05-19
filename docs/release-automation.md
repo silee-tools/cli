@@ -89,7 +89,6 @@ gh variable set RUNNER_MACOS --repo silee-tools/cli --body "self-hosted"
 |---|---|
 | jg | `jg.rb` |
 | totp | `totp.rb` |
-| saml2aws-auto | `saml2aws-auto.rb` |
 
 신규 도구 첫 릴리스 시 homebrew-tap 에 formula 가 없으면 자동 갱신 step 은 skip 되며 `notice` 가 출력된다 — 이때만 수동으로 formula 를 작성해 push 한 뒤 다음 릴리스부터 자동 갱신이 동작한다.
 
