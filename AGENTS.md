@@ -8,8 +8,9 @@
 - **범용성**: 사용자 머신의 toolchain 의존을 줄이고 다양한 환경에서 동일 동작. prebuilt 바이너리 배포가 source build 보다 우선.
 - **멱등성**: 같은 입력에 대해 몇 번 실행해도 같은 결과. 설치/업그레이드/마이그레이션 절차가 중간 상태에 의존하지 않도록.
 - **안정성**: 텍스트 파싱·외부 명령 형식 의존을 줄이고 라이브러리 호출 등 구조화된 인터페이스를 선택. 하위 호환성 가급적 유지.
+- **자동완성 최대 제공**: 각 도구는 사용자 셸 환경에서 가능한 모든 입력 지점에 자동완성을 제공한다. 정적 후보(subcommand, 플래그) 는 물론 동적 후보(파일/디렉토리/도구 자체가 보유한 항목명) 도 셸이 표현할 수 있는 한 함께 보완한다.
 
-옵션 비교 시 이 세 원칙을 가산점 기준으로 사용한다.
+옵션 비교 시 이 네 원칙을 가산점 기준으로 사용한다.
 
 ## 개발
 
@@ -29,7 +30,7 @@
 
 ## 새 도구 추가 체크리스트
 
-1. `apps/<tool>/` 생성, 도구 코드 + `.mise.toml` + README + `.goreleaser.yaml` 추가
+1. `apps/<tool>/` 생성, 도구 코드 + `.mise.toml` + README + `.goreleaser.yaml` + `completions/_<tool>` + `completions/<tool>.bash` 추가
 2. `.github/workflows/<tool>-ci.yml` 추가 (paths 필터: `apps/<tool>/**`)
 3. 루트 `README.md` / `docs/README_ko.md` 의 도구 표 갱신
 4. `release-please-config.json` 의 `packages` 에 `"apps/<new-tool>": {"package-name": "<new-tool>"}` 추가
