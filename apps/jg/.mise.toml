@@ -23,14 +23,17 @@ description = "Check formatting (CI)"
 run = "test -z \"$(gofmt -l .)\""
 
 [tasks.install]
-description = "Build and install to ~/.local/bin"
-run = "go build -o ~/.local/bin/jg ./cmd/jg"
+description = "Build and install to ~/.local/bin (jg + jgw symlink)"
+run = """
+go build -o ~/.local/bin/jg ./cmd/jg
+ln -sf ~/.local/bin/jg ~/.local/bin/jgw
+"""
 
 [tasks.uninstall]
 description = "Remove local dev build, revert to brew version"
 run = """
-rm -f ~/.local/bin/jg
-echo "Removed ~/.local/bin/jg — now using brew version"
+rm -f ~/.local/bin/jg ~/.local/bin/jgw
+echo "Removed ~/.local/bin/jg and ~/.local/bin/jgw — now using brew version"
 """
 
 [tasks.release]
