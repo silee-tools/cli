@@ -292,3 +292,28 @@ func TestLoadSkipsMalformedLines(t *testing.T) {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}
 }
+
+func TestLoadPrefersNewDataFileWhenBothExist(t *testing.T) {
+	legacyDir := t.TempDir()
+	xdgDir := t.TempDir()
+
+	legacyPath := filepath.Join(legacyDir, ".jg")
+	if err := os.WriteFile(legacyPath, []byte("/legacy/repo|9|1700000000\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	xdgPath := filepath.Join(xdgDir, "repos")
+	if err := os.WriteFile(xdgPath, []byte("/xdg/repo|1|1700000000\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	LegacyDataFile = legacyPath
+	DataFile = xdgPath
+
+	entries, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Path != "/xdg/repo" {
+		t.Errorf("Load returned legacy entries when both files exist: got %+v", entries)
+	}
+}

@@ -1,7 +1,6 @@
 package xdgpath
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -34,5 +33,4 @@ func TestStateDirSkipsEmptyTool(t *testing.T) {
 	if got != "/tmp/xdg-state" {
 		t.Errorf("StateDir(\"\") = %q, want %q", got, "/tmp/xdg-state")
 	}
-	_ = os.Getenv
 }

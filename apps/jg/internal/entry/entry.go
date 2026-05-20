@@ -17,7 +17,9 @@ import (
 // DataFile is the path to the data file. Override in tests.
 var DataFile string
 
-// LegacyDataFile is the legacy path (~/.jg). Override in tests.
+// LegacyDataFile 은 마이그레이션 이전의 옛 데이터 파일 경로 (~/.jg) 다.
+// Load() 가 DataFile 이 비어 있을 때만 읽기 전용으로 fallback 한다.
+// Save() 는 항상 DataFile 에만 쓴다 — 이 경로로는 절대 쓰지 않는다.
 var LegacyDataFile string
 
 func init() {
@@ -129,7 +131,9 @@ func formatLine(e Entry) string {
 	return fmt.Sprintf("%s|%g|%d", e.Path, e.Rank, e.Timestamp)
 }
 
-// loadFromPath reads entries from a single file. Returns nil (not an error) when the file does not exist.
+// loadFromPath 는 단일 데이터 파일에서 entries 를 읽어 반환한다.
+// 파일이 없으면 (nil, nil) 을 반환한다. 빈 파일(파싱 가능한 줄 0개) 역시
+// nil 을 반환하므로, Load() 는 빈 신규 파일과 "없음" 을 동일하게 처리해 legacy 로 fallback 한다.
 func loadFromPath(path string) ([]Entry, error) {
 	f, err := os.Open(path)
 	if err != nil {
