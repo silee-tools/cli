@@ -7,14 +7,30 @@ import (
 
 func TestInitZshIncludesJgwFunction(t *testing.T) {
 	out := InitZsh()
-	if !strings.Contains(out, "jgw()") {
-		t.Errorf("InitZsh output missing jgw(): %s", out)
+	checks := []string{
+		"jgw()",
+		"command jgw \"$@\"",
+		`builtin cd "$result"`,
+		"return $ret",
+	}
+	for _, c := range checks {
+		if !strings.Contains(out, c) {
+			t.Errorf("InitZsh output missing %q", c)
+		}
 	}
 }
 
 func TestInitBashIncludesJgwFunction(t *testing.T) {
 	out := InitBash()
-	if !strings.Contains(out, "jgw()") {
-		t.Errorf("InitBash output missing jgw(): %s", out)
+	checks := []string{
+		"jgw()",
+		"command jgw \"$@\"",
+		`builtin cd "$result"`,
+		"return $ret",
+	}
+	for _, c := range checks {
+		if !strings.Contains(out, c) {
+			t.Errorf("InitBash output missing %q", c)
+		}
 	}
 }
