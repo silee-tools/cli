@@ -1,3 +1,5 @@
+// Package wtstore manages frecency data for git worktree paths.
+// jgw 점프가 본 store 와 entry store 양쪽 점수를 동시에 가산할 때 사용된다.
 package wtstore
 
 import (
@@ -68,7 +70,9 @@ func Load() ([]Entry, error) {
 		return nil, err
 	}
 	defer f.Close()
-	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_SH)
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
+		return nil, err
+	}
 	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 
 	var entries []Entry

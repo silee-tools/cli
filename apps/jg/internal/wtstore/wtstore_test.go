@@ -40,3 +40,20 @@ func TestAddOrUpdateBumpsRank(t *testing.T) {
 		t.Errorf("AddOrUpdate did not bump rank: %+v", entries)
 	}
 }
+
+func TestParseLineWithPipeInPath(t *testing.T) {
+	// path 안에 '|' 가 있어도 LastIndex 기반 파서가 올바르게 동작해야 한다.
+	got, ok := parseLine("/repo/wt|with|pipes|1.5|1700000000")
+	if !ok {
+		t.Fatal("parseLine returned !ok")
+	}
+	if got.Path != "/repo/wt|with|pipes" {
+		t.Errorf("Path = %q, want %q", got.Path, "/repo/wt|with|pipes")
+	}
+	if got.Rank != 1.5 {
+		t.Errorf("Rank = %v, want 1.5", got.Rank)
+	}
+	if got.Timestamp != 1700000000 {
+		t.Errorf("Timestamp = %v, want 1700000000", got.Timestamp)
+	}
+}
