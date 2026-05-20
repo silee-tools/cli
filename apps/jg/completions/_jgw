@@ -1,0 +1,20 @@
+#compdef jgw
+
+_jgw() {
+  local -a repos
+  repos=("${(@f)$(command jg -l 2>/dev/null | awk '{print $NF}')}")
+
+  _arguments -C \
+    {-v,--version}'[Show version]' \
+    {-h,--help}'[Show help]' \
+    '1: :->first_arg' \
+    && return 0
+
+  case "$state" in
+    first_arg)
+      compadd -a repos
+      ;;
+  esac
+}
+
+_jgw "$@"
