@@ -2,6 +2,24 @@ package main
 
 import "testing"
 
+func TestToolNameFromArgv0(t *testing.T) {
+	cases := []struct {
+		argv0 string
+		want  string
+	}{
+		{"/usr/local/bin/jg", "jg"},
+		{"/opt/homebrew/bin/jgw", "jgw"},
+		{"jg", "jg"},
+		{"./jgw", "jgw"},
+	}
+	for _, c := range cases {
+		got := toolName(c.argv0)
+		if got != c.want {
+			t.Errorf("toolName(%q) = %q, want %q", c.argv0, got, c.want)
+		}
+	}
+}
+
 func TestVersionLine(t *testing.T) {
 	tests := []struct {
 		name    string

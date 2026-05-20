@@ -18,7 +18,13 @@ import (
 var version = "dev"
 
 func main() {
+	tool := toolName(os.Args[0])
 	args := os.Args[1:]
+
+	if tool == "jgw" {
+		runJgw(args)
+		return
+	}
 
 	if len(args) == 0 {
 		runJump(nil)
@@ -59,6 +65,10 @@ func main() {
 	}
 }
 
+func toolName(argv0 string) string {
+	return filepath.Base(argv0)
+}
+
 // versionLine 은 모노레포 전 도구가 공유하는 표준 버전 한 줄을 만든다:
 // "<도구> v<버전> © 2026 silee-tools".
 func versionLine(name, version string) string {
@@ -84,6 +94,37 @@ Options:
   -l, --list             List all repos with frecency scores
   -v, --version          Show version
   -h, --help             Show this help
+`)
+}
+
+// runJgw 는 jgw 모드의 진입점이다. 추후 task 에서 본체를 채운다.
+func runJgw(args []string) {
+	if len(args) > 0 {
+		switch args[0] {
+		case "-v", "--version", "-version":
+			fmt.Fprint(os.Stdout, versionLine("jgw", version))
+			return
+		case "-h", "--help", "-help":
+			printJgwHelp()
+			return
+		}
+	}
+	fmt.Fprintln(os.Stderr, "jgw: not yet implemented")
+	os.Exit(1)
+}
+
+func printJgwHelp() {
+	fmt.Print(`Usage: jgw [pattern]
+
+Jump to a worktree of the current git repository or pick a repo first.
+
+Behavior:
+  jgw                   In a git repo: pick a worktree. Outside: pick a repo, then a worktree.
+  jgw <pattern>         Narrow the repo picker by pattern.
+
+Options:
+  -v, --version         Show version
+  -h, --help            Show this help
 `)
 }
 
