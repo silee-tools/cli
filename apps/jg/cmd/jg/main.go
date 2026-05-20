@@ -109,8 +109,7 @@ func runJgw(args []string) {
 			return
 		}
 	}
-	fmt.Fprintln(os.Stderr, "jgw: not yet implemented")
-	os.Exit(1)
+	runJgwBody(args)
 }
 
 func printJgwHelp() {

@@ -2,6 +2,21 @@ package main
 
 import "testing"
 
+func TestJgwFlowDecision(t *testing.T) {
+	// cwd 가 repo 안이고 인자 없으면 flowA
+	if got := decideFlow(true, nil); got != flowA {
+		t.Errorf("decideFlow(true, nil) = %v, want flowA", got)
+	}
+	// cwd 가 repo 안이지만 pattern 명시되면 flowB
+	if got := decideFlow(true, []string{"pat"}); got != flowB {
+		t.Errorf("decideFlow(true, [pat]) = %v, want flowB", got)
+	}
+	// cwd 가 repo 밖이면 flowB
+	if got := decideFlow(false, nil); got != flowB {
+		t.Errorf("decideFlow(false, nil) = %v, want flowB", got)
+	}
+}
+
 func TestToolNameFromArgv0(t *testing.T) {
 	cases := []struct {
 		argv0 string
