@@ -9,7 +9,7 @@
 | 도구 | 언어 | 설명 |
 |------|------|------|
 | [git-tidy](../apps/git-tidy/) | zsh | trunk 기반 squash merge 워크플로우에서 upstream 이 사라진 로컬 브랜치를 안전하게 정리. |
-| [jg](../apps/jg/) | Go | 디렉토리 frecency 기반 빠른 git 저장소 점프 CLI. |
+| [jg / jgw](../apps/jg/) | Go | 사용 빈도 기반으로 git 저장소(jg) 와 한 저장소의 worktree 들(jgw) 사이를 빠르게 점프하는 CLI. |
 | [totp](../apps/totp/) | Go | macOS Keychain 기반 TOTP 코드 생성기 (macOS 전용). |
 
 ## 기술 스택

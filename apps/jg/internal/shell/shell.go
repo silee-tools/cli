@@ -17,6 +17,17 @@ jg() {
     echo "$result"
   fi
   return $ret
+}
+jgw() {
+  local result
+  result=$(command jgw "$@")
+  local ret=$?
+  if [[ $ret -eq 0 && -d "$result" ]]; then
+    builtin cd "$result"
+  elif [[ -n "$result" ]]; then
+    echo "$result"
+  fi
+  return $ret
 }`
 }
 
@@ -25,6 +36,17 @@ func InitBash() string {
 jg() {
   local result
   result=$(command jg "$@")
+  local ret=$?
+  if [[ $ret -eq 0 && -d "$result" ]]; then
+    builtin cd "$result"
+  elif [[ -n "$result" ]]; then
+    echo "$result"
+  fi
+  return $ret
+}
+jgw() {
+  local result
+  result=$(command jgw "$@")
   local ret=$?
   if [[ $ret -eq 0 && -d "$result" ]]; then
     builtin cd "$result"

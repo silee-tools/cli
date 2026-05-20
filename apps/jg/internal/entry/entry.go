@@ -10,18 +10,30 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/silee-tools/jg/internal/xdgpath"
 )
 
 // DataFile is the path to the data file. Override in tests.
 var DataFile string
 
+// LegacyDataFile 은 마이그레이션 이전의 옛 데이터 파일 경로 (~/.jg) 다.
+// Load() 가 DataFile 이 비어 있을 때만 읽기 전용으로 fallback 한다.
+// Save() 는 항상 DataFile 에만 쓴다 — 이 경로로는 절대 쓰지 않는다.
+var LegacyDataFile string
+
 func init() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		DataFile = filepath.Join(os.TempDir(), ".jg")
-		return
+	stateDir := xdgpath.StateDir("jg")
+	if stateDir != "" {
+		_ = os.MkdirAll(stateDir, 0755)
+		DataFile = filepath.Join(stateDir, "repos")
+	} else {
+		DataFile = filepath.Join(os.TempDir(), "jg-repos")
 	}
-	DataFile = filepath.Join(home, ".jg")
+
+	if home, err := os.UserHomeDir(); err == nil {
+		LegacyDataFile = filepath.Join(home, ".jg")
+	}
 }
 
 type Entry struct {
@@ -119,8 +131,11 @@ func formatLine(e Entry) string {
 	return fmt.Sprintf("%s|%g|%d", e.Path, e.Rank, e.Timestamp)
 }
 
-func Load() ([]Entry, error) {
-	f, err := os.Open(DataFile)
+// loadFromPath 는 단일 데이터 파일에서 entries 를 읽어 반환한다.
+// 파일이 없으면 (nil, nil) 을 반환한다. 빈 파일(파싱 가능한 줄 0개) 역시
+// nil 을 반환하므로, Load() 는 빈 신규 파일과 "없음" 을 동일하게 처리해 legacy 로 fallback 한다.
+func loadFromPath(path string) ([]Entry, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -146,6 +161,22 @@ func Load() ([]Entry, error) {
 		}
 	}
 	return entries, scanner.Err()
+}
+
+// Load reads entries from DataFile. When DataFile does not exist, it falls back
+// to LegacyDataFile (~/.jg) so existing users keep their history transparently.
+func Load() ([]Entry, error) {
+	entries, err := loadFromPath(DataFile)
+	if err != nil {
+		return nil, err
+	}
+	if entries != nil {
+		return entries, nil
+	}
+	if LegacyDataFile == "" {
+		return nil, nil
+	}
+	return loadFromPath(LegacyDataFile)
 }
 
 func Save(entries []Entry) error {

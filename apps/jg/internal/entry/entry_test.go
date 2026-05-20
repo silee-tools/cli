@@ -8,10 +8,47 @@ import (
 	"time"
 )
 
+func TestLoadMigratesFromLegacyDataFile(t *testing.T) {
+	legacyDir := t.TempDir()
+	xdgDir := t.TempDir()
+
+	legacyPath := filepath.Join(legacyDir, ".jg")
+	legacyContent := "/path/to/repo|2.5|1700000000\n"
+	if err := os.WriteFile(legacyPath, []byte(legacyContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	LegacyDataFile = legacyPath
+	DataFile = filepath.Join(xdgDir, "repos")
+
+	entries, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Path != "/path/to/repo" {
+		t.Errorf("Load did not read legacy file: got %+v", entries)
+	}
+}
+
+func TestSaveWritesToNewDataFile(t *testing.T) {
+	dir := t.TempDir()
+	DataFile = filepath.Join(dir, "repos")
+	LegacyDataFile = filepath.Join(dir, "nonexistent")
+
+	err := Save([]Entry{{Path: "/x", Rank: 1, Timestamp: 1700000000}})
+	if err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	if _, err := os.Stat(DataFile); err != nil {
+		t.Errorf("new data file not created: %v", err)
+	}
+}
+
 func setupTestFile(t *testing.T) string {
 	t.Helper()
 	tmp := filepath.Join(t.TempDir(), ".jg")
 	DataFile = tmp
+	LegacyDataFile = ""
 	return tmp
 }
 
@@ -253,5 +290,30 @@ func TestLoadSkipsMalformedLines(t *testing.T) {
 	}
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+}
+
+func TestLoadPrefersNewDataFileWhenBothExist(t *testing.T) {
+	legacyDir := t.TempDir()
+	xdgDir := t.TempDir()
+
+	legacyPath := filepath.Join(legacyDir, ".jg")
+	if err := os.WriteFile(legacyPath, []byte("/legacy/repo|9|1700000000\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	xdgPath := filepath.Join(xdgDir, "repos")
+	if err := os.WriteFile(xdgPath, []byte("/xdg/repo|1|1700000000\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	LegacyDataFile = legacyPath
+	DataFile = xdgPath
+
+	entries, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Path != "/xdg/repo" {
+		t.Errorf("Load returned legacy entries when both files exist: got %+v", entries)
 	}
 }
