@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/silee-tools/jg/internal/worktree"
+)
 
 func TestJgwFlowDecision(t *testing.T) {
 	// cwd 가 repo 안이고 인자 없으면 flowA
@@ -48,5 +52,55 @@ func TestVersionLine(t *testing.T) {
 		if got := versionLine(tt.name, tt.version); got != tt.want {
 			t.Errorf("versionLine(%q, %q) = %q, want %q", tt.name, tt.version, got, tt.want)
 		}
+	}
+}
+
+func TestSplitMainFindsFirstMain(t *testing.T) {
+	wts := []worktree.Worktree{
+		{Path: "/repo", Branch: "main", IsMain: true},
+		{Path: "/repo-wt1", Branch: "feat", IsMain: false},
+	}
+	path, branch := splitMain(wts)
+	if path != "/repo" || branch != "main" {
+		t.Errorf("splitMain = (%q, %q), want (/repo, main)", path, branch)
+	}
+}
+
+func TestSplitMainReturnsEmptyWhenNoMain(t *testing.T) {
+	wts := []worktree.Worktree{
+		{Path: "/repo-wt1", Branch: "feat", IsMain: false},
+	}
+	path, branch := splitMain(wts)
+	if path != "" || branch != "" {
+		t.Errorf("splitMain = (%q, %q), want empty pair", path, branch)
+	}
+}
+
+func TestSplitCurrentSeparatesCwd(t *testing.T) {
+	wts := []worktree.Worktree{
+		{Path: "/repo", IsMain: true},
+		{Path: "/repo-wt1", IsMain: false},
+		{Path: "/repo-wt2", IsMain: false},
+	}
+	candidates, current := splitCurrent(wts, "/repo-wt1/subdir")
+	if current != "/repo-wt1" {
+		t.Errorf("current = %q, want /repo-wt1", current)
+	}
+	if len(candidates) != 2 || candidates[0] != "/repo" || candidates[1] != "/repo-wt2" {
+		t.Errorf("candidates = %v, want [/repo /repo-wt2]", candidates)
+	}
+}
+
+func TestSplitCurrentDoesNotFalseMatchPrefix(t *testing.T) {
+	// /repo 는 /repo-wt1 의 prefix 처럼 보이지만 separator 가 없으므로 매칭 X
+	wts := []worktree.Worktree{
+		{Path: "/repo", IsMain: true},
+	}
+	candidates, current := splitCurrent(wts, "/repo-wt1/subdir")
+	if current != "" {
+		t.Errorf("current = %q, want empty (false prefix match)", current)
+	}
+	if len(candidates) != 1 || candidates[0] != "/repo" {
+		t.Errorf("candidates = %v, want [/repo]", candidates)
 	}
 }

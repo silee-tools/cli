@@ -28,14 +28,19 @@ func decideFlow(inRepo bool, args []string) flow {
 }
 
 func runJgwBody(args []string) {
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		// cwd 를 얻지 못하면 안전하게 흐름 b 로 위임 (repo picker 부터 시작).
+		runJgwFlowB(args)
+		return
+	}
 	repoRoot, inRepo := detectRepoRoot(cwd)
 
 	switch decideFlow(inRepo, args) {
 	case flowA:
 		runJgwFlowA(repoRoot, cwd)
 	case flowB:
-		runJgwFlowB(args, cwd)
+		runJgwFlowB(args)
 	}
 }
 
@@ -61,6 +66,10 @@ func runJgwFlowA(repoRoot, cwd string) {
 		os.Exit(0)
 	}
 	if len(candidates) == 0 {
+		if mainPath == "" {
+			fmt.Fprintln(os.Stderr, "jgw: cannot resolve main working tree")
+			os.Exit(1)
+		}
 		fmt.Println(mainPath)
 		_ = entry.AddOrUpdate(mainPath)
 		return
@@ -79,7 +88,7 @@ func runJgwFlowA(repoRoot, cwd string) {
 	_ = entry.AddOrUpdate(repoRoot)
 }
 
-func runJgwFlowB(args []string, _ string) {
+func runJgwFlowB(args []string) {
 	entries, err := entry.Load()
 	if err != nil || len(entries) == 0 {
 		fmt.Fprintln(os.Stderr, "jgw: no repos in jg store")
@@ -106,6 +115,10 @@ func runJgwFlowB(args []string, _ string) {
 	}
 	mainPath, mainBranch := splitMain(wts)
 	if len(wts) == 1 {
+		if mainPath == "" {
+			fmt.Fprintln(os.Stderr, "jgw: cannot resolve main working tree")
+			os.Exit(1)
+		}
 		fmt.Println(mainPath)
 		_ = entry.AddOrUpdate(mainPath)
 		return
