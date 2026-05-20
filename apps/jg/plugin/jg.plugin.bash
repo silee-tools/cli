@@ -1,9 +1,5 @@
 # jg - frecency-based git repo jumper
 
-_jg_chpwd() { command jg --add "$PWD" &! }
-autoload -Uz add-zsh-hook
-add-zsh-hook chpwd _jg_chpwd
-
 jg() {
   local result
   result=$(command jg "$@")
@@ -27,3 +23,11 @@ jgw() {
   fi
   return $ret
 }
+
+_jg_prompt_command() {
+  if [[ "$_JG_PREV_PWD" != "$PWD" ]]; then
+    _JG_PREV_PWD="$PWD"
+    command jg --add "$PWD" &
+  fi
+}
+PROMPT_COMMAND="_jg_prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
