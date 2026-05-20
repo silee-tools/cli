@@ -48,6 +48,7 @@ func setupTestFile(t *testing.T) string {
 	t.Helper()
 	tmp := filepath.Join(t.TempDir(), ".jg")
 	DataFile = tmp
+	LegacyDataFile = ""
 	return tmp
 }
 
