@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.5.0](https://github.com/silee-tools/cli/compare/jg/v0.4.0...jg/v0.5.0) (2026-05-21)
+
+
+### Features
+
+* **jg:** add argv0 dispatch and jgw mode skeleton ([357d2d1](https://github.com/silee-tools/cli/commit/357d2d1e74b59b74778fe17ac3892bfd74514cd4))
+* **jg:** add jgw zsh and bash completions ([f2bd385](https://github.com/silee-tools/cli/commit/f2bd385a7d7e3a54585507de2402557aea819b0a))
+* **jg:** add worktree discovery module ([34d9336](https://github.com/silee-tools/cli/commit/34d9336816ca3ba9e7961a5021b554d06eb32baa))
+* **jg:** add worktree frecency store ([18a5a43](https://github.com/silee-tools/cli/commit/18a5a43b93eb98ed402544ff567c954ca8de6774))
+* **jg:** add worktree-aware fzf picker helper ([f2ce3f4](https://github.com/silee-tools/cli/commit/f2ce3f4550a3412f4cfcc1853cfbc25887a8c6ad))
+* **jg:** emit jgw shell function from jg init ([c566adb](https://github.com/silee-tools/cli/commit/c566adbed8ca4cb7a7509731c61750c1f718ba0e))
+* **jg:** implement jgw flow a/b dispatch and body ([5718f53](https://github.com/silee-tools/cli/commit/5718f532fc0947f35080381c0f420de63c19c72c))
+* **jg:** install jgw symlink in mise install task ([56c47b4](https://github.com/silee-tools/cli/commit/56c47b4f376bead391126999f203133715364c8c))
+* **jg:** omit step counter when worktree picker has a single stage ([812c055](https://github.com/silee-tools/cli/commit/812c055ea60e34441b93db33a3b3747fb42e0822))
+
+
+### Bug Fixes
+
+* **jg:** harden jgw against empty cwd and missing main worktree ([6591377](https://github.com/silee-tools/cli/commit/6591377e6cc3326d73f3298ca65d02cde772a25f))
+* **jg:** identify current worktree across symlinked paths ([2c8648d](https://github.com/silee-tools/cli/commit/2c8648dcb8410d7d29cda12f5f8c2f1f8e15353d))
+* **jg:** make preview path resolution POSIX sh compatible ([927f621](https://github.com/silee-tools/cli/commit/927f62121ca8544a9e5b3401b68f3e5f17853e83))
+* **jg:** propagate flock error in wtstore.Load ([2d3c6b6](https://github.com/silee-tools/cli/commit/2d3c6b63d0486533b992c5c795da3fafa0709705))
+* **jg:** stop double-quoting fzf placeholder in preview commands ([8e43e32](https://github.com/silee-tools/cli/commit/8e43e322d1b6296bcd79f02fdd457d386c35599c))
+
+
+### Refactoring
+
+* **jg:** move repo store to XDG_STATE_HOME with auto-migration ([88f7468](https://github.com/silee-tools/cli/commit/88f74684aec1a03af210ecfb294fa92f9ef9a6fa))
+* **jg:** single-source shell integration via go:embed ([8d445b2](https://github.com/silee-tools/cli/commit/8d445b2200ba8b131b0b0115e6a71e1629f45805))
+
+
+### Documentation
+
+* **plans:** add tool-quality-framework plan and per-tool PRD templates ([7f5692a](https://github.com/silee-tools/cli/commit/7f5692aaecffabfb52aba3d253a8b4d30055870d))
+* **prd:** fill in jg/totp/git-tidy PRD bodies from interview ([f32f000](https://github.com/silee-tools/cli/commit/f32f0003b7e13b4437ab6ca466d55966f81c6aad))
+
+
+### Tests
+
+* **jg:** harden shell init tests to catch jgw body regressions ([e45540a](https://github.com/silee-tools/cli/commit/e45540a417bf98d2cddb0758950c30792954c236))
+* **jg:** lock XDG-over-legacy precedence and clean test stub ([16fc00a](https://github.com/silee-tools/cli/commit/16fc00ae5fb5f1f31d38c2ce78a882d8d904b504))
+* **jg:** reset LegacyDataFile in entry test helper ([e3fe9ca](https://github.com/silee-tools/cli/commit/e3fe9ca4706841348d1359a053fb45502c685edb))
+
 ## [0.4.0](https://github.com/silee-tools/cli/compare/jg/v0.3.1...jg/v0.4.0) (2026-05-15)
 
 
