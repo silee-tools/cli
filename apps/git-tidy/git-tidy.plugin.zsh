@@ -13,7 +13,7 @@
 # Configuration
 # ---------------------------------------------------------------------------
 : "${GIT_TIDY_PROTECT_DAYS:=7}"
-: "${GIT_TIDY_VERSION:=0.2.0}" # x-release-please-version
+: "${GIT_TIDY_VERSION:=0.2.1}" # x-release-please-version
 
 # ---------------------------------------------------------------------------
 # Internal helpers (namespaced with _git_tidy_)
