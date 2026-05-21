@@ -139,3 +139,20 @@ func TestSplitCurrentMatchesThroughSymlink(t *testing.T) {
 		t.Errorf("candidates = %v, want [%q]", candidates, mainWT)
 	}
 }
+
+func TestStepHeaderOmitsCounterForSingleStage(t *testing.T) {
+	tests := []struct {
+		step, total int
+		label, want string
+	}{
+		{1, 1, "worktree 선택", "[worktree 선택]"},
+		{1, 2, "repo 선택", "[1/2 repo 선택]"},
+		{2, 2, "worktree 선택", "[2/2 worktree 선택]"},
+	}
+	for _, tt := range tests {
+		if got := stepHeader(tt.step, tt.total, tt.label); got != tt.want {
+			t.Errorf("stepHeader(%d, %d, %q) = %q, want %q",
+				tt.step, tt.total, tt.label, got, tt.want)
+		}
+	}
+}

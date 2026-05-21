@@ -78,7 +78,7 @@ func runJgwFlowA(repoRoot, cwd string) {
 	selected, err := fzf.RunWorktreePicker(fzf.WorktreePickerInput{
 		Candidates:  candidates,
 		CurrentPath: current,
-		StepHeader:  "[1/1 worktree 선택]",
+		StepHeader:  stepHeader(1, 1, "worktree 선택"),
 		OriginLine:  fmt.Sprintf("원본: %s (%s)", mainPath, mainBranch),
 	})
 	if err != nil || selected == "" {
@@ -103,7 +103,7 @@ func runJgwFlowB(args []string) {
 	}
 	repoPicked, err := fzf.RunWorktreePicker(fzf.WorktreePickerInput{
 		Candidates: paths,
-		StepHeader: "[1/2 repo 선택]",
+		StepHeader: stepHeader(1, 2, "repo 선택"),
 	})
 	if err != nil || repoPicked == "" {
 		os.Exit(1)
@@ -131,7 +131,7 @@ func runJgwFlowB(args []string) {
 	selected, err := fzf.RunWorktreePicker(fzf.WorktreePickerInput{
 		Candidates:  candidates,
 		CurrentPath: "",
-		StepHeader:  "[2/2 worktree 선택]",
+		StepHeader:  stepHeader(2, 2, "worktree 선택"),
 		OriginLine:  fmt.Sprintf("원본: %s (%s)", mainPath, mainBranch),
 	})
 	if err != nil || selected == "" {
@@ -174,4 +174,13 @@ func canonicalPath(p string) string {
 		return resolved
 	}
 	return p
+}
+
+// stepHeader 는 picker 상단에 표시할 단계 헤더를 만든다. 단계가 하나뿐이면
+// (total 이 1 이하) 의미 없는 카운터를 생략하고 라벨만 표시한다.
+func stepHeader(step, total int, label string) string {
+	if total <= 1 {
+		return "[" + label + "]"
+	}
+	return fmt.Sprintf("[%d/%d %s]", step, total, label)
 }
