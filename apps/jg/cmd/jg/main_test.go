@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/silee-tools/jg/internal/worktree"
@@ -102,5 +104,38 @@ func TestSplitCurrentDoesNotFalseMatchPrefix(t *testing.T) {
 	}
 	if len(candidates) != 1 || candidates[0] != "/repo" {
 		t.Errorf("candidates = %v, want [/repo]", candidates)
+	}
+}
+
+func TestSplitCurrentMatchesThroughSymlink(t *testing.T) {
+	// git worktree list 는 심볼릭 링크를 푼 정규 경로를, os.Getwd() 는 셸이
+	// 넘긴 논리 경로를 돌려준다. 두 표기가 달라도 같은 worktree 로 식별해야
+	// 한다. 식별하지 못하면 현재 worktree 가 후보 목록에 섞여 picker 의
+	// 비활성 행이 만들어지지 않는다.
+	realRoot := t.TempDir()
+	mainWT := filepath.Join(realRoot, "repo")
+	featWT := filepath.Join(realRoot, "repo-feature")
+	for _, d := range []string{mainWT, featWT} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realRoot, link); err != nil {
+		t.Fatal(err)
+	}
+
+	wts := []worktree.Worktree{
+		{Path: mainWT, IsMain: true},
+		{Path: featWT},
+	}
+	// 심볼릭 링크를 통과한 경로로 현재 위치를 표현한다.
+	cwd := filepath.Join(link, "repo-feature")
+	candidates, current := splitCurrent(wts, cwd)
+	if current != featWT {
+		t.Errorf("current = %q, want %q", current, featWT)
+	}
+	if len(candidates) != 1 || candidates[0] != mainWT {
+		t.Errorf("candidates = %v, want [%q]", candidates, mainWT)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/silee-tools/jg/internal/entry"
@@ -151,12 +152,26 @@ func splitMain(wts []worktree.Worktree) (path, branch string) {
 }
 
 func splitCurrent(wts []worktree.Worktree, cwd string) (candidates []string, current string) {
+	// os.Getwd() 는 셸이 넘긴 논리 경로를, git worktree list 는 심볼릭 링크를
+	// 푼 정규 경로를 돌려준다. 두 표기가 어긋나면 현재 worktree 를 못 찾으므로
+	// 양쪽을 정규화한 뒤 비교한다. 반환값은 원본 w.Path 를 유지한다.
+	cwdCanon := canonicalPath(cwd)
 	for _, w := range wts {
-		if cwd == w.Path || strings.HasPrefix(cwd, w.Path+string(os.PathSeparator)) {
+		wPathCanon := canonicalPath(w.Path)
+		if cwdCanon == wPathCanon || strings.HasPrefix(cwdCanon, wPathCanon+string(os.PathSeparator)) {
 			current = w.Path
 			continue
 		}
 		candidates = append(candidates, w.Path)
 	}
 	return
+}
+
+// canonicalPath 는 심볼릭 링크를 푼 정규 경로를 돌려준다. 경로가 존재하지
+// 않아 정규화에 실패하면 입력을 그대로 돌려준다.
+func canonicalPath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return p
 }
