@@ -76,7 +76,9 @@ func expandPath(path, home string) string {
 // previewCmd builds the fzf preview command, expanding ~ to $HOME for git commands.
 func previewCmd(home string) string {
 	// fzf 가 {} 를 작은따옴표로 감싸 치환하므로 여기서 다시 따옴표로 감싸지
-	// 않는다. 그 뒤 leading ~ 만 실제 home 경로로 치환해 git 에 넘긴다.
-	resolve := fmt.Sprintf(`p={}; p="${p/#\\~/%s}"`, home)
+	// 않는다. leading ~ 만 home 경로로 치환하되 dash 같은 POSIX sh 에서도
+	// 동작하도록 case 와 ${p#~} 만 쓴다. ${p/.../...} 는 bash·zsh 전용이라
+	// dash 에서 "Bad substitution" 으로 깨진다.
+	resolve := fmt.Sprintf(`p={}; case "$p" in "~"*) p="%s${p#\~}";; esac`, home)
 	return resolve + `; git -C "$p" log --oneline -5 2>/dev/null; echo; echo "branch: $(git -C "$p" branch --show-current 2>/dev/null)"; echo; git -C "$p" status --short 2>/dev/null | head -10`
 }

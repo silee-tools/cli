@@ -13,6 +13,17 @@ func fzfSubstitute(cmd, line string) string {
 	return strings.ReplaceAll(cmd, "{}", "'"+line+"'")
 }
 
+// previewShell 은 preview 명령을 실행할 셸을 고른다. dash 가 있으면 dash 로
+// 실행해 bash·zsh 전용 문법(bashism)을 개발 환경에서도 잡아낸다. fzf 가 깔린
+// 일부 환경의 /bin/sh 는 bash 라 bashism 을 눈감아 주기 때문이다. dash 가
+// 없으면 sh 로 떨어진다.
+func previewShell() string {
+	if p, err := exec.LookPath("dash"); err == nil {
+		return p
+	}
+	return "sh"
+}
+
 // newPreviewRepo 는 주어진 브랜치 위에 커밋 한 개를 가진 임시 git repo 를
 // 만들고 그 절대 경로를 반환한다.
 func newPreviewRepo(t *testing.T, branch, subject string) string {
@@ -42,7 +53,7 @@ func newPreviewRepo(t *testing.T, branch, subject string) string {
 func TestWorktreePreviewCmdResolvesFocusedPath(t *testing.T) {
 	repo := newPreviewRepo(t, "probe-branch", "preview probe commit")
 	cmd := fzfSubstitute(worktreePreviewCmd("/home/unused"), repo)
-	out, _ := exec.Command("sh", "-c", cmd).CombinedOutput()
+	out, _ := exec.Command(previewShell(), "-c", cmd).CombinedOutput()
 	got := string(out)
 	for _, want := range []string{
 		"branch: probe-branch",
@@ -63,7 +74,7 @@ func TestWorktreePreviewCmdResolvesFocusedPath(t *testing.T) {
 func TestPreviewCmdResolvesFocusedPath(t *testing.T) {
 	repo := newPreviewRepo(t, "probe-branch", "preview probe commit")
 	cmd := fzfSubstitute(previewCmd("/home/unused"), repo)
-	out, _ := exec.Command("sh", "-c", cmd).CombinedOutput()
+	out, _ := exec.Command(previewShell(), "-c", cmd).CombinedOutput()
 	got := string(out)
 	if !strings.Contains(got, "branch: probe-branch") {
 		t.Errorf("preview output missing branch line\n--- got ---\n%s", got)
