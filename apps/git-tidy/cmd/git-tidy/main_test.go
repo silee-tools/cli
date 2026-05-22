@@ -3,6 +3,7 @@ package main
 import "testing"
 
 func TestParseArgs(t *testing.T) {
+	t.Setenv("GIT_TIDY_STALE_DAYS", "") // 환경 변수 격리
 	cases := []struct {
 		args []string
 		want options
@@ -35,5 +36,13 @@ func TestVersionLine(t *testing.T) {
 	want := "git-tidy v1.2.3 © 2026 silee-tools\n"
 	if got := versionLine("git-tidy", "1.2.3"); got != want {
 		t.Errorf("versionLine = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultStaleDaysFromEnv(t *testing.T) {
+	t.Setenv("GIT_TIDY_STALE_DAYS", "30")
+	opts, err := parseArgs([]string{})
+	if err != nil || opts.staleDays != 30 {
+		t.Errorf("GIT_TIDY_STALE_DAYS 기본값 적용 실패: got %+v err=%v, want staleDays=30", opts, err)
 	}
 }
