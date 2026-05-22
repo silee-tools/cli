@@ -30,7 +30,12 @@ git-tidy --stale-days=N    # stale 판정 창을 N일로 변경 (기본 20일)
 git-tidy --no-fetch        # git fetch --prune 단계 건너뛰기
 git-tidy --version         # 버전 출력 (-v 동일)
 git-tidy --help            # 사용법 출력 (-h 동일)
+gtidy                      # git-tidy 와 동일
+gtidy!                     # git-tidy --run 과 동일
 ```
+
+`gtidy` 와 `gtidy!` 는 Homebrew formula 와 `mise run install` 이 함께 설치하는 단축
+명령이다.
 
 ## 동작 방식
 

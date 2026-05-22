@@ -23,9 +23,15 @@ description = "Check formatting (CI)"
 run = "test -z \"$(gofmt -l .)\""
 
 [tasks.install]
-description = "Build and install to ~/.local/bin"
-run = "go build -o ~/.local/bin/git-tidy ./cmd/git-tidy"
+description = "Build and install to ~/.local/bin (git-tidy + gtidy/gtidy! symlinks)"
+run = """
+go build -o ~/.local/bin/git-tidy ./cmd/git-tidy
+ln -sf ~/.local/bin/git-tidy ~/.local/bin/gtidy
+ln -sf ~/.local/bin/git-tidy "$HOME/.local/bin/gtidy!"
+"""
 
 [tasks.uninstall]
 description = "Remove local dev build"
-run = "rm -f ~/.local/bin/git-tidy"
+run = """
+rm -f ~/.local/bin/git-tidy ~/.local/bin/gtidy "$HOME/.local/bin/gtidy!"
+"""
