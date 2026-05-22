@@ -16,7 +16,7 @@ func main() {
 	for _, a := range os.Args[1:] {
 		switch a {
 		case "-v", "--version":
-			fmt.Fprint(os.Stdout, versionLine("git-tidy", version))
+			_, _ = fmt.Fprint(os.Stdout, versionLine("git-tidy", version))
 			return
 		case "-h", "--help":
 			fmt.Print(helpText)
