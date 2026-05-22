@@ -1,9 +1,11 @@
 # git-tidy
 
-upstream 이 사라진(`[gone]`) 로컬 git 브랜치를 안전하게 정리하는 순수 zsh 플러그인.
-trunk 기반 + squash merge 워크플로우에서, 원격 PR 이 squash 머지되어 원격 브랜치가
-삭제되면 로컬 추적 브랜치가 `[gone]` 상태로 남는다. git-tidy 는 이런 브랜치만
-골라 보호 규칙을 적용한 뒤 정리한다.
+로컬 git 브랜치를 일괄 정리하는 명령줄 도구. 작업이 끝났거나 오래 방치된 브랜치를
+자동으로 찾아 보여주고, 사용자가 체크박스로 확인하면 한 번에 삭제한다.
+
+삭제 후보 신호(작업이 끝났다는 양성 근거)와 보호 규칙(절대 건드리면 안 되는 구조적
+조건) 두 층을 조합하는 하이브리드 모델이다. 신호에 걸리고 보호 규칙에 걸리지 않은
+브랜치만 정리 대상이 된다.
 
 ## 설치
 
@@ -11,77 +13,60 @@ trunk 기반 + squash merge 워크플로우에서, 원격 PR 이 squash 머지�
 brew install silee-tools/tap/git-tidy
 ```
 
-또는 이 저장소에서 로컬 설치:
+또는 소스에서 직접 빌드:
 
 ```bash
 cd apps/git-tidy
-mise run install
+mise run build
 ```
-
-`mise run install` 은 플러그인을
-`${XDG_DATA_HOME:-$HOME/.local/share}/git-tidy/git-tidy.plugin.zsh` 로 복사한다.
-
-## zsh 플러그인 로드
-
-설치 후 `~/.zshrc` 에 다음 한 줄을 추가한다.
-
-```zsh
-[[ -f "${XDG_DATA_HOME:-$HOME/.local/share}/git-tidy/git-tidy.plugin.zsh" ]] && \
-  source "${XDG_DATA_HOME:-$HOME/.local/share}/git-tidy/git-tidy.plugin.zsh"
-```
-
-Homebrew 로 설치한 경우 plugin 은
-`$(brew --prefix)/share/git-tidy/git-tidy.plugin.zsh` 에 놓이며, 설치 직후
-출력되는 caveats 안내의 경로를 그대로 source 하면 된다.
 
 ## 사용
 
 ```bash
-git-tidy              # dry-run (삭제 대상만 표시, 기본 동작)
-git-tidy --run        # 실제 삭제 실행
-git-tidy --days=N     # 최근 N일 이내 커밋이 있는 브랜치 보호 (기본 7일)
-git-tidy --no-fetch   # git fetch --prune 단계 건너뛰기
-git-tidy --version    # 버전 출력 (-v 동일)
-git-tidy --help       # 사용법 출력
+git-tidy                   # dry-run (삭제 대상만 표시, 기본 동작)
+git-tidy --run             # 체크박스로 확인 후 실제 삭제
+git-tidy --run --no-tui    # 줄 기반 선택으로 실제 삭제
+git-tidy --stale-days=N    # stale 판정 창을 N일로 변경 (기본 20일)
+git-tidy --no-fetch        # git fetch --prune 단계 건너뛰기
+git-tidy --version         # 버전 출력 (-v 동일)
+git-tidy --help            # 사용법 출력 (-h 동일)
 ```
-
-별칭(alias):
-
-- `gtidy` 는 `git-tidy` 와 같다.
-- `gtidy!` 는 `git-tidy --run` 과 같다(실제 삭제).
 
 ## 동작 방식
 
-기본 동작은 dry-run 이라, 명시적으로 `--run` 을 주기 전에는 어떤 브랜치도
-삭제하지 않는다. 실행 순서는 다음과 같다.
+기본 동작은 dry-run 이라, `--run` 을 명시하기 전에는 어떤 브랜치도 삭제하지 않는다.
+실행 순서는 다음과 같다.
 
-1. `--no-fetch` 가 없으면 `git fetch --prune origin` 으로 원격 기준 추적 정보를
-   먼저 갱신한다. 오프라인이거나 remote 가 없으면 경고만 남기고 계속 진행한다.
-2. upstream 추적 상태가 `[gone]` 인 로컬 브랜치만 후보로 모은다.
-3. 후보 중 다음은 삭제하지 않고 건너뛰거나 보호한다.
-   - 현재 체크아웃된 브랜치, 기본 브랜치(main/master/trunk 등 자동 감지)
-   - 다른 worktree 에서 체크아웃 중인 브랜치
-   - 최근 보호 기간(기본 7일) 이내에 커밋이 있는 브랜치
-4. 남은 브랜치를 삭제 대상으로 분류한다. dry-run 이면 목록만 출력하고,
-   `--run` 이면 `git branch -D` 로 삭제한다.
+1. `--no-fetch` 가 없으면 `git fetch --prune` 으로 원격 기준 추적 정보를 먼저
+   갱신한다.
+2. 삭제 후보 신호 세 가지를 검사한다. 하나라도 해당하면 그 브랜치가 삭제 후보다.
+   - **`[gone]`**: upstream 추적 브랜치가 사라진 상태. squash merge 워크플로에서
+     PR 이 머지된 뒤 원격 브랜치가 삭제되면 이 상태가 된다.
+   - **merged**: `git branch --merged <base>` 로 확인한다. fast-forward 나
+     merge commit 으로 합쳐진 브랜치가 대상이다.
+   - **stale**: 마지막 커밋 또는 merge-base 가 stale 판정 창(기본 20일)보다
+     오래된 경우다.
+3. 보호 규칙을 적용한다. 다음 중 하나라도 해당하면 후보에서 제외한다.
+   - 현재 체크아웃된 브랜치
+   - 자동 감지한 base 브랜치(main·master·trunk 등)
+4. 남은 브랜치가 삭제 대상이다. dry-run 이면 목록만 출력하고, `--run` 이면
+   체크박스 화면을 띄워 사용자가 확정한 브랜치를 `git branch -D` 로 삭제한다.
 
-기본 브랜치는 oh-my-zsh git 플러그인의 `git_main_branch()` 가 있으면 그것을
-쓰고, 없으면 자체 폴백으로 `main`/`trunk`/`mainline`/`default`/`stable`/`master`
-순으로 탐색한다.
+다른 worktree 에 체크아웃된 브랜치가 삭제 대상이 되면, worktree 를 먼저 제거한 뒤
+브랜치를 삭제한다. worktree 에 커밋하지 않은 변경이 있으면 해당 브랜치를 실패로
+보고하고 건너뛴다.
 
 ## 환경 변수
 
 | 변수 | 설명 | 기본값 |
 |------|------|--------|
-| `GIT_TIDY_PROTECT_DAYS` | 최근 커밋 보호 기간(일). `--days=N` 으로 호출 시점에 덮어쓸 수 있다. | `7` |
+| `GIT_TIDY_STALE_DAYS` | stale 판정 창(일). `--stale-days=N` 으로 호출 시점에 덮어쓸 수 있다. | `20` |
 
 ## 개발
 
-이 도구는 Go 코드가 없는 순수 zsh 플러그인이다. 검증은 zsh 문법 검사를 하드
-게이트로 두고, `shellcheck` 는 보조 지표로 둔다.
-
 ```bash
-mise run shell-check   # zsh -n + shellcheck -s bash
-mise run install       # 로컬 XDG 경로에 설치
-mise run uninstall     # 로컬 설치 제거
+mise run build      # 빌드
+mise run test       # 테스트 실행
+mise run lint       # 린터
+mise run fmt-check  # gofmt 검사 (CI 동일)
 ```
