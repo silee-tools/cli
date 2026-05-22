@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/silee-tools/cli/compare/git-tidy/v0.3.0...git-tidy/v0.4.0) (2026-05-22)
+
+
+### Features
+
+* **git-tidy:** add gtidy/gtidy! multi-call shortcuts ([#73](https://github.com/silee-tools/cli/issues/73)) ([7873484](https://github.com/silee-tools/cli/commit/7873484184c29bfde93ad43f67b82e0ce351184b))
+
 ## [0.3.0](https://github.com/silee-tools/cli/compare/git-tidy/v0.2.1...git-tidy/v0.3.0) (2026-05-22)
 
 
