@@ -299,13 +299,13 @@ git commit -m "docs(git-tidy): document gtidy/gtidy! shortcuts"
 ## Task 5: Homebrew formula — 심볼릭 링크 설치
 
 **Files:**
-- Modify (별도 저장소): `/Users/silee/repos/silee-tools/homebrew-tap/Formula/git-tidy.rb`
+- Modify (별도 저장소): `~/repos/silee-tools/homebrew-tap/Formula/git-tidy.rb`
 
 이 변경은 `cli` 저장소가 아니라 `homebrew-tap` 저장소에서 한다.
 
 - [ ] **Step 1: homebrew-tap 최신화**
 
-Run: `cd /Users/silee/repos/silee-tools/homebrew-tap && git pull`
+Run: `cd ~/repos/silee-tools/homebrew-tap && git pull`
 Expected: fast-forward. 릴리스 자동화가 올린 `chore(git-tidy): bump to v0.3.0 ...` 커밋을 받아, formula 가 실제 version·sha256 을 갖춘 상태가 된다.
 
 - [ ] **Step 2: def install 에 심볼릭 링크 추가**
@@ -324,14 +324,14 @@ Expected: fast-forward. 릴리스 자동화가 올린 `chore(git-tidy): bump to 
 
 - [ ] **Step 3: 구문 검사**
 
-Run: `cd /Users/silee/repos/silee-tools/homebrew-tap && ruby -c Formula/git-tidy.rb`
+Run: `cd ~/repos/silee-tools/homebrew-tap && ruby -c Formula/git-tidy.rb`
 Expected: `Syntax OK`.
 
 - [ ] **Step 4: Commit (homebrew-tap 저장소)**
 
 `homebrew-tap` 저장소의 커밋 컨벤션(`git log --oneline -5` 로 확인)을 따라 커밋한다:
 ```bash
-cd /Users/silee/repos/silee-tools/homebrew-tap
+cd ~/repos/silee-tools/homebrew-tap
 git add Formula/git-tidy.rb
 git commit -m "feat(git-tidy): install gtidy/gtidy! symlinks"
 ```
