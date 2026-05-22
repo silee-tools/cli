@@ -101,8 +101,8 @@ worktree 에 커밋하지 않은 변경이 남아 있으면 `git worktree remove
 - `--version` / `-v` — 저장소 표준 형식 `git-tidy v<version> © 2026 silee-tools`
   한 줄을 출력한다.
 - `--help` / `-h` — 사용법을 출력한다.
-- 셸 별칭(`gtidy` 등)은 바이너리가 스스로 정의할 수 없으므로 제공하지 않는다.
-  사용자가 원하면 직접 설정한다.
+- `gtidy` 와 `gtidy!` 는 `git-tidy` 바이너리를 가리키는 multi-call 단축 명령이다.
+  `gtidy` 는 `git-tidy` 와, `gtidy!` 는 `git-tidy --run` 과 같다.
 
 dry-run 과 `--run` 을 나누는 이유는, 무엇이 지워질지 먼저 눈으로 확인하는 단계와
 실제 삭제를 확정하는 단계를 분리해 실수를 줄이기 위함이다.

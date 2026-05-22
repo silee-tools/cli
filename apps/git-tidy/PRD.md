@@ -44,6 +44,8 @@ git-tidy 는 로컬 git 브랜치를 일괄 정리하는 명령줄 도구다. �
   없는 환경에서 사용한다.
 - `git-tidy --version` / `git-tidy -v`: 버전을 출력한다.
 - `git-tidy --help` / `git-tidy -h`: 사용법을 출력한다.
+- `gtidy`: `git-tidy` 와 동일하게 동작하는 단축 명령이다.
+- `gtidy!`: `git-tidy --run` 과 동일하게 동작하는 단축 명령이다.
 - 삭제 후보 신호: 다음 세 신호 중 하나라도 해당하면 그 브랜치가 삭제 후보가 된다.
   (1) upstream 추적 브랜치가 사라진 `[gone]` 상태, (2) base 브랜치에 이미 머지된
   상태, (3) 마지막 커밋 또는 merge-base 가 stale 판정 창보다 오래된 stale 상태.
