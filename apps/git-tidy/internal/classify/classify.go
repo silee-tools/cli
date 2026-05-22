@@ -31,9 +31,17 @@ type Result struct {
 	WorktreePath string // worktree 에 물려 있으면 그 경로, 아니면 빈 문자열
 }
 
+// Excluded 는 삭제 신호에 걸렸으나 보호 규칙으로 제외된 브랜치다.
+type Excluded struct {
+	Name   string
+	Signal Signal
+	Reason string // 제외 사유 (보호 규칙)
+}
+
 // Classified 는 분류 결과다.
 type Classified struct {
 	ToDelete   []Result
+	Excluded   []Excluded
 	OtherCount int // 후보도 아니고 보호도 아닌 평범한 브랜치 수
 }
 
@@ -42,11 +50,19 @@ func Classify(in Input) Classified {
 	var out Classified
 	cutoff := in.Now - int64(in.StaleDays)*86400
 	for _, b := range in.Branches {
-		// 보호 규칙: 현재 브랜치, base 브랜치는 절대 삭제하지 않는다.
-		if b.Name == in.Current || b.Name == in.Base {
+		sig, isCandidate := candidateSignal(b, in, cutoff)
+		reason := protectionReason(b, in)
+		if reason != "" {
+			// 보호 규칙에 걸린 브랜치: 후보일 때만 Excluded 에 기록한다.
+			if isCandidate {
+				out.Excluded = append(out.Excluded, Excluded{
+					Name:   b.Name,
+					Signal: sig,
+					Reason: reason,
+				})
+			}
 			continue
 		}
-		sig, isCandidate := candidateSignal(b, in, cutoff)
 		if !isCandidate {
 			out.OtherCount++
 			continue
@@ -58,6 +74,18 @@ func Classify(in Input) Classified {
 		})
 	}
 	return out
+}
+
+// protectionReason 은 브랜치가 보호 규칙에 걸리는 사유를 돌려준다.
+// 걸리지 않으면 빈 문자열이다.
+func protectionReason(b gitx.BranchRef, in Input) string {
+	if b.Name == in.Current {
+		return "현재 브랜치"
+	}
+	if b.Name == in.Base {
+		return "base 브랜치"
+	}
+	return ""
 }
 
 // candidateSignal 은 브랜치의 첫 삭제 후보 신호를 돌려준다.

@@ -45,4 +45,11 @@ func TestClassify(t *testing.T) {
 	if got.OtherCount != 1 { // feature-active
 		t.Errorf("OtherCount = %d, want 1", got.OtherCount)
 	}
+	wantExcluded := []Excluded{
+		{Name: "feature-current", Signal: SignalStale, Reason: "현재 브랜치"},
+		{Name: "main", Signal: SignalMerged, Reason: "base 브랜치"},
+	}
+	if !reflect.DeepEqual(got.Excluded, wantExcluded) {
+		t.Errorf("Excluded mismatch\n got=%+v\nwant=%+v", got.Excluded, wantExcluded)
+	}
 }

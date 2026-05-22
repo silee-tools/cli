@@ -158,6 +158,12 @@ func printTargets(c classify.Classified) {
 		}
 		fmt.Println(line)
 	}
+	if len(c.Excluded) > 0 {
+		fmt.Printf("제외된 후보 (%d):\n", len(c.Excluded))
+		for _, e := range c.Excluded {
+			fmt.Printf("  %s  (%s)  [보호: %s]\n", e.Name, e.Signal, e.Reason)
+		}
+	}
 	if c.OtherCount > 0 {
 		fmt.Printf("그 외 브랜치 %d개는 정리 대상이 아닙니다.\n", c.OtherCount)
 	}
