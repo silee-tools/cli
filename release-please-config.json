@@ -23,6 +23,6 @@
   "packages": {
     "apps/jg": {"package-name": "jg"},
     "apps/totp": {"package-name": "totp"},
-    "apps/git-tidy": {"package-name": "git-tidy", "extra-files": ["git-tidy.plugin.zsh"]}
+    "apps/git-tidy": {"package-name": "git-tidy"}
   }
 }
