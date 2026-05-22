@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.3.0](https://github.com/silee-tools/cli/compare/git-tidy/v0.2.1...git-tidy/v0.3.0) (2026-05-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **git-tidy:** scaffold Go module, drop zsh plugin
+
+### Features
+
+* **git-tidy:** add git CLI wrapper ([5dd7fd3](https://github.com/silee-tools/cli/commit/5dd7fd3b90026c7e2d85ff989587e96f00cb71d3))
+* **git-tidy:** add hybrid branch classification ([7afb090](https://github.com/silee-tools/cli/commit/7afb0905507ea73b0932ba6121684d74590b520c))
+* **git-tidy:** add mode detection and line-based selection ([a670ac7](https://github.com/silee-tools/cli/commit/a670ac720e5fa98a0d485a4deb69903b7d2cccb6))
+* **git-tidy:** add pure multi-select model ([bf15d34](https://github.com/silee-tools/cli/commit/bf15d34d91bead25ccf54ea3002a5dfbd462744d))
+* **git-tidy:** add raw-mode checkbox TUI ([bf6bd6a](https://github.com/silee-tools/cli/commit/bf6bd6a9681565f8907b9db67ae6ac2d57cbd980))
+* **git-tidy:** add zsh and bash completions ([621256e](https://github.com/silee-tools/cli/commit/621256ed5b9d756d4aae5f081d1cf0d5d3f4b3c5))
+* **git-tidy:** show excluded candidates in dry-run output ([0eab9a0](https://github.com/silee-tools/cli/commit/0eab9a0c485c0d09b650584262a31c0df1ef9030))
+* **git-tidy:** wire arg parsing, classification, deletion ([156f2c0](https://github.com/silee-tools/cli/commit/156f2c02e641c72099750d4c9191ee9fa3063bdc))
+
+
+### Refactoring
+
+* **git-tidy:** scaffold Go module, drop zsh plugin ([7f3dc12](https://github.com/silee-tools/cli/commit/7f3dc123f1397ff7e8abc90d9bdfddf9d159f74e))
+
+
+### Documentation
+
+* **git-tidy:** update repo docs and PRD for Go rewrite ([adbfbc0](https://github.com/silee-tools/cli/commit/adbfbc090af1a8c062646be7d2d7fa4dc6959600))
+
+
+### Tests
+
+* **git-tidy:** isolate GIT_TIDY_STALE_DAYS env in arg tests ([cc35efb](https://github.com/silee-tools/cli/commit/cc35efb31cb505b785877f95269c4b08702442b9))
+
 ## [0.2.1](https://github.com/silee-tools/cli/compare/git-tidy/v0.2.0...git-tidy/v0.2.1) (2026-05-21)
 
 
