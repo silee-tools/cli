@@ -1,4 +1,4 @@
-#compdef git-tidy
+#compdef git-tidy gtidy gtidy!
 
 _arguments \
   '--run[삭제 대상을 다중 선택해 삭제]' \
