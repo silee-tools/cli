@@ -1,48 +1,31 @@
-[tasks.shell-check]
-description = "Check zsh plugin syntax"
-run = """
-zsh -n git-tidy.plugin.zsh
-shellcheck -s bash git-tidy.plugin.zsh
-"""
+[tools]
+go = "1.23"
+"aqua:golangci/golangci-lint" = "latest"
 
-[tasks.version-check]
-description = "Assert git-tidy --version output (monorepo standard format)"
-run = """
-set -eu
-expected="git-tidy v0.1.0 © 2026 silee-tools"
-for flag in --version -v; do
-  actual="$(zsh -c "compdef() { :; }; source ./git-tidy.plugin.zsh; git-tidy $flag")"
-  if [ "$actual" != "$expected" ]; then
-    echo "FAIL git-tidy $flag: got [$actual] want [$expected]" >&2
-    exit 1
-  fi
-  echo "OK git-tidy $flag: $actual"
-done
-"""
+[tasks.build]
+description = "Build the project"
+run = "go build ./cmd/git-tidy"
 
 [tasks.test]
-description = "Run tests (zsh-only tool: syntax check + version output)"
-run = """
-zsh -n git-tidy.plugin.zsh
-shellcheck -s bash git-tidy.plugin.zsh
-mise run version-check
-"""
+description = "Run tests"
+run = "go test ./..."
+
+[tasks.lint]
+description = "Run linter"
+run = "golangci-lint run"
+
+[tasks.fmt]
+description = "Format code"
+run = "gofmt -w ."
+
+[tasks.fmt-check]
+description = "Check formatting (CI)"
+run = "test -z \"$(gofmt -l .)\""
 
 [tasks.install]
-description = "Install zsh plugin to local XDG data path"
-run = """
-set -euo pipefail
-data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
-mkdir -p "$data_home/git-tidy"
-cp git-tidy.plugin.zsh "$data_home/git-tidy/git-tidy.plugin.zsh"
-echo "Installed $data_home/git-tidy/git-tidy.plugin.zsh"
-"""
+description = "Build and install to ~/.local/bin"
+run = "go build -o ~/.local/bin/git-tidy ./cmd/git-tidy"
 
 [tasks.uninstall]
-description = "Remove local zsh plugin"
-run = """
-data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
-rm -f "$data_home/git-tidy/git-tidy.plugin.zsh"
-rmdir "$data_home/git-tidy" 2>/dev/null || true
-echo "Removed $data_home/git-tidy/git-tidy.plugin.zsh"
-"""
+description = "Remove local dev build"
+run = "rm -f ~/.local/bin/git-tidy"

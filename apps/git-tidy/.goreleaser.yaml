@@ -3,17 +3,24 @@ version: 2
 project_name: git-tidy
 
 builds:
-  - skip: true
+  - main: ./cmd/git-tidy
+    binary: git-tidy
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
 
 archives:
-  - id: git-tidy
-    formats: [tar.gz]
-    name_template: "{{ .ProjectName }}-v{{ .Version }}"
-    meta: true
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}-v{{ .Version }}-{{ .Os }}-{{ .Arch }}"
     files:
-      - README.md
-      - CHANGELOG.md
-      - git-tidy.plugin.zsh
+      - completions/*
 
 checksum:
   name_template: "checksums.txt"
@@ -25,6 +32,5 @@ changelog:
       - "^docs:"
       - "^chore:"
 
-# release-please 가 GitHub Release 객체를 만들고, 우리는 dist/ 에 산출물만 둔다.
 release:
   disable: true
