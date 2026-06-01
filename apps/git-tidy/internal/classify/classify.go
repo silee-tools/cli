@@ -119,6 +119,9 @@ func ageDaysFor(b gitx.BranchRef, in Input, sig Signal) int {
 	if ts == 0 {
 		return 0
 	}
+	if in.Now <= ts {
+		return 0
+	}
 	return int((in.Now - ts) / 86400)
 }
 
