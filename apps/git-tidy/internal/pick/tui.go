@@ -136,9 +136,10 @@ func (m tuiModel) View() string {
 		fmt.Sprintf("git-tidy — 삭제할 브랜치 선택  (%d/%d 선택됨)",
 			len(m.sel.Checked()), len(m.sel.Items()))) + "\n\n")
 
+	items := m.sel.Items()
 	start, end := m.window()
 	for idx := start; idx < end; idx++ {
-		b.WriteString(m.renderRow(idx) + "\n")
+		b.WriteString(m.renderRow(idx, items) + "\n")
 	}
 	b.WriteString("\n" + styleHelp.Render(
 		"↑↓/jk 이동 · space 토글 · a 전체 · enter 삭제 · esc 취소"))
@@ -164,7 +165,7 @@ func (m tuiModel) window() (int, int) {
 	return start, end
 }
 
-func (m tuiModel) renderRow(idx int) string {
+func (m tuiModel) renderRow(idx int, items []Item) string {
 	r := m.rows[idx]
 	cursor := "  "
 	if idx == m.cursor {
@@ -175,11 +176,11 @@ func (m tuiModel) renderRow(idx int) string {
 		head := fmt.Sprintf("▾ %s (%d)", r.signal, count)
 		line := cursor + headerStyle(r.signal).Render(head) + "  " + styleDim.Render(headerHint[r.signal])
 		if idx == m.cursor {
-			return styleCursor.Render(strings.TrimRight(line, " "))
+			return styleCursor.Render(line)
 		}
 		return line
 	}
-	it := m.sel.Items()[r.itemIdx]
+	it := items[r.itemIdx]
 	box := "◯"
 	if m.sel.IsChecked(r.itemIdx) {
 		box = styleChecked.Render("◉")

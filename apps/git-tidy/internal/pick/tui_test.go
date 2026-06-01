@@ -65,3 +65,52 @@ func TestTUIEscCancels(t *testing.T) {
 		t.Error("esc 는 취소여야 함")
 	}
 }
+
+func TestTUICursorClampsAtTop(t *testing.T) {
+	m := newTUIModel(NewSelection(tuiItems()))
+	m, _ = updateForTest(m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.cursor != 0 {
+		t.Errorf("커서 0에서 Up 후에도 0 이어야 함: cursor=%d", m.cursor)
+	}
+	m, _ = updateForTest(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	if m.cursor != 0 {
+		t.Errorf("커서 0에서 'k' 후에도 0 이어야 함: cursor=%d", m.cursor)
+	}
+}
+
+func TestTUICursorClampsAtBottom(t *testing.T) {
+	m := newTUIModel(NewSelection(tuiItems()))
+	last := len(m.rows) - 1 // rows 5개이므로 4
+	for i := 0; i < 10; i++ {
+		m, _ = updateForTest(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	}
+	if m.cursor != last {
+		t.Errorf("여러 번 'j' 후 마지막 행(%d)에 머물러야 함: cursor=%d", last, m.cursor)
+	}
+}
+
+func TestTUIWindowFullWhenHeightZero(t *testing.T) {
+	m := newTUIModel(NewSelection(tuiItems()))
+	start, end := m.window()
+	if start != 0 || end != len(m.rows) {
+		t.Errorf("height=0 이면 전체 범위여야 함: (%d,%d), want (0,%d)", start, end, len(m.rows))
+	}
+}
+
+func TestTUIWindowRespectsSmallHeight(t *testing.T) {
+	m := newTUIModel(NewSelection(tuiItems()))
+	// rows 5개보다 visible(=height-4=2) 가 작도록 작은 height 주입.
+	m, _ = updateForTest(m, tea.WindowSizeMsg{Width: 80, Height: 6})
+	// 커서를 마지막 행으로 옮겨 window 가 끝쪽을 비추게 한다.
+	for i := 0; i < 10; i++ {
+		m, _ = updateForTest(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	}
+	start, end := m.window()
+	visible := 6 - 4 // height-4
+	if end-start > visible {
+		t.Errorf("window 폭이 visible(%d) 를 넘음: end-start=%d", visible, end-start)
+	}
+	if m.cursor < start || m.cursor >= end {
+		t.Errorf("window 가 커서(%d)를 포함해야 함: (%d,%d)", m.cursor, start, end)
+	}
+}
