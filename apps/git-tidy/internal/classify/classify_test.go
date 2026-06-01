@@ -37,7 +37,7 @@ func TestClassify(t *testing.T) {
 	wantDelete := []Result{
 		{Name: "feature-gone", Signal: SignalGone},
 		{Name: "feature-merged", Signal: SignalMerged},
-		{Name: "feature-stale", Signal: SignalStale},
+		{Name: "feature-stale", Signal: SignalStale, AgeDays: 30},
 	}
 	if !reflect.DeepEqual(got.ToDelete, wantDelete) {
 		t.Errorf("ToDelete mismatch\n got=%+v\nwant=%+v", got.ToDelete, wantDelete)
@@ -51,5 +51,34 @@ func TestClassify(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Excluded, wantExcluded) {
 		t.Errorf("Excluded mismatch\n got=%+v\nwant=%+v", got.Excluded, wantExcluded)
+	}
+}
+
+func TestClassifySortsBySignalThenName(t *testing.T) {
+	now := int64(1_000_000_000)
+	day := int64(86400)
+	old := now - 40*day
+	in := Input{
+		Now:       now,
+		StaleDays: 20,
+		Base:      "main",
+		Current:   "",
+		Branches: []gitx.BranchRef{
+			{Name: "zzz-stale", HasUpstream: true, CommitUnix: old},
+			{Name: "aaa-stale", HasUpstream: true, CommitUnix: old},
+			{Name: "mmm-gone", UpstreamGone: true, HasUpstream: true, CommitUnix: now},
+		},
+		Merged:        map[string]bool{},
+		Worktrees:     map[string]string{},
+		MergeBaseUnix: func(string) (int64, bool) { return now, true },
+	}
+	got := Classify(in)
+	want := []Result{
+		{Name: "mmm-gone", Signal: SignalGone},
+		{Name: "aaa-stale", Signal: SignalStale, AgeDays: 40},
+		{Name: "zzz-stale", Signal: SignalStale, AgeDays: 40},
+	}
+	if !reflect.DeepEqual(got.ToDelete, want) {
+		t.Errorf("정렬 결과 mismatch\n got=%+v\nwant=%+v", got.ToDelete, want)
 	}
 }
