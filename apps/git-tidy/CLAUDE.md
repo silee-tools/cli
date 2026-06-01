@@ -41,3 +41,8 @@ GitHub Release 에 첨부한다. homebrew-tap `Formula/git-tidy.rb` 의 sha256/v
 `classify` 패키지가 핵심 판단 로직을 담는다. 삭제 후보 신호(`[gone]` / merged /
 stale) 와 보호 규칙(현재 브랜치, base 브랜치) 두 층으로 분류한다. 이 패키지는
 git 호출에 의존하지 않는 순수 함수로 구성되며, 단위 테스트로 검증한다.
+
+선택 화면은 `pick` 패키지가 담당한다. `classify` 가 신호 순위(gone → merged →
+stale)로 정렬한 결과를 받아, `gone` 만 기본 체크한 그룹형 선택 모델을 만든다.
+bubbletea 기반 TUI 와 줄 기반 폴백이 같은 모델을 공유하며, 그룹 헤더에서 그룹 일괄
+토글을 지원한다. TUI 의 상태 전이(`Update`)는 순수 함수로 분리해 단위 테스트한다.
