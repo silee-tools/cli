@@ -106,11 +106,12 @@ func (m *tuiModel) toggleAtCursor() {
 }
 
 var (
-	styleTitle   = lipgloss.NewStyle().Bold(true)
-	styleHelp    = lipgloss.NewStyle().Faint(true)
-	styleDim     = lipgloss.NewStyle().Faint(true)
-	styleChecked = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	// signalColors 는 신호별 메인 색이다. 헤더 색과 커서 줄 강조에 함께 쓴다.
+	styleTitle = lipgloss.NewStyle().Bold(true)
+	styleHelp  = lipgloss.NewStyle().Faint(true)
+	styleDim   = lipgloss.NewStyle().Faint(true)
+	// styleCursor 는 커서가 놓인 줄을 음영(reverse)으로 강조한다.
+	styleCursor = lipgloss.NewStyle().Bold(true).Reverse(true)
+	// signalColors 는 신호별 메인 색이다. 헤더 색과 체크 글리프 색에 함께 쓴다.
 	signalColors = map[string]lipgloss.Color{
 		"gone":   lipgloss.Color("9"),  // 빨강 계열
 		"merged": lipgloss.Color("10"), // 초록 계열
@@ -123,14 +124,9 @@ var (
 	}
 )
 
-// headerStyle 은 비커서 그룹 헤더의 굵은 신호색 스타일이다.
-func headerStyle(signal string) lipgloss.Style {
-	return lipgloss.NewStyle().Bold(true).Foreground(signalColors[signal])
-}
-
-// cursorStyle 은 커서가 놓인 줄을 그 신호의 메인 색 하나로 굵게 강조한다.
-// reverse 블록 대신 단일 색을 써서 줄 전체가 한 색으로 보인다.
-func cursorStyle(signal string) lipgloss.Style {
+// signalStyle 은 신호별 메인 색의 굵은 스타일이다. 그룹 헤더와 체크된 글리프(◉)가
+// 같은 카테고리 색을 따르도록 함께 쓴다.
+func signalStyle(signal string) lipgloss.Style {
 	return lipgloss.NewStyle().Bold(true).Foreground(signalColors[signal])
 }
 
@@ -178,21 +174,17 @@ func (m tuiModel) renderRow(idx int, items []Item) string {
 	if r.isHeader {
 		count := m.sel.GroupCount(r.signal)
 		head := fmt.Sprintf("▾ %s (%d)", r.signal, count)
+		line := cursor + signalStyle(r.signal).Render(head) + "  " + styleDim.Render(headerHint[r.signal])
 		if idx == m.cursor {
-			// 커서 줄: 헤더와 힌트를 평문으로 합쳐 신호색 하나로만 강조한다.
-			plain := cursor + head + "  " + headerHint[r.signal]
-			return cursorStyle(r.signal).Render(strings.TrimRight(plain, " "))
+			return styleCursor.Render(line)
 		}
-		return cursor + headerStyle(r.signal).Render(head) + "  " + styleDim.Render(headerHint[r.signal])
+		return line
 	}
 	it := items[r.itemIdx]
-	if idx == m.cursor {
-		// 커서 줄: 체크 글리프·worktree·경과까지 평문으로 만들어 신호색 하나로만 강조한다.
-		return cursorStyle(it.Signal).Render(itemPlain(it, m.sel.IsChecked(r.itemIdx), cursor))
-	}
 	box := "◯"
 	if m.sel.IsChecked(r.itemIdx) {
-		box = styleChecked.Render("◉")
+		// 체크된 글리프는 그 항목이 속한 카테고리(신호) 색을 따른다.
+		box = signalStyle(it.Signal).Render("◉")
 	}
 	line := fmt.Sprintf("%s  %s %s", cursor, box, it.Name)
 	if it.WorktreePath != "" {
@@ -201,22 +193,8 @@ func (m tuiModel) renderRow(idx int, items []Item) string {
 	if it.AgeDays > 0 {
 		line += styleDim.Render(fmt.Sprintf("   %d일 경과", it.AgeDays))
 	}
-	return line
-}
-
-// itemPlain 은 항목 줄을 스타일 없이 평문 문자열로 만든다. 커서 줄에서 단일
-// 색을 한 번만 입히기 위해, 부분 스타일(체크색·dim)을 섞지 않은 원본이 필요하다.
-func itemPlain(it Item, checked bool, cursor string) string {
-	box := "◯"
-	if checked {
-		box = "◉"
-	}
-	line := fmt.Sprintf("%s  %s %s", cursor, box, it.Name)
-	if it.WorktreePath != "" {
-		line += "   ⌂ " + filepath.Base(it.WorktreePath) + "  [worktree 동반 제거]"
-	}
-	if it.AgeDays > 0 {
-		line += fmt.Sprintf("   %d일 경과", it.AgeDays)
+	if idx == m.cursor {
+		return styleCursor.Render(line)
 	}
 	return line
 }
