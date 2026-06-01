@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/silee-tools/cli/compare/git-tidy/v0.4.0...git-tidy/v0.5.0) (2026-06-01)
+
+
+### Features
+
+* **git-tidy:** 기본 선택 한정·사유별 정렬·그룹 TUI 개선 ([#76](https://github.com/silee-tools/cli/issues/76)) ([65d0d3c](https://github.com/silee-tools/cli/commit/65d0d3ce24a46316b184afb99df6ec3662816d7b))
+
 ## [0.4.0](https://github.com/silee-tools/cli/compare/git-tidy/v0.3.0...git-tidy/v0.4.0) (2026-05-22)
 
 
