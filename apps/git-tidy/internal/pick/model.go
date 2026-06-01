@@ -71,6 +71,17 @@ func (s *Selection) Groups() []string {
 	return out
 }
 
+// GroupCount 는 해당 신호(그룹)에 속한 항목 수다.
+func (s *Selection) GroupCount(signal string) int {
+	n := 0
+	for _, it := range s.items {
+		if it.Signal == signal {
+			n++
+		}
+	}
+	return n
+}
+
 // ToggleGroup 은 한 그룹 안에 하나라도 체크돼 있으면 그 그룹 전체 해제,
 // 아니면 그 그룹 전체 체크한다(ToggleAll 규칙의 그룹 범위판).
 func (s *Selection) ToggleGroup(signal string) {

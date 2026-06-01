@@ -35,22 +35,12 @@ func RunLine(sel *Selection, in io.Reader, out io.Writer) ([]string, bool) {
 	}
 }
 
-func groupCount(sel *Selection, signal string) int {
-	n := 0
-	for _, it := range sel.Items() {
-		if it.Signal == signal {
-			n++
-		}
-	}
-	return n
-}
-
 func renderLine(sel *Selection, out io.Writer) {
 	cur := ""
 	for i, it := range sel.Items() {
 		if it.Signal != cur {
 			cur = it.Signal
-			_, _ = fmt.Fprintf(out, "  ── %s (%d) ──\n", cur, groupCount(sel, cur))
+			_, _ = fmt.Fprintf(out, "  ── %s (%d) ──\n", cur, sel.GroupCount(cur))
 		}
 		mark := " "
 		if sel.IsChecked(i) {
