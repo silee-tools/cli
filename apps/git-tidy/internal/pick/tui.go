@@ -109,9 +109,8 @@ var (
 	styleTitle = lipgloss.NewStyle().Bold(true)
 	styleHelp  = lipgloss.NewStyle().Faint(true)
 	styleDim   = lipgloss.NewStyle().Faint(true)
-	// styleCursor 는 커서가 놓인 줄을 음영(reverse)으로 강조한다.
-	styleCursor = lipgloss.NewStyle().Bold(true).Reverse(true)
-	// signalColors 는 신호별 메인 색이다. 헤더 색과 체크 글리프 색에 함께 쓴다.
+	// signalColors 는 신호별 메인 색이다. 헤더 색·체크 글리프 색·커서 줄 배경 음영에
+	// 함께 쓴다.
 	signalColors = map[string]lipgloss.Color{
 		"gone":   lipgloss.Color("9"),  // 빨강 계열
 		"merged": lipgloss.Color("10"), // 초록 계열
@@ -128,6 +127,14 @@ var (
 // 같은 카테고리 색을 따르도록 함께 쓴다.
 func signalStyle(signal string) lipgloss.Style {
 	return lipgloss.NewStyle().Bold(true).Foreground(signalColors[signal])
+}
+
+// cursorStyle 은 커서가 놓인 줄 전체에 그 신호의 카테고리 색을 배경 음영으로
+// 입힌다. 줄 전체가 한 배경색으로 보이도록 검정 글자에 카테고리색 배경을 쓴다.
+func cursorStyle(signal string) lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).
+		Foreground(lipgloss.Color("0")).
+		Background(signalColors[signal])
 }
 
 func (m tuiModel) View() string {
@@ -174,13 +181,19 @@ func (m tuiModel) renderRow(idx int, items []Item) string {
 	if r.isHeader {
 		count := m.sel.GroupCount(r.signal)
 		head := fmt.Sprintf("▾ %s (%d)", r.signal, count)
-		line := cursor + signalStyle(r.signal).Render(head) + "  " + styleDim.Render(headerHint[r.signal])
 		if idx == m.cursor {
-			return styleCursor.Render(line)
+			// 커서 줄: 헤더와 힌트를 평문으로 합쳐 카테고리색 배경 음영을 한 번만 입힌다.
+			plain := cursor + head + "  " + headerHint[r.signal]
+			return cursorStyle(r.signal).Render(strings.TrimRight(plain, " "))
 		}
-		return line
+		return cursor + signalStyle(r.signal).Render(head) + "  " + styleDim.Render(headerHint[r.signal])
 	}
 	it := items[r.itemIdx]
+	if idx == m.cursor {
+		// 커서 줄: 체크 글리프·worktree·경과까지 평문으로 만들어 카테고리색 배경 음영을
+		// 한 번만 입힌다. 부분 색을 섞으면 중간 reset 으로 배경이 끊긴다.
+		return cursorStyle(it.Signal).Render(itemPlain(it, m.sel.IsChecked(r.itemIdx), cursor))
+	}
 	box := "◯"
 	if m.sel.IsChecked(r.itemIdx) {
 		// 체크된 글리프는 그 항목이 속한 카테고리(신호) 색을 따른다.
@@ -193,8 +206,22 @@ func (m tuiModel) renderRow(idx int, items []Item) string {
 	if it.AgeDays > 0 {
 		line += styleDim.Render(fmt.Sprintf("   %d일 경과", it.AgeDays))
 	}
-	if idx == m.cursor {
-		return styleCursor.Render(line)
+	return line
+}
+
+// itemPlain 은 항목 줄을 스타일 없이 평문 문자열로 만든다. 커서 줄에서 배경 음영을
+// 한 번만 입히려면 부분 스타일(체크색·dim)을 섞지 않은 원본이 필요하다.
+func itemPlain(it Item, checked bool, cursor string) string {
+	box := "◯"
+	if checked {
+		box = "◉"
+	}
+	line := fmt.Sprintf("%s  %s %s", cursor, box, it.Name)
+	if it.WorktreePath != "" {
+		line += "   ⌂ " + filepath.Base(it.WorktreePath) + "  [worktree 동반 제거]"
+	}
+	if it.AgeDays > 0 {
+		line += fmt.Sprintf("   %d일 경과", it.AgeDays)
 	}
 	return line
 }
