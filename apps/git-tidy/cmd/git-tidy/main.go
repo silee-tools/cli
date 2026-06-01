@@ -168,10 +168,18 @@ func buildClassification(opts options) (classify.Classified, error) {
 
 func printTargets(c classify.Classified) {
 	fmt.Printf("삭제 대상 (%d):\n", len(c.ToDelete))
+	var cur classify.Signal
 	for _, r := range c.ToDelete {
-		line := fmt.Sprintf("  %s  (%s)", r.Name, r.Signal)
+		if r.Signal != cur {
+			cur = r.Signal
+			fmt.Printf("  [%s]\n", cur)
+		}
+		line := "    " + r.Name
 		if r.WorktreePath != "" {
-			line += "  [worktree 동반 제거]"
+			line += "  [worktree 동반 제거: " + filepath.Base(r.WorktreePath) + "]"
+		}
+		if r.AgeDays > 0 {
+			line += fmt.Sprintf("  (%d일 경과)", r.AgeDays)
 		}
 		fmt.Println(line)
 	}
@@ -188,15 +196,19 @@ func printTargets(c classify.Classified) {
 
 // runDeletion 은 --run 경로다. 다중 선택을 거쳐 선택된 브랜치를 삭제한다.
 func runDeletion(c classify.Classified, opts options) int {
-	names := make([]string, len(c.ToDelete))
-	labels := make([]string, len(c.ToDelete))
+	items := make([]pick.Item, len(c.ToDelete))
 	byName := map[string]classify.Result{}
 	for i, r := range c.ToDelete {
-		names[i] = r.Name
-		labels[i] = "(" + string(r.Signal) + ")"
+		items[i] = pick.Item{
+			Name:         r.Name,
+			Signal:       string(r.Signal),
+			WorktreePath: r.WorktreePath,
+			AgeDays:      r.AgeDays,
+			Checked:      r.Signal == classify.SignalGone,
+		}
 		byName[r.Name] = r
 	}
-	sel := pick.NewSelection(names)
+	sel := pick.NewSelection(items)
 
 	var chosen []string
 	var ok bool
@@ -206,12 +218,12 @@ func runDeletion(c classify.Classified, opts options) int {
 		return 1
 	case pick.ModeTUI:
 		var fellBack bool
-		chosen, ok, fellBack = pick.RunTUI(sel, labels)
+		chosen, ok, fellBack = pick.RunTUI(sel)
 		if fellBack {
-			chosen, ok = pick.RunLine(sel, labels, os.Stdin, os.Stdout)
+			chosen, ok = pick.RunLine(sel, os.Stdin, os.Stdout)
 		}
 	case pick.ModeLine:
-		chosen, ok = pick.RunLine(sel, labels, os.Stdin, os.Stdout)
+		chosen, ok = pick.RunLine(sel, os.Stdin, os.Stdout)
 	}
 	if !ok || len(chosen) == 0 {
 		fmt.Println("삭제하지 않았습니다.")
