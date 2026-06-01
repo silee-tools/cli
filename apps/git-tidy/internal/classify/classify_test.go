@@ -37,7 +37,7 @@ func TestClassify(t *testing.T) {
 	wantDelete := []Result{
 		{Name: "feature-gone", Signal: SignalGone},
 		{Name: "feature-merged", Signal: SignalMerged},
-		{Name: "feature-stale", Signal: SignalStale},
+		{Name: "feature-stale", Signal: SignalStale, AgeDays: 30},
 	}
 	if !reflect.DeepEqual(got.ToDelete, wantDelete) {
 		t.Errorf("ToDelete mismatch\n got=%+v\nwant=%+v", got.ToDelete, wantDelete)
@@ -51,5 +51,90 @@ func TestClassify(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Excluded, wantExcluded) {
 		t.Errorf("Excluded mismatch\n got=%+v\nwant=%+v", got.Excluded, wantExcluded)
+	}
+}
+
+func TestClassifySortsBySignalThenName(t *testing.T) {
+	now := int64(1_000_000_000)
+	day := int64(86400)
+	old := now - 40*day
+	in := Input{
+		Now:       now,
+		StaleDays: 20,
+		Base:      "main",
+		Current:   "",
+		Branches: []gitx.BranchRef{
+			{Name: "zzz-stale", HasUpstream: true, CommitUnix: old},
+			{Name: "aaa-stale", HasUpstream: true, CommitUnix: old},
+			{Name: "mmm-gone", UpstreamGone: true, HasUpstream: true, CommitUnix: now},
+		},
+		Merged:        map[string]bool{},
+		Worktrees:     map[string]string{},
+		MergeBaseUnix: func(string) (int64, bool) { return now, true },
+	}
+	got := Classify(in)
+	want := []Result{
+		{Name: "mmm-gone", Signal: SignalGone},
+		{Name: "aaa-stale", Signal: SignalStale, AgeDays: 40},
+		{Name: "zzz-stale", Signal: SignalStale, AgeDays: 40},
+	}
+	if !reflect.DeepEqual(got.ToDelete, want) {
+		t.Errorf("정렬 결과 mismatch\n got=%+v\nwant=%+v", got.ToDelete, want)
+	}
+}
+
+func TestClassifyAgeDaysNeverNegative(t *testing.T) {
+	now := int64(1_000_000_000)
+	day := int64(86400)
+	old := now - 40*day
+	future := now + 10*day
+	in := Input{
+		Now:       now,
+		StaleDays: 20,
+		Base:      "main",
+		Current:   "",
+		Branches: []gitx.BranchRef{
+			// 분기점은 오래돼 stale 로 판정되지만, 마지막 커밋 시각이 미래라
+			// AgeDays 계산이 음수가 될 수 있는 경우다.
+			{Name: "future-stale", HasUpstream: true, CommitUnix: future},
+		},
+		Merged:        map[string]bool{},
+		Worktrees:     map[string]string{},
+		MergeBaseUnix: func(string) (int64, bool) { return old, true },
+	}
+	got := Classify(in)
+	want := []Result{
+		{Name: "future-stale", Signal: SignalStale, AgeDays: 0},
+	}
+	if !reflect.DeepEqual(got.ToDelete, want) {
+		t.Errorf("미래 시각 AgeDays mismatch\n got=%+v\nwant=%+v", got.ToDelete, want)
+	}
+}
+
+func TestClassifyAgeFromMergeBaseFallback(t *testing.T) {
+	now := int64(1_000_000_000)
+	day := int64(86400)
+	old := now - 50*day // stale 창(20일) 밖, merge-base 시각
+	in := Input{
+		Now:       now,
+		StaleDays: 20,
+		Base:      "main",
+		Current:   "",
+		Branches: []gitx.BranchRef{
+			{Name: "no-commitdate", HasUpstream: true, CommitUnix: 0}, // 커밋 시각 없음
+		},
+		Merged:        map[string]bool{},
+		Worktrees:     map[string]string{},
+		MergeBaseUnix: func(string) (int64, bool) { return old, true }, // merge-base 는 50일 전
+	}
+	got := Classify(in)
+	if len(got.ToDelete) != 1 {
+		t.Fatalf("stale 후보 1개 기대, got %+v", got.ToDelete)
+	}
+	if got.ToDelete[0].Signal != SignalStale {
+		t.Errorf("stale 신호 기대, got %s", got.ToDelete[0].Signal)
+	}
+	if got.ToDelete[0].AgeDays != 50 {
+		t.Errorf("merge-base 기준 경과 50일 기대, got %d", got.ToDelete[0].AgeDays)
 	}
 }

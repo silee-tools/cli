@@ -1,7 +1,11 @@
 // Package classify 는 하이브리드 모델로 로컬 브랜치를 삭제 대상과 그 외로 나눈다.
 package classify
 
-import "github.com/silee-tools/git-tidy/internal/gitx"
+import (
+	"sort"
+
+	"github.com/silee-tools/git-tidy/internal/gitx"
+)
 
 // Signal 은 브랜치가 삭제 후보가 된 이유다.
 type Signal string
@@ -29,6 +33,7 @@ type Result struct {
 	Name         string
 	Signal       Signal
 	WorktreePath string // worktree 에 물려 있으면 그 경로, 아니면 빈 문자열
+	AgeDays      int    // stale 일 때 마지막 커밋 기준 경과 일수, 그 외 0
 }
 
 // Excluded 는 삭제 신호에 걸렸으나 보호 규칙으로 제외된 브랜치다.
@@ -71,9 +76,53 @@ func Classify(in Input) Classified {
 			Name:         b.Name,
 			Signal:       sig,
 			WorktreePath: in.Worktrees[b.Name],
+			AgeDays:      ageDaysFor(b, in, sig),
 		})
 	}
+	sort.SliceStable(out.ToDelete, func(i, j int) bool {
+		ri, rj := signalRank(out.ToDelete[i].Signal), signalRank(out.ToDelete[j].Signal)
+		if ri != rj {
+			return ri < rj
+		}
+		return out.ToDelete[i].Name < out.ToDelete[j].Name
+	})
 	return out
+}
+
+// signalRank 는 신호의 정렬 순위다(확실한 순: gone < merged < stale).
+func signalRank(s Signal) int {
+	switch s {
+	case SignalGone:
+		return 0
+	case SignalMerged:
+		return 1
+	case SignalStale:
+		return 2
+	default:
+		return 3
+	}
+}
+
+// ageDaysFor 는 stale 후보의 마지막 커밋 기준 경과 일수를 돌려준다.
+// 커밋 시각 정보가 없으면 merge-base 시각으로 폴백하고, 둘 다 없으면 0이다.
+// stale 이 아니면 0이다.
+func ageDaysFor(b gitx.BranchRef, in Input, sig Signal) int {
+	if sig != SignalStale {
+		return 0
+	}
+	ts := b.CommitUnix
+	if ts == 0 {
+		if mb, ok := in.MergeBaseUnix(b.Name); ok {
+			ts = mb
+		}
+	}
+	if ts == 0 {
+		return 0
+	}
+	if in.Now <= ts {
+		return 0
+	}
+	return int((in.Now - ts) / 86400)
 }
 
 // protectionReason 은 브랜치가 보호 규칙에 걸리는 사유를 돌려준다.
