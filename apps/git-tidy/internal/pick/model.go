@@ -27,8 +27,12 @@ func NewSelection(items []Item) *Selection {
 	return &Selection{items: items, checked: checked}
 }
 
-// Items 는 전체 항목을 돌려준다.
-func (s *Selection) Items() []Item { return s.items }
+// Items 는 전체 항목의 복사본을 돌려준다(내부 슬라이스 보호).
+func (s *Selection) Items() []Item {
+	out := make([]Item, len(s.items))
+	copy(out, s.items)
+	return out
+}
 
 // IsChecked 는 i 번째 항목의 체크 여부다.
 func (s *Selection) IsChecked(i int) bool { return s.checked[i] }
