@@ -128,9 +128,10 @@ func run(opts options) int {
 		fmt.Println("정리할 브랜치가 없습니다.")
 		return 0
 	}
-	printTargets(result)
-
 	if !opts.run {
+		// dry-run 일 때만 목록을 출력한다. --run 이면 선택 화면이 같은 목록을
+		// 그리므로 여기서 출력하면 화면이 중복된다.
+		printTargets(result)
 		fmt.Println("\n→ git-tidy --run 으로 삭제를 진행하세요.")
 		return 0
 	}
