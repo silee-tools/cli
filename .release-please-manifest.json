@@ -1,5 +1,5 @@
 {
   "apps/jg": "0.5.0",
   "apps/totp": "1.1.1",
-  "apps/git-tidy": "0.4.0"
+  "apps/git-tidy": "0.5.0"
 }
