@@ -166,6 +166,8 @@ func buildClassification(opts options) (classify.Classified, error) {
 	return classify.Classify(in), nil
 }
 
+// printTargets 는 c.ToDelete 가 신호 순(gone → merged → stale)으로 정렬돼 있다고 가정한다.
+// classify.Classify 가 이 순서를 보장하며, 그래야 그룹 헤더가 신호당 한 번만 출력된다.
 func printTargets(c classify.Classified) {
 	fmt.Printf("삭제 대상 (%d):\n", len(c.ToDelete))
 	var cur classify.Signal
@@ -204,7 +206,7 @@ func runDeletion(c classify.Classified, opts options) int {
 			Signal:       string(r.Signal),
 			WorktreePath: r.WorktreePath,
 			AgeDays:      r.AgeDays,
-			Checked:      r.Signal == classify.SignalGone,
+			Checked:      r.Signal == classify.SignalGone, // gone 만 기본 체크, merged·stale 은 사용자가 직접 선택
 		}
 		byName[r.Name] = r
 	}
