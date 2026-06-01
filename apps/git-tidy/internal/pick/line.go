@@ -4,18 +4,18 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
 
 // RunLine 은 줄 입력으로 다중 선택을 진행하고 체크된 항목을 돌려준다.
-// 두 번째 반환값이 false 면 사용자가 취소한 것이다.
-// labels 는 항목마다 옆에 붙일 부가 설명(신호 등)이다. in/out 은 테스트를
-// 위해 주입한다.
-func RunLine(sel *Selection, labels []string, in io.Reader, out io.Writer) ([]string, bool) {
+// 두 번째 반환값이 false 면 사용자가 취소한 것이다. 표시 정보(신호·worktree·
+// 경과)는 Selection 의 Item 이 들고 있다. in/out 은 테스트를 위해 주입한다.
+func RunLine(sel *Selection, in io.Reader, out io.Writer) ([]string, bool) {
 	r := bufio.NewScanner(in)
 	for {
-		renderLine(sel, labels, out)
+		renderLine(sel, out)
 		_, _ = fmt.Fprint(out, "번호=토글, a=전체토글, 빈 줄=완료, q=취소 > ")
 		if !r.Scan() {
 			return nil, false
@@ -35,13 +35,35 @@ func RunLine(sel *Selection, labels []string, in io.Reader, out io.Writer) ([]st
 	}
 }
 
-func renderLine(sel *Selection, labels []string, out io.Writer) {
-	for i, item := range sel.Items() {
+func groupCount(sel *Selection, signal string) int {
+	n := 0
+	for _, it := range sel.Items() {
+		if it.Signal == signal {
+			n++
+		}
+	}
+	return n
+}
+
+func renderLine(sel *Selection, out io.Writer) {
+	cur := ""
+	for i, it := range sel.Items() {
+		if it.Signal != cur {
+			cur = it.Signal
+			_, _ = fmt.Fprintf(out, "  ── %s (%d) ──\n", cur, groupCount(sel, cur))
+		}
 		mark := " "
 		if sel.IsChecked(i) {
 			mark = "x"
 		}
-		_, _ = fmt.Fprintf(out, "  %2d. [%s] %s  %s\n", i+1, mark, item, labels[i])
+		line := fmt.Sprintf("  %2d. [%s] %s", i+1, mark, it.Name)
+		if it.WorktreePath != "" {
+			line += "  ⌂ " + filepath.Base(it.WorktreePath)
+		}
+		if it.AgeDays > 0 {
+			line += fmt.Sprintf("   %d일 경과", it.AgeDays)
+		}
+		_, _ = fmt.Fprintln(out, line)
 	}
 }
 
