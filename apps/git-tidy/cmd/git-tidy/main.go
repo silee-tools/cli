@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"github.com/silee-tools/git-tidy/internal/classify"
 	"github.com/silee-tools/git-tidy/internal/gitx"
 	"github.com/silee-tools/git-tidy/internal/pick"
+	"github.com/silee-tools/git-tidy/internal/reason"
 )
 
 var version = "dev"
@@ -152,14 +154,19 @@ func buildClassification(opts options) (classify.Classified, error) {
 	if err != nil {
 		return classify.Classified{}, err
 	}
+	baseCommits, err := gitx.BaseCommits(base)
+	if err != nil {
+		return classify.Classified{}, err
+	}
 	in := classify.Input{
-		Now:       time.Now().Unix(),
-		StaleDays: opts.staleDays,
-		Base:      base,
-		Current:   gitx.CurrentBranch(),
-		Branches:  branches,
-		Merged:    merged,
-		Worktrees: worktrees,
+		Now:         time.Now().Unix(),
+		StaleDays:   opts.staleDays,
+		Base:        base,
+		Current:     gitx.CurrentBranch(),
+		Branches:    branches,
+		Merged:      merged,
+		Worktrees:   worktrees,
+		BaseCommits: baseCommits,
 		MergeBaseUnix: func(branch string) (int64, bool) {
 			return gitx.MergeBaseUnix(base, branch)
 		},
@@ -167,15 +174,22 @@ func buildClassification(opts options) (classify.Classified, error) {
 	return classify.Classify(in), nil
 }
 
-// printTargets 는 c.ToDelete 가 신호 순(gone → merged → stale)으로 정렬돼 있다고 가정한다.
+// printTargets 는 c.ToDelete 가 신호 순(gone → merged → absorbed → stale)으로 정렬돼 있다고 가정한다.
 // classify.Classify 가 이 순서를 보장하며, 그래야 그룹 헤더가 신호당 한 번만 출력된다.
 func printTargets(c classify.Classified) {
-	fmt.Printf("삭제 대상 (%d):\n", len(c.ToDelete))
+	printTargetsTo(os.Stdout, c)
+}
+
+func printTargetsTo(out io.Writer, c classify.Classified) {
+	fmt.Fprintf(out, "삭제 대상 (%d):\n", len(c.ToDelete))
 	var cur classify.Signal
 	for _, r := range c.ToDelete {
 		if r.Signal != cur {
 			cur = r.Signal
-			fmt.Printf("  [%s]\n", cur)
+			fmt.Fprintf(out, "  [%s]\n", cur)
+			if desc := reason.Description(string(cur)); desc != "" {
+				fmt.Fprintf(out, "    %s\n", desc)
+			}
 		}
 		line := "    " + r.Name
 		if r.WorktreePath != "" {
@@ -184,16 +198,23 @@ func printTargets(c classify.Classified) {
 		if r.AgeDays > 0 {
 			line += fmt.Sprintf("  (%d일 경과)", r.AgeDays)
 		}
-		fmt.Println(line)
+		if r.Signal == classify.SignalAbsorbed && r.AbsorbedByShortHash != "" {
+			line += "  (base: " + r.AbsorbedByShortHash
+			if r.AbsorbedBySubject != "" {
+				line += " " + r.AbsorbedBySubject
+			}
+			line += ")"
+		}
+		fmt.Fprintln(out, line)
 	}
 	if len(c.Excluded) > 0 {
-		fmt.Printf("제외된 후보 (%d):\n", len(c.Excluded))
+		fmt.Fprintf(out, "제외된 후보 (%d):\n", len(c.Excluded))
 		for _, e := range c.Excluded {
-			fmt.Printf("  %s  (%s)  [보호: %s]\n", e.Name, e.Signal, e.Reason)
+			fmt.Fprintf(out, "  %s  (%s)  [보호: %s]\n", e.Name, e.Signal, e.Reason)
 		}
 	}
 	if c.OtherCount > 0 {
-		fmt.Printf("그 외 브랜치 %d개는 정리 대상이 아닙니다.\n", c.OtherCount)
+		fmt.Fprintf(out, "그 외 브랜치 %d개는 정리 대상이 아닙니다.\n", c.OtherCount)
 	}
 }
 
@@ -203,11 +224,13 @@ func runDeletion(c classify.Classified, opts options) int {
 	byName := map[string]classify.Result{}
 	for i, r := range c.ToDelete {
 		items[i] = pick.Item{
-			Name:         r.Name,
-			Signal:       string(r.Signal),
-			WorktreePath: r.WorktreePath,
-			AgeDays:      r.AgeDays,
-			Checked:      r.Signal == classify.SignalGone, // gone 만 기본 체크, merged·stale 은 사용자가 직접 선택
+			Name:                r.Name,
+			Signal:              string(r.Signal),
+			WorktreePath:        r.WorktreePath,
+			AgeDays:             r.AgeDays,
+			AbsorbedByShortHash: r.AbsorbedByShortHash,
+			AbsorbedBySubject:   r.AbsorbedBySubject,
+			Checked:             r.Signal == classify.SignalGone, // gone 만 기본 체크, merged·stale 은 사용자가 직접 선택
 		}
 		byName[r.Name] = r
 	}

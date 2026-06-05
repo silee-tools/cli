@@ -1,6 +1,7 @@
 package pick
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -11,6 +12,7 @@ func tuiItems() []Item {
 		{Name: "g1", Signal: "gone", Checked: true},
 		{Name: "g2", Signal: "gone", Checked: true},
 		{Name: "m1", Signal: "merged", Checked: false},
+		{Name: "a1", Signal: "absorbed", AbsorbedByShortHash: "9a640b52f", AbsorbedBySubject: "[ABC-1375] feat: absorbed base", Checked: false},
 	}
 }
 
@@ -19,17 +21,30 @@ func updateForTest(m tuiModel, msg tea.Msg) (tuiModel, tea.Cmd) {
 	return next.(tuiModel), cmd
 }
 
-// rows 는 [헤더 gone, g1, g2, 헤더 merged, m1] 순서다(인덱스 0..4).
+// rows 는 [헤더 gone, g1, g2, 헤더 merged, m1, 헤더 absorbed, a1] 순서다(인덱스 0..6).
 func TestTUIRowsLayout(t *testing.T) {
 	m := newTUIModel(NewSelection(tuiItems()))
-	if len(m.rows) != 5 {
-		t.Fatalf("rows = %d, want 5", len(m.rows))
+	if len(m.rows) != 7 {
+		t.Fatalf("rows = %d, want 7", len(m.rows))
 	}
 	if !m.rows[0].isHeader || m.rows[0].signal != "gone" {
 		t.Errorf("rows[0] 은 gone 헤더여야 함: %+v", m.rows[0])
 	}
 	if m.rows[1].isHeader || m.rows[1].itemIdx != 0 {
 		t.Errorf("rows[1] 은 g1 항목이어야 함: %+v", m.rows[1])
+	}
+}
+
+func TestTUIViewShowsDescriptionsAndAbsorbedEvidence(t *testing.T) {
+	m := newTUIModel(NewSelection(tuiItems()))
+	s := m.View()
+	for _, want := range []string{
+		"같은 Jira 티켓의 더 최신 base 커밋",
+		"base: 9a640b52f [ABC-1375] feat: absorbed base",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("TUI 출력에 %q 가 없음:\n%s", want, s)
+		}
 	}
 }
 
@@ -80,7 +95,7 @@ func TestTUICursorClampsAtTop(t *testing.T) {
 
 func TestTUICursorClampsAtBottom(t *testing.T) {
 	m := newTUIModel(NewSelection(tuiItems()))
-	last := len(m.rows) - 1 // rows 5개이므로 4
+	last := len(m.rows) - 1 // rows 7개이므로 6
 	for i := 0; i < 10; i++ {
 		m, _ = updateForTest(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	}
@@ -99,7 +114,7 @@ func TestTUIWindowFullWhenHeightZero(t *testing.T) {
 
 func TestTUIWindowRespectsSmallHeight(t *testing.T) {
 	m := newTUIModel(NewSelection(tuiItems()))
-	// rows 5개보다 visible(=height-4=2) 가 작도록 작은 height 주입.
+	// rows 7개보다 visible(=height-4=2) 가 작도록 작은 height 주입.
 	m, _ = updateForTest(m, tea.WindowSizeMsg{Width: 80, Height: 6})
 	// 커서를 마지막 행으로 옮겨 window 가 끝쪽을 비추게 한다.
 	for i := 0; i < 10; i++ {

@@ -10,6 +10,7 @@ func lineItems() []Item {
 	return []Item{
 		{Name: "g1", Signal: "gone", Checked: true},
 		{Name: "m1", Signal: "merged", Checked: false},
+		{Name: "a1", Signal: "absorbed", AbsorbedByShortHash: "9a640b52f", AbsorbedBySubject: "[ABC-1375] feat: absorbed base", Checked: false},
 		{Name: "s1", Signal: "stale", AgeDays: 34, WorktreePath: "/tmp/wt/s1", Checked: false},
 	}
 }
@@ -41,7 +42,16 @@ func TestRunLineRendersGroupsAndMeta(t *testing.T) {
 	in := strings.NewReader("q\n")
 	RunLine(sel, in, &out)
 	s := out.String()
-	for _, want := range []string{"gone (1)", "merged (1)", "stale (1)", "34일 경과", "⌂ s1"} {
+	for _, want := range []string{
+		"gone (1)",
+		"merged (1)",
+		"absorbed (1)",
+		"stale (1)",
+		"같은 Jira 티켓의 더 최신 base 커밋",
+		"base: 9a640b52f [ABC-1375] feat: absorbed base",
+		"34일 경과",
+		"⌂ s1",
+	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("출력에 %q 가 없음:\n%s", want, s)
 		}

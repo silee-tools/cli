@@ -10,6 +10,7 @@ func items() []Item {
 		{Name: "g1", Signal: "gone", Checked: true},
 		{Name: "g2", Signal: "gone", Checked: true},
 		{Name: "m1", Signal: "merged", Checked: false},
+		{Name: "a1", Signal: "absorbed", AbsorbedByShortHash: "9a640b52f", AbsorbedBySubject: "[ABC-1375] feat: absorbed base", Checked: false},
 		{Name: "s1", Signal: "stale", AgeDays: 34, Checked: false},
 	}
 }
@@ -23,7 +24,7 @@ func TestNewSelectionRespectsInitialChecked(t *testing.T) {
 
 func TestGroupsInOrder(t *testing.T) {
 	m := NewSelection(items())
-	if got := m.Groups(); !reflect.DeepEqual(got, []string{"gone", "merged", "stale"}) {
+	if got := m.Groups(); !reflect.DeepEqual(got, []string{"gone", "merged", "absorbed", "stale"}) {
 		t.Errorf("그룹 순서 mismatch, got %v", got)
 	}
 }
@@ -43,8 +44,11 @@ func TestToggleGroupScopedToSignal(t *testing.T) {
 func TestItemFieldsPreserved(t *testing.T) {
 	m := NewSelection(items())
 	got := m.Items()
-	if got[3].AgeDays != 34 || got[3].Signal != "stale" {
+	if got[3].AbsorbedByShortHash != "9a640b52f" || got[3].AbsorbedBySubject == "" {
 		t.Errorf("Item 필드 보존 실패: %+v", got[3])
+	}
+	if got[4].AgeDays != 34 || got[4].Signal != "stale" {
+		t.Errorf("Item 필드 보존 실패: %+v", got[4])
 	}
 }
 
@@ -55,7 +59,7 @@ func TestToggleAllStillWorks(t *testing.T) {
 		t.Errorf("ToggleAll 후 전체 해제 기대, got %v", got)
 	}
 	m.ToggleAll() // 전부 꺼져 있으면 전체 체크
-	if got := m.Checked(); len(got) != 4 {
+	if got := m.Checked(); len(got) != 5 {
 		t.Errorf("ToggleAll 재호출 후 전체 체크 기대, got %v", got)
 	}
 }

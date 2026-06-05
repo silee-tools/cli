@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/silee-tools/git-tidy/internal/reason"
 )
 
 // row 는 화면 한 줄이다. 그룹 헤더이거나 항목이다.
@@ -112,14 +113,16 @@ var (
 	// signalColors 는 신호별 메인 색이다. 헤더 색·체크 글리프 색·커서 줄 배경 음영에
 	// 함께 쓴다.
 	signalColors = map[string]lipgloss.Color{
-		"gone":   lipgloss.Color("9"),  // 빨강 계열
-		"merged": lipgloss.Color("10"), // 초록 계열
-		"stale":  lipgloss.Color("11"), // 노랑 계열
+		"gone":     lipgloss.Color("9"),  // 빨강 계열
+		"merged":   lipgloss.Color("10"), // 초록 계열
+		"stale":    lipgloss.Color("11"), // 노랑 계열
+		"absorbed": lipgloss.Color("14"),
 	}
 	headerHint = map[string]string{
-		"gone":   "← upstream 사라짐 · PR 머지 후",
-		"merged": "← base 에 이미 합쳐짐",
-		"stale":  "← 오래 경과",
+		"gone":     reason.Description("gone"),
+		"merged":   reason.Description("merged"),
+		"stale":    reason.Description("stale"),
+		"absorbed": reason.Description("absorbed"),
 	}
 )
 
@@ -206,6 +209,9 @@ func (m tuiModel) renderRow(idx int, items []Item) string {
 	if it.AgeDays > 0 {
 		line += styleDim.Render(fmt.Sprintf("   %d일 경과", it.AgeDays))
 	}
+	if it.Signal == "absorbed" && it.AbsorbedByShortHash != "" {
+		line += styleDim.Render(fmt.Sprintf("   base: %s %s", it.AbsorbedByShortHash, it.AbsorbedBySubject))
+	}
 	return line
 }
 
@@ -222,6 +228,9 @@ func itemPlain(it Item, checked bool, cursor string) string {
 	}
 	if it.AgeDays > 0 {
 		line += fmt.Sprintf("   %d일 경과", it.AgeDays)
+	}
+	if it.Signal == "absorbed" && it.AbsorbedByShortHash != "" {
+		line += fmt.Sprintf("   base: %s %s", it.AbsorbedByShortHash, it.AbsorbedBySubject)
 	}
 	return line
 }

@@ -2,18 +2,22 @@
 package classify
 
 import (
+	"regexp"
 	"sort"
 
 	"github.com/silee-tools/git-tidy/internal/gitx"
 )
 
+var ticketIDPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-[0-9]+\b`)
+
 // Signal 은 브랜치가 삭제 후보가 된 이유다.
 type Signal string
 
 const (
-	SignalGone   Signal = "gone"
-	SignalMerged Signal = "merged"
-	SignalStale  Signal = "stale"
+	SignalGone     Signal = "gone"
+	SignalMerged   Signal = "merged"
+	SignalAbsorbed Signal = "absorbed"
+	SignalStale    Signal = "stale"
 )
 
 // Input 은 분류에 필요한 모든 데이터다. git 호출과 분리해 순수 함수로 둔다.
@@ -25,15 +29,19 @@ type Input struct {
 	Branches      []gitx.BranchRef
 	Merged        map[string]bool   // base 에 머지된 브랜치
 	Worktrees     map[string]string // 브랜치 → worktree 경로
+	BaseCommits   []gitx.CommitRef
 	MergeBaseUnix func(branch string) (int64, bool)
 }
 
 // Result 는 삭제 대상 브랜치 하나다.
 type Result struct {
-	Name         string
-	Signal       Signal
-	WorktreePath string // worktree 에 물려 있으면 그 경로, 아니면 빈 문자열
-	AgeDays      int    // stale 일 때 마지막 커밋 기준 경과 일수, 그 외 0
+	Name                 string
+	Signal               Signal
+	WorktreePath         string // worktree 에 물려 있으면 그 경로, 아니면 빈 문자열
+	AgeDays              int    // stale 일 때 마지막 커밋 기준 경과 일수, 그 외 0
+	AbsorbedByShortHash  string
+	AbsorbedBySubject    string
+	AbsorbedByCommitUnix int64
 }
 
 // Excluded 는 삭제 신호에 걸렸으나 보호 규칙으로 제외된 브랜치다.
@@ -72,12 +80,20 @@ func Classify(in Input) Classified {
 			out.OtherCount++
 			continue
 		}
-		out.ToDelete = append(out.ToDelete, Result{
+		result := Result{
 			Name:         b.Name,
 			Signal:       sig,
 			WorktreePath: in.Worktrees[b.Name],
 			AgeDays:      ageDaysFor(b, in, sig),
-		})
+		}
+		if sig == SignalAbsorbed {
+			if commit, ok := absorbedBaseCommit(b, in); ok {
+				result.AbsorbedByShortHash = commit.ShortHash
+				result.AbsorbedBySubject = commit.Subject
+				result.AbsorbedByCommitUnix = commit.CommitUnix
+			}
+		}
+		out.ToDelete = append(out.ToDelete, result)
 	}
 	sort.SliceStable(out.ToDelete, func(i, j int) bool {
 		ri, rj := signalRank(out.ToDelete[i].Signal), signalRank(out.ToDelete[j].Signal)
@@ -89,17 +105,19 @@ func Classify(in Input) Classified {
 	return out
 }
 
-// signalRank 는 신호의 정렬 순위다(확실한 순: gone < merged < stale).
+// signalRank 는 신호의 정렬 순위다(확실한 순: gone < merged < absorbed < stale).
 func signalRank(s Signal) int {
 	switch s {
 	case SignalGone:
 		return 0
 	case SignalMerged:
 		return 1
-	case SignalStale:
+	case SignalAbsorbed:
 		return 2
-	default:
+	case SignalStale:
 		return 3
+	default:
+		return 4
 	}
 }
 
@@ -145,10 +163,44 @@ func candidateSignal(b gitx.BranchRef, in Input, cutoff int64) (Signal, bool) {
 	if in.Merged[b.Name] {
 		return SignalMerged, true
 	}
+	if _, ok := absorbedBaseCommit(b, in); ok {
+		return SignalAbsorbed, true
+	}
 	if isStale(b, in, cutoff) {
 		return SignalStale, true
 	}
 	return "", false
+}
+
+func ticketID(subject string) string {
+	return ticketIDPattern.FindString(subject)
+}
+
+func absorbedBaseCommit(b gitx.BranchRef, in Input) (gitx.CommitRef, bool) {
+	if in.Worktrees[b.Name] != "" {
+		return gitx.CommitRef{}, false
+	}
+	ticket := ticketID(b.Subject)
+	if ticket == "" {
+		return gitx.CommitRef{}, false
+	}
+
+	var newest gitx.CommitRef
+	for _, commit := range in.BaseCommits {
+		if commit.CommitUnix <= b.CommitUnix {
+			continue
+		}
+		if ticketID(commit.Subject) != ticket {
+			continue
+		}
+		if newest.CommitUnix == 0 || commit.CommitUnix > newest.CommitUnix {
+			newest = commit
+		}
+	}
+	if newest.CommitUnix == 0 {
+		return gitx.CommitRef{}, false
+	}
+	return newest, true
 }
 
 // isStale 은 마지막 커밋 또는 분기점이 stale 창보다 오래됐는지 본다(OR).
