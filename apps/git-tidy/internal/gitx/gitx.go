@@ -13,6 +13,14 @@ type BranchRef struct {
 	HasUpstream  bool // upstream 추적 브랜치가 설정돼 있는가
 	UpstreamGone bool // upstream 이 [gone] 인가
 	CommitUnix   int64
+	Subject      string
+}
+
+// CommitRef 는 base 브랜치의 커밋 하나에 대한 분류용 메타데이터다.
+type CommitRef struct {
+	ShortHash  string
+	Subject    string
+	CommitUnix int64
 }
 
 // run 은 git 을 실행하고 표준 출력을 돌려준다.
@@ -41,7 +49,7 @@ func CurrentBranch() string {
 // LocalBranches 는 모든 로컬 브랜치의 메타데이터를 돌려준다.
 func LocalBranches() ([]BranchRef, error) {
 	out, err := run("for-each-ref",
-		"--format=%(refname:short)%00%(upstream:track)%00%(committerdate:unix)",
+		"--format=%(refname:short)%00%(upstream:track)%00%(committerdate:unix)%00%(subject)",
 		"refs/heads")
 	if err != nil {
 		return nil, err
@@ -56,7 +64,7 @@ func parseBranchLines(out string) []BranchRef {
 			continue
 		}
 		f := strings.Split(line, "\x00")
-		if len(f) != 3 {
+		if len(f) != 4 {
 			continue
 		}
 		unix, _ := strconv.ParseInt(f[2], 10, 64)
@@ -66,7 +74,33 @@ func parseBranchLines(out string) []BranchRef {
 			HasUpstream:  track != "",
 			UpstreamGone: track == "[gone]",
 			CommitUnix:   unix,
+			Subject:      f[3],
 		})
+	}
+	return refs
+}
+
+// BaseCommits 는 base 브랜치의 커밋 메타데이터를 최신순으로 돌려준다.
+func BaseCommits(base string) ([]CommitRef, error) {
+	out, err := run("log", "--format=%h%x00%ct%x00%s", base)
+	if err != nil {
+		return nil, err
+	}
+	return parseCommitLines(out), nil
+}
+
+func parseCommitLines(out string) []CommitRef {
+	var refs []CommitRef
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.Split(line, "\x00")
+		if len(f) != 3 {
+			continue
+		}
+		unix, _ := strconv.ParseInt(f[1], 10, 64)
+		refs = append(refs, CommitRef{ShortHash: f[0], CommitUnix: unix, Subject: f[2]})
 	}
 	return refs
 }

@@ -67,14 +67,27 @@ func TestClassifySortsBySignalThenName(t *testing.T) {
 			{Name: "zzz-stale", HasUpstream: true, CommitUnix: old},
 			{Name: "aaa-stale", HasUpstream: true, CommitUnix: old},
 			{Name: "mmm-gone", UpstreamGone: true, HasUpstream: true, CommitUnix: now},
+			{Name: "ccc-merged", HasUpstream: true, CommitUnix: now},
+			{Name: "bbb-absorbed", HasUpstream: true, CommitUnix: now - 10*day, Subject: "[ABC-1375] docs: absorbed branch"},
 		},
-		Merged:        map[string]bool{},
-		Worktrees:     map[string]string{},
+		Merged:    map[string]bool{"ccc-merged": true},
+		Worktrees: map[string]string{},
+		BaseCommits: []gitx.CommitRef{
+			{ShortHash: "9a640b52f", Subject: "[ABC-1375] feat: absorbed base", CommitUnix: now - day},
+		},
 		MergeBaseUnix: func(string) (int64, bool) { return now, true },
 	}
 	got := Classify(in)
 	want := []Result{
 		{Name: "mmm-gone", Signal: SignalGone},
+		{Name: "ccc-merged", Signal: SignalMerged},
+		{
+			Name:                 "bbb-absorbed",
+			Signal:               SignalAbsorbed,
+			AbsorbedByShortHash:  "9a640b52f",
+			AbsorbedBySubject:    "[ABC-1375] feat: absorbed base",
+			AbsorbedByCommitUnix: now - day,
+		},
 		{Name: "aaa-stale", Signal: SignalStale, AgeDays: 40},
 		{Name: "zzz-stale", Signal: SignalStale, AgeDays: 40},
 	}
@@ -136,5 +149,96 @@ func TestClassifyAgeFromMergeBaseFallback(t *testing.T) {
 	}
 	if got.ToDelete[0].AgeDays != 50 {
 		t.Errorf("merge-base 기준 경과 50일 기대, got %d", got.ToDelete[0].AgeDays)
+	}
+}
+
+func TestClassifyAbsorbedWhenNewerBaseCommitHasSameTicket(t *testing.T) {
+	now := int64(1_000_000_000)
+	branchTime := now - 10*86400
+	baseTime := now - 2*86400
+	in := Input{
+		Now:       now,
+		StaleDays: 20,
+		Base:      "main",
+		Current:   "",
+		Branches: []gitx.BranchRef{
+			{Name: "claude/example-absorbed-branch", CommitUnix: branchTime, Subject: "[ABC-1375] docs: 새 git worktree 셋업 안내 추가"},
+		},
+		Merged:    map[string]bool{},
+		Worktrees: map[string]string{},
+		BaseCommits: []gitx.CommitRef{
+			{ShortHash: "9a640b52f", Subject: "[ABC-1375] feat: 새 worktree 셋업 자동화 스크립트 + 안내 문서", CommitUnix: baseTime},
+		},
+		MergeBaseUnix: func(string) (int64, bool) { return now, true },
+	}
+
+	got := Classify(in)
+	want := []Result{
+		{
+			Name:                 "claude/example-absorbed-branch",
+			Signal:               SignalAbsorbed,
+			AbsorbedByShortHash:  "9a640b52f",
+			AbsorbedBySubject:    "[ABC-1375] feat: 새 worktree 셋업 자동화 스크립트 + 안내 문서",
+			AbsorbedByCommitUnix: baseTime,
+		},
+	}
+	if !reflect.DeepEqual(got.ToDelete, want) {
+		t.Errorf("absorbed 후보 mismatch\n got=%+v\nwant=%+v", got.ToDelete, want)
+	}
+}
+
+func TestClassifyDoesNotAbsorbCheckedOutWorktreeBranch(t *testing.T) {
+	now := int64(1_000_000_000)
+	branchTime := now - 10*86400
+	in := Input{
+		Now:       now,
+		StaleDays: 20,
+		Base:      "main",
+		Current:   "",
+		Branches: []gitx.BranchRef{
+			{Name: "claude/in-progress", CommitUnix: branchTime, Subject: "[ABC-1375] docs: worktree 안내"},
+		},
+		Merged:    map[string]bool{},
+		Worktrees: map[string]string{"claude/in-progress": "/tmp/worktree"},
+		BaseCommits: []gitx.CommitRef{
+			{ShortHash: "9a640b52f", Subject: "[ABC-1375] feat: 새 worktree 셋업", CommitUnix: now - 2*86400},
+		},
+		MergeBaseUnix: func(string) (int64, bool) { return now, true },
+	}
+
+	got := Classify(in)
+	if len(got.ToDelete) != 0 {
+		t.Fatalf("worktree 에 체크아웃된 브랜치는 absorbed 후보가 아니어야 함: %+v", got.ToDelete)
+	}
+	if got.OtherCount != 1 {
+		t.Fatalf("worktree 브랜치는 일반 브랜치로 남아야 함, OtherCount=%d", got.OtherCount)
+	}
+}
+
+func TestClassifyDoesNotAbsorbWhenBaseCommitIsOlder(t *testing.T) {
+	now := int64(1_000_000_000)
+	branchTime := now - 2*86400
+	in := Input{
+		Now:       now,
+		StaleDays: 20,
+		Base:      "main",
+		Current:   "",
+		Branches: []gitx.BranchRef{
+			{Name: "claude/newer-branch", CommitUnix: branchTime, Subject: "[ABC-1375] docs: 최신 브랜치 작업"},
+		},
+		Merged:    map[string]bool{},
+		Worktrees: map[string]string{},
+		BaseCommits: []gitx.CommitRef{
+			{ShortHash: "111111111", Subject: "[ABC-1375] docs: 오래된 base 작업", CommitUnix: now - 10*86400},
+		},
+		MergeBaseUnix: func(string) (int64, bool) { return now, true },
+	}
+
+	got := Classify(in)
+	if len(got.ToDelete) != 0 {
+		t.Fatalf("base 관련 커밋이 더 오래되면 absorbed 후보가 아니어야 함: %+v", got.ToDelete)
+	}
+	if got.OtherCount != 1 {
+		t.Fatalf("브랜치는 일반 브랜치로 남아야 함, OtherCount=%d", got.OtherCount)
 	}
 }

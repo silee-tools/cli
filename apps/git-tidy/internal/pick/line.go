@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/silee-tools/git-tidy/internal/reason"
 )
 
 // RunLine 은 줄 입력으로 다중 선택을 진행하고 체크된 항목을 돌려준다.
@@ -41,6 +43,9 @@ func renderLine(sel *Selection, out io.Writer) {
 		if it.Signal != cur {
 			cur = it.Signal
 			_, _ = fmt.Fprintf(out, "  ── %s (%d) ──\n", cur, sel.GroupCount(cur))
+			if desc := reason.Description(cur); desc != "" {
+				_, _ = fmt.Fprintf(out, "     %s\n", desc)
+			}
 		}
 		mark := " "
 		if sel.IsChecked(i) {
@@ -52,6 +57,9 @@ func renderLine(sel *Selection, out io.Writer) {
 		}
 		if it.AgeDays > 0 {
 			line += fmt.Sprintf("   %d일 경과", it.AgeDays)
+		}
+		if it.Signal == "absorbed" && it.AbsorbedByShortHash != "" {
+			line += fmt.Sprintf("   base: %s %s", it.AbsorbedByShortHash, it.AbsorbedBySubject)
 		}
 		_, _ = fmt.Fprintln(out, line)
 	}

@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/silee-tools/git-tidy/internal/classify"
 )
 
 func TestParseArgs(t *testing.T) {
@@ -65,6 +69,25 @@ func TestEffectiveArgs(t *testing.T) {
 		got := effectiveArgs(c.invoked, c.args)
 		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("effectiveArgs(%q, %v) = %v, want %v", c.invoked, c.args, got, c.want)
+		}
+	}
+}
+
+func TestPrintTargetsShowsSignalDescriptionsAndAbsorbedEvidence(t *testing.T) {
+	c := classify.Classified{
+		ToDelete: []classify.Result{
+			{Name: "claude/example-absorbed-branch", Signal: classify.SignalAbsorbed, AbsorbedByShortHash: "9a640b52f", AbsorbedBySubject: "[ABC-1375] feat: 새 worktree 셋업 자동화 스크립트 + 안내 문서"},
+		},
+	}
+	var out bytes.Buffer
+	printTargetsTo(&out, c)
+	s := out.String()
+	for _, want := range []string{
+		"  [absorbed]\n    같은 Jira 티켓의 더 최신 base 커밋",
+		"base: 9a640b52f [ABC-1375] feat: 새 worktree 셋업 자동화 스크립트 + 안내 문서",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("출력에 %q 가 없음:\n%s", want, s)
 		}
 	}
 }

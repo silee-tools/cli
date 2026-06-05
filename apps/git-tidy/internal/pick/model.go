@@ -4,11 +4,13 @@ package pick
 
 // Item 은 선택 대상 하나의 표시 정보와 초기 체크 상태다.
 type Item struct {
-	Name         string
-	Signal       string // 삭제 사유(그룹 키): gone / merged / stale
-	WorktreePath string // worktree 에 물려 있으면 그 경로, 아니면 빈 문자열
-	AgeDays      int    // stale 경과 일수, 그 외 0
-	Checked      bool   // 초기 체크 상태
+	Name                string
+	Signal              string // 삭제 사유(그룹 키): gone / merged / absorbed / stale
+	WorktreePath        string // worktree 에 물려 있으면 그 경로, 아니면 빈 문자열
+	AgeDays             int    // stale 경과 일수, 그 외 0
+	AbsorbedByShortHash string // absorbed 후보를 만든 base 커밋의 짧은 해시
+	AbsorbedBySubject   string // absorbed 후보를 만든 base 커밋의 제목
+	Checked             bool   // 초기 체크 상태
 }
 
 // Selection 은 항목별 체크 상태를 들고 있는 순수 모델이다.
