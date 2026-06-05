@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/silee-tools/cli/compare/git-tidy/v0.5.0...git-tidy/v0.6.0) (2026-06-05)
+
+
+### Features
+
+* **git-tidy:** detect absorbed branch cleanup candidates ([#78](https://github.com/silee-tools/cli/issues/78)) ([314e2f5](https://github.com/silee-tools/cli/commit/314e2f5b34c29b40e43bec3255c07c9e5c26cf4a))
+
 ## [0.5.0](https://github.com/silee-tools/cli/compare/git-tidy/v0.4.0...git-tidy/v0.5.0) (2026-06-01)
 
 
