@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/silee-tools/cli/compare/git-tidy/v0.6.0...git-tidy/v0.7.0) (2026-06-08)
+
+
+### Features
+
+* **git-tidy:** 손상 저장소의 깨진 브랜치를 건너뛰고 계속 진행 ([#80](https://github.com/silee-tools/cli/issues/80)) ([be8ea8b](https://github.com/silee-tools/cli/commit/be8ea8b2a9ced06a256f2bf2610cb57c5ddad810))
+
 ## [0.6.0](https://github.com/silee-tools/cli/compare/git-tidy/v0.5.0...git-tidy/v0.6.0) (2026-06-05)
 
 
