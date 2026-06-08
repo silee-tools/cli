@@ -2,10 +2,16 @@
 package gitx
 
 import (
+	"bytes"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
 )
+
+// branchFormat 은 LocalBranches 가 브랜치 메타데이터를 한 줄로 받기 위한 형식이다.
+// 단일 호출(빠른 경로)과 브랜치별 호출(복구 경로)이 같은 파서를 공유하도록 상수로 둔다.
+const branchFormat = "%(refname:short)%00%(upstream:track)%00%(committerdate:unix)%00%(subject)"
 
 // BranchRef 는 로컬 브랜치 하나의 git 메타데이터다.
 type BranchRef struct {
@@ -23,10 +29,21 @@ type CommitRef struct {
 	CommitUnix int64
 }
 
-// run 은 git 을 실행하고 표준 출력을 돌려준다.
+// run 은 git 을 실행하고 표준 출력을 돌려준다. 실패 시 git 의 stderr 를 에러에
+// 포함해, 호출자가 불투명한 "exit status N" 대신 실제 원인(예: missing object)을
+// 볼 수 있게 한다.
 func run(args ...string) (string, error) {
-	out, err := exec.Command("git", args...).Output()
-	return string(out), err
+	cmd := exec.Command("git", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return stdout.String(), fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), msg, err)
+		}
+	}
+	return stdout.String(), err
 }
 
 // IsRepo 는 현재 디렉터리가 git 저장소인지 본다.
@@ -47,14 +64,42 @@ func CurrentBranch() string {
 }
 
 // LocalBranches 는 모든 로컬 브랜치의 메타데이터를 돌려준다.
-func LocalBranches() ([]BranchRef, error) {
-	out, err := run("for-each-ref",
-		"--format=%(refname:short)%00%(upstream:track)%00%(committerdate:unix)%00%(subject)",
-		"refs/heads")
-	if err != nil {
-		return nil, err
+// 정상 브랜치는 refs 로, 객체가 유실돼 메타데이터를 읽을 수 없는 브랜치 이름은
+// broken 으로 분리한다. 깨진 브랜치 하나가 전체 조회를 막지 않게 하기 위함이다.
+//
+// 단일 for-each-ref 는 브랜치 tip 의 커밋 객체가 하나라도 없으면 전체가 exit 128
+// 로 죽으므로(이 형식이 committerdate·subject 를 읽어야 하기 때문), 빠른 경로가
+// 실패하면 refname 만 받아(객체 불필요) 브랜치별로 다시 조회해 깨진 것만 건너뛴다.
+func LocalBranches() ([]BranchRef, []string, error) {
+	if out, err := run("for-each-ref", "--format="+branchFormat, "refs/heads"); err == nil {
+		return parseBranchLines(out), nil, nil
 	}
-	return parseBranchLines(out), nil
+	return localBranchesResilient()
+}
+
+// localBranchesResilient 는 손상된 저장소용 복구 경로다. refname 만 먼저 받아
+// (객체가 없어도 안전) 브랜치별로 메타데이터를 조회하고, 조회가 실패하는 브랜치는
+// broken 으로 모은다.
+func localBranchesResilient() ([]BranchRef, []string, error) {
+	out, err := run("for-each-ref", "--format=%(refname:short)", "refs/heads")
+	if err != nil {
+		return nil, nil, err
+	}
+	var refs []BranchRef
+	var broken []string
+	for _, name := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if name == "" {
+			continue
+		}
+		line, err := run("for-each-ref", "--format="+branchFormat, "refs/heads/"+name)
+		parsed := parseBranchLines(line)
+		if err != nil || len(parsed) == 0 {
+			broken = append(broken, name)
+			continue
+		}
+		refs = append(refs, parsed...)
+	}
+	return refs, broken, nil
 }
 
 func parseBranchLines(out string) []BranchRef {
