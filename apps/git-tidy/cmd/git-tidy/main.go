@@ -120,11 +120,12 @@ func run(opts options) int {
 		gitx.FetchPrune()
 	}
 
-	result, err := buildClassification(opts)
+	result, broken, err := buildClassification(opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "git-tidy:", err)
 		return 1
 	}
+	warnBrokenBranches(broken)
 
 	if len(result.ToDelete) == 0 {
 		fmt.Println("정리할 브랜치가 없습니다.")
@@ -140,23 +141,36 @@ func run(opts options) int {
 	return runDeletion(result, opts)
 }
 
-func buildClassification(opts options) (classify.Classified, error) {
-	branches, err := gitx.LocalBranches()
+// warnBrokenBranches 는 객체가 유실돼 분류할 수 없는 브랜치를 사용자에게 알린다.
+// 이런 브랜치는 git 저장소 손상의 신호이므로 자동 삭제하지 않고 안내만 한다.
+func warnBrokenBranches(broken []string) {
+	if len(broken) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "경고: 객체가 유실돼 분류할 수 없는 브랜치 %d개 (저장소 손상 가능):\n", len(broken))
+	for _, name := range broken {
+		fmt.Fprintf(os.Stderr, "  %s\n", name)
+	}
+	fmt.Fprintln(os.Stderr, "  → git fsck 로 점검하세요. git-tidy 는 이 브랜치들을 건드리지 않습니다.")
+}
+
+func buildClassification(opts options) (classify.Classified, []string, error) {
+	branches, broken, err := gitx.LocalBranches()
 	if err != nil {
-		return classify.Classified{}, err
+		return classify.Classified{}, nil, err
 	}
 	base := gitx.BaseBranch()
 	merged, err := gitx.MergedBranches(base)
 	if err != nil {
-		return classify.Classified{}, err
+		return classify.Classified{}, nil, err
 	}
 	worktrees, err := gitx.WorktreeBranches()
 	if err != nil {
-		return classify.Classified{}, err
+		return classify.Classified{}, nil, err
 	}
 	baseCommits, err := gitx.BaseCommits(base)
 	if err != nil {
-		return classify.Classified{}, err
+		return classify.Classified{}, nil, err
 	}
 	in := classify.Input{
 		Now:         time.Now().Unix(),
@@ -171,7 +185,7 @@ func buildClassification(opts options) (classify.Classified, error) {
 			return gitx.MergeBaseUnix(base, branch)
 		},
 	}
-	return classify.Classify(in), nil
+	return classify.Classify(in), broken, nil
 }
 
 // printTargets 는 c.ToDelete 가 신호 순(gone → merged → absorbed → stale)으로 정렬돼 있다고 가정한다.
@@ -181,14 +195,14 @@ func printTargets(c classify.Classified) {
 }
 
 func printTargetsTo(out io.Writer, c classify.Classified) {
-	fmt.Fprintf(out, "삭제 대상 (%d):\n", len(c.ToDelete))
+	_, _ = fmt.Fprintf(out, "삭제 대상 (%d):\n", len(c.ToDelete))
 	var cur classify.Signal
 	for _, r := range c.ToDelete {
 		if r.Signal != cur {
 			cur = r.Signal
-			fmt.Fprintf(out, "  [%s]\n", cur)
+			_, _ = fmt.Fprintf(out, "  [%s]\n", cur)
 			if desc := reason.Description(string(cur)); desc != "" {
-				fmt.Fprintf(out, "    %s\n", desc)
+				_, _ = fmt.Fprintf(out, "    %s\n", desc)
 			}
 		}
 		line := "    " + r.Name
@@ -205,16 +219,16 @@ func printTargetsTo(out io.Writer, c classify.Classified) {
 			}
 			line += ")"
 		}
-		fmt.Fprintln(out, line)
+		_, _ = fmt.Fprintln(out, line)
 	}
 	if len(c.Excluded) > 0 {
-		fmt.Fprintf(out, "제외된 후보 (%d):\n", len(c.Excluded))
+		_, _ = fmt.Fprintf(out, "제외된 후보 (%d):\n", len(c.Excluded))
 		for _, e := range c.Excluded {
-			fmt.Fprintf(out, "  %s  (%s)  [보호: %s]\n", e.Name, e.Signal, e.Reason)
+			_, _ = fmt.Fprintf(out, "  %s  (%s)  [보호: %s]\n", e.Name, e.Signal, e.Reason)
 		}
 	}
 	if c.OtherCount > 0 {
-		fmt.Fprintf(out, "그 외 브랜치 %d개는 정리 대상이 아닙니다.\n", c.OtherCount)
+		_, _ = fmt.Fprintf(out, "그 외 브랜치 %d개는 정리 대상이 아닙니다.\n", c.OtherCount)
 	}
 }
 
