@@ -183,3 +183,51 @@ func TestParseWorktreeBranches(t *testing.T) {
 		t.Errorf("parseWorktreeBranches mismatch\n got=%+v\nwant=%+v", got, want)
 	}
 }
+
+// TestRemoveWorktreeRecoversBrokenLink 는 worktree 의 .git 링크 파일이 유실된
+// "깨진 worktree" 를 RemoveWorktree 가 회복하는지 검증한다. 이 상태에서는 git 의
+// worktree remove 가 (--force 포함) 유효성 검사로 거부하고, prune 은 디렉터리가
+// 아직 존재해 대상으로 삼지 않는 사각지대가 된다. RemoveWorktree 가 디렉터리를
+// 직접 지우고 prune 으로 admin 메타까지 정리해 빠져나오는 불변조건을 고정한다.
+func TestRemoveWorktreeRecoversBrokenLink(t *testing.T) {
+	dir := setupRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	runGit(t, dir, "worktree", "add", "-q", "-b", "feature/x", wt)
+	// .git 링크 파일을 지워 깨진 worktree 를 재현한다.
+	if err := os.Remove(filepath.Join(wt, ".git")); err != nil {
+		t.Fatalf(".git 링크 삭제 실패: %v", err)
+	}
+	chdir(t, dir)
+
+	if err := RemoveWorktree(wt); err != nil {
+		t.Fatalf("깨진 worktree 를 회복해야 한다: %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("worktree 디렉터리가 제거돼야 한다: stat err=%v", err)
+	}
+	if out := runGit(t, dir, "worktree", "list", "--porcelain"); strings.Contains(out, wt) {
+		t.Errorf("worktree 목록에서 사라져야 한다(admin 메타 정리):\n%s", out)
+	}
+}
+
+// TestRemoveWorktreeKeepsHealthyOnFailure 는 .git 링크가 정상인 worktree 가
+// 미커밋 변경 때문에 remove 거부될 때, RemoveWorktree 가 에러를 그대로 돌려주고
+// 디렉터리를 보존하는지 검증한다. 회복 폴백이 건강한 worktree 의 사용자 작업을
+// 지우지 않는다는 안전 불변조건을 고정한다.
+func TestRemoveWorktreeKeepsHealthyOnFailure(t *testing.T) {
+	dir := setupRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	runGit(t, dir, "worktree", "add", "-q", "-b", "feature/y", wt)
+	// 추적 파일을 수정해 dirty 상태로 만들면 remove 가 거부한다.
+	if err := os.WriteFile(filepath.Join(wt, "a"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, dir)
+
+	if err := RemoveWorktree(wt); err == nil {
+		t.Fatal("dirty 한 정상 worktree 의 remove 는 에러여야 한다")
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("정상 worktree 디렉터리는 보존돼야 한다: %v", err)
+	}
+}
