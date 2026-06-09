@@ -308,7 +308,7 @@ func runJump(queryArgs []string) {
 	query := strings.Join(queryArgs, " ")
 	sorted := frecency.SortWithBoost(valid, query)
 
-	selected, err := fzf.Run(sorted, query)
+	selected, err := fzf.Run(sorted, query, "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

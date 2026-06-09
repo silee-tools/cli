@@ -9,15 +9,17 @@ import (
 	"github.com/silee-tools/jg/internal/entry"
 )
 
-// Run launches fzf with the given entries and optional query.
+// Run launches fzf with the given entries and optional query. pinnedMain 이
+// 비어 있지 않으면 그 경로를 라벨과 함께 피커 최상단에 고정한다.
 // Returns the selected path or empty string if cancelled.
-func Run(entries []entry.Entry, query string) (string, error) {
+func Run(entries []entry.Entry, query, pinnedMain string) (string, error) {
 	fzfPath, err := exec.LookPath("fzf")
 	if err != nil {
 		return "", fmt.Errorf("fzf not found. Install it: brew install fzf")
 	}
 
 	home, _ := os.UserHomeDir()
+	lines := buildPickerLines(entries, pinnedMain, home)
 
 	args := []string{
 		"--height=40%",
@@ -26,6 +28,8 @@ func Run(entries []entry.Entry, query string) (string, error) {
 		"--select-1",
 		"--keep-right",
 		"--wrap",
+		"--delimiter=\t",
+		"--with-nth=1",
 		"--header=Git Repos",
 		"--preview", previewCmd(home),
 	}
@@ -37,8 +41,8 @@ func Run(entries []entry.Entry, query string) (string, error) {
 	cmd.Stderr = os.Stderr
 
 	var input strings.Builder
-	for _, e := range entries {
-		fmt.Fprintln(&input, shortenPath(e.Path, home))
+	for _, ln := range lines {
+		fmt.Fprintf(&input, "%s\t%s\n", ln.display, ln.pathField)
 	}
 	cmd.Stdin = strings.NewReader(input.String())
 
@@ -53,8 +57,7 @@ func Run(entries []entry.Entry, query string) (string, error) {
 		return "", err
 	}
 
-	selected := strings.TrimSpace(string(out))
-	return expandPath(selected, home), nil
+	return parseSelectedPath(string(out), home), nil
 }
 
 // pickerLine 은 fzf 한 줄의 표시 영역과 경로 영역을 나눠 담는다. 호출부가
@@ -130,11 +133,14 @@ func parseSelectedPath(selected, home string) string {
 }
 
 // previewCmd builds the fzf preview command, expanding ~ to $HOME for git commands.
+// 입력은 "표시\t경로" 두 열이므로 preview 는 경로 영역인 {2} 를 참조한다.
+// 수정 시 검토 관점: 입력 열 구성(buildPickerLines·Run 의 입력 포맷)을 바꾸면
+// 이 {2} 인덱스도 함께 맞춰야 한다.
 func previewCmd(home string) string {
-	// fzf 가 {} 를 작은따옴표로 감싸 치환하므로 여기서 다시 따옴표로 감싸지
+	// fzf 가 {2} 를 작은따옴표로 감싸 치환하므로 여기서 다시 따옴표로 감싸지
 	// 않는다. leading ~ 만 home 경로로 치환하되 dash 같은 POSIX sh 에서도
 	// 동작하도록 case 와 ${p#~} 만 쓴다. ${p/.../...} 는 bash·zsh 전용이라
 	// dash 에서 "Bad substitution" 으로 깨진다.
-	resolve := fmt.Sprintf(`p={}; case "$p" in "~"*) p="%s${p#\~}";; esac`, home)
+	resolve := fmt.Sprintf(`p={2}; case "$p" in "~"*) p="%s${p#\~}";; esac`, home)
 	return resolve + `; git -C "$p" log --oneline -5 2>/dev/null; echo; echo "branch: $(git -C "$p" branch --show-current 2>/dev/null)"; echo; git -C "$p" status --short 2>/dev/null | head -10`
 }

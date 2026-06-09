@@ -73,7 +73,7 @@ func TestWorktreePreviewCmdResolvesFocusedPath(t *testing.T) {
 // 따옴표 처리 문제 없이 focused repo 의 브랜치와 커밋을 출력하는지 검증한다.
 func TestPreviewCmdResolvesFocusedPath(t *testing.T) {
 	repo := newPreviewRepo(t, "probe-branch", "preview probe commit")
-	cmd := fzfSubstitute(previewCmd("/home/unused"), repo)
+	cmd := strings.ReplaceAll(previewCmd("/home/unused"), "{2}", "'"+repo+"'")
 	out, _ := exec.Command(previewShell(), "-c", cmd).CombinedOutput()
 	got := string(out)
 	if !strings.Contains(got, "branch: probe-branch") {
