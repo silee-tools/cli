@@ -62,7 +62,8 @@ func Run(entries []entry.Entry, query, pinnedMain string) (string, error) {
 
 // pickerLine 은 fzf 한 줄의 표시 영역과 경로 영역을 나눠 담는다. 호출부가
 // 둘을 탭으로 이어 fzf 에 넘기면, fzf 는 표시 영역만 보여주고 선택 줄에서
-// 경로 영역만 떼어낸다.
+// 경로 영역만 떼어낸다. pathField 는 shortenPath 를 거친 `~` 접두사 축약형으로
+// 저장하며, parseSelectedPath 의 expandPath 가 절대 경로로 복원한다.
 type pickerLine struct {
 	display   string
 	pathField string
@@ -120,7 +121,8 @@ func expandPath(path, home string) string {
 
 // parseSelectedPath 는 fzf 가 돌려준 선택 줄에서 경로 영역만 떼어 절대 경로로
 // 되돌린다. 줄은 "표시\t경로" 형식이므로 마지막 탭 뒤를 경로로 본다. 탭이
-// 없으면 줄 전체를 경로로 본다.
+// 없으면 줄 전체를 경로로 본다. 경로 자체에 탭이 들어가면 fzf 의 --delimiter=\t
+// 가 먼저 열을 잘못 나누므로 여기 도달 전에 깨진다 — 탭 포함 경로는 범위 밖이다.
 func parseSelectedPath(selected, home string) string {
 	selected = strings.TrimSpace(selected)
 	if selected == "" {
