@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/silee-tools/cli/compare/jg/v0.5.0...jg/v0.6.0) (2026-06-09)
+
+
+### Features
+
+* **jg:** 무인자 jg 에서 main working tree 를 피커 최상단에 고정 ([#84](https://github.com/silee-tools/cli/issues/84)) ([e35e5f2](https://github.com/silee-tools/cli/commit/e35e5f2baa3e14e7e69e055f7e988111958cab07))
+
 ## [0.5.0](https://github.com/silee-tools/cli/compare/jg/v0.4.0...jg/v0.5.0) (2026-05-21)
 
 
