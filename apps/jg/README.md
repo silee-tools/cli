@@ -55,7 +55,7 @@ plugins=(... jg)
 ## Usage
 
 ```bash
-jg              # Interactive jump with fzf
+jg              # Interactive jump with fzf (inside a repo, its main worktree is pinned on top)
 jg <query>      # Jump with pre-filtered query
 jg -l           # List all tracked repos with scores
 jg clean        # Remove stale entries
@@ -76,6 +76,7 @@ Once shell integration is set up, repositories are automatically tracked as you 
 - **Cleanup**: Removes entries for deleted paths, non-directories, non-Git directories, and submodules
 - **Scheduled cleanup**: Optionally registers a daily macOS launchd job with `jg scheduler install`
 - **Multi-shell support**: Works with both Zsh and Bash
+- **Main worktree pinning**: Inside a git repo, `jg` with no arguments pins that repo's main working tree at the top of the picker for a quick return from a linked worktree or a subdirectory
 
 ## Development
 
