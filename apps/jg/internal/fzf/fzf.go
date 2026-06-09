@@ -57,6 +57,39 @@ func Run(entries []entry.Entry, query string) (string, error) {
 	return expandPath(selected, home), nil
 }
 
+// pickerLine 은 fzf 한 줄의 표시 영역과 경로 영역을 나눠 담는다. 호출부가
+// 둘을 탭으로 이어 fzf 에 넘기면, fzf 는 표시 영역만 보여주고 선택 줄에서
+// 경로 영역만 떼어낸다.
+type pickerLine struct {
+	display   string
+	pathField string
+}
+
+// buildPickerLines 는 fzf 에 넘길 줄 목록을 만든다. pinnedMain 이 비어 있지
+// 않으면 그 경로를 라벨과 함께 맨 앞에 고정하고, 본문 목록에서 같은 경로를
+// 제거해 중복을 막는다.
+// 수정 시 검토 관점: 라벨 문구("↑ main  ")를 바꾸면 표시만 바뀌고 반환 경로는
+// pathField 에서 떼므로 parseSelectedPath 와 짝이 깨지지 않는다. 단 display 와
+// pathField 사이 구분에 쓰는 탭은 호출부 입력 포맷·parseSelectedPath 와 한 쌍이다.
+func buildPickerLines(entries []entry.Entry, pinnedMain, home string) []pickerLine {
+	var lines []pickerLine
+	if pinnedMain != "" {
+		short := shortenPath(pinnedMain, home)
+		lines = append(lines, pickerLine{
+			display:   "↑ main  " + short,
+			pathField: short,
+		})
+	}
+	for _, e := range entries {
+		if pinnedMain != "" && e.Path == pinnedMain {
+			continue
+		}
+		short := shortenPath(e.Path, home)
+		lines = append(lines, pickerLine{display: short, pathField: short})
+	}
+	return lines
+}
+
 // shortenPath replaces $HOME prefix with ~ for compact display.
 func shortenPath(path, home string) string {
 	if home != "" && (path == home || strings.HasPrefix(path, home+string(os.PathSeparator))) {
