@@ -9,7 +9,7 @@
 **Tech Stack:** Go 1.23, 표준 라이브러리(`os/exec`, `strings`, `path/filepath`), 외부 명령 `git`·`fzf`, 테스트는 Go `testing` + 실제 임시 git 저장소.
 
 **기준 문서(단일 기준):** 이 계획의 완료 검토는 이 계획서가 아니라 설계 문서
-`docs/superpowers/specs/2026-06-09-jg-pin-main-worktree-design.md`
+`docs/superpowers/specs/2026-06-09-jg-pin-main-worktree-design.md`(저장소 루트 기준)
 에 직접 대조한다.
 
 ---
