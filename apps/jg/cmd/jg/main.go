@@ -300,7 +300,18 @@ func runJump(queryArgs []string) {
 		_ = entry.Save(valid)
 	}
 
-	if len(valid) == 0 {
+	// 무인자 실행일 때만 현재 저장소의 main working tree 를 최상단에 고정한다.
+	// 쿼리 인자가 있으면 사용자가 이미 목적지를 좁히고 있으므로 고정이 방해된다.
+	// os.Getwd 실패(마운트 해제·삭제된 cwd 등)는 고정 없이 진행하는 fail-open 으로 둔다.
+	var pinnedMain string
+	if len(queryArgs) == 0 {
+		if cwd, err := os.Getwd(); err == nil {
+			pinnedMain = resolvePinnedMain(cwd)
+		}
+	}
+
+	// 추적 항목이 없고 고정할 main 도 없으면 띄울 것이 없다.
+	if len(valid) == 0 && pinnedMain == "" {
 		fmt.Fprintln(os.Stderr, "No entries. cd into git repos to start tracking.")
 		os.Exit(0)
 	}
@@ -308,7 +319,7 @@ func runJump(queryArgs []string) {
 	query := strings.Join(queryArgs, " ")
 	sorted := frecency.SortWithBoost(valid, query)
 
-	selected, err := fzf.Run(sorted, query)
+	selected, err := fzf.Run(sorted, query, pinnedMain)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
