@@ -4,7 +4,9 @@ package gitx
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -219,7 +221,25 @@ func DeleteBranch(name string) error {
 }
 
 // RemoveWorktree 는 worktree 를 제거한다. 미커밋 변경이 있으면 git 이 거부한다.
+// worktree 의 .git 링크가 유실된 깨진 worktree 는 git worktree remove 가 (--force
+// 포함) 유효성 검사로 거부하고, prune 은 디렉터리가 남아 있어 대상으로 삼지 않는
+// 사각지대가 된다. 그 경우에 한해 디렉터리를 직접 지우고 prune 으로 admin 메타를
+// 정리해 회복한다.
+//
+// 불변조건: os.RemoveAll 폴백은 .git 이 없을 때만 탄다. .git 이 정상인데 remove 가
+// 거부됐다면(미커밋 변경 등) 디렉터리를 지우지 않고 에러를 그대로 돌려줘 사용자
+// 작업 손실을 막는다 — 이 가드를 좁히면 건강한 worktree 를 파괴할 수 있다.
 func RemoveWorktree(path string) error {
-	_, err := run("worktree", "remove", path)
+	_, removeErr := run("worktree", "remove", path)
+	if removeErr == nil {
+		return nil
+	}
+	if _, statErr := os.Stat(filepath.Join(path, ".git")); !os.IsNotExist(statErr) {
+		return removeErr
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return err
+	}
+	_, err := run("worktree", "prune")
 	return err
 }
