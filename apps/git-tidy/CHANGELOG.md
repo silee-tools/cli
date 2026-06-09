@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/silee-tools/cli/compare/git-tidy/v0.7.0...git-tidy/v0.7.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* **git-tidy:** recover broken worktree with missing .git link ([#82](https://github.com/silee-tools/cli/issues/82)) ([9153164](https://github.com/silee-tools/cli/commit/91531642236ae1c8325227ee4dd8c08a708f3382))
+
 ## [0.7.0](https://github.com/silee-tools/cli/compare/git-tidy/v0.6.0...git-tidy/v0.7.0) (2026-06-08)
 
 
