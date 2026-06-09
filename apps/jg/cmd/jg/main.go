@@ -301,6 +301,8 @@ func runJump(queryArgs []string) {
 	}
 
 	// 무인자 실행일 때만 현재 저장소의 main working tree 를 최상단에 고정한다.
+	// 쿼리 인자가 있으면 사용자가 이미 목적지를 좁히고 있으므로 고정이 방해된다.
+	// os.Getwd 실패(마운트 해제·삭제된 cwd 등)는 고정 없이 진행하는 fail-open 으로 둔다.
 	var pinnedMain string
 	if len(queryArgs) == 0 {
 		if cwd, err := os.Getwd(); err == nil {
