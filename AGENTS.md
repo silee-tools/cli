@@ -27,6 +27,7 @@
 - 릴리스: 태그를 직접 만들지 않는다. main 의 Conventional Commits 가 누적되면 release-please-action 이 **모든 도구의 버전 bump 를 묶은 단일 Release PR** 을 자동 생성/갱신한다(`release-please-config.json` 의 `separate-pull-requests: false`). 이렇게 하나의 PR 로 모으는 이유는, 도구별로 PR 을 분리하면 4 개 PR 이 공유 파일 `.release-please-manifest.json` 을 동시에 수정하게 되어 하나를 merge 할 때마다 나머지가 충돌하는 문제가 반복되기 때문이다. 단일 PR 은 manifest 수정·merge 가 1 회뿐이라 PR 간 충돌이 구조적으로 발생하지 않는다. 그 PR 의 본문(도구별 다음 버전 + CHANGELOG 변경분) 을 review 하고 merge 하는 것이 곧 (전 도구 동시) 릴리스 결정이다. PR merge 시 bump 된 도구마다 `<tool>/v<MAJOR>.<MINOR>.<PATCH>` 태그와 빈 GitHub Release 가 자동 생성되고, 후속 matrix job 이 GoReleaser 로 artifact 를 빌드해 첨부한 뒤 homebrew-tap formula 의 sha256/version 을 자동 commit + push 한다. 트레이드오프로 특정 도구만 따로 릴리스하고 다른 도구는 보류하는 선택은 불가능하며, 대기 중인 모든 도구가 함께 릴리스된다.
 - CI: 도구별 `.github/workflows/<tool>-ci.yml` + paths 필터로 자기 디렉토리만 트리거.
 - Homebrew formula 는 별도 레포 `silee-tools/homebrew-tap` 에서 관리. 본 레포의 source URL/buildpath 만 갱신 대상.
+- superpowers 설계·계획 문서는 작업 위치와 무관하게 저장소 루트 `docs/superpowers/{specs,plans}/` 에 둔다. writing-plans 스킬이 호출 시점의 작업 디렉토리 기준으로 `docs/superpowers/plans/` 에 저장하므로, `apps/<tool>` 안에서 작업하면 `apps/<tool>/docs/...` 로 잘못 떨어진다. 작성 후 저장소 루트로 옮겨 git-tidy 선례와 같은 한 곳에 모은다.
 
 ## 새 도구 추가 체크리스트
 
