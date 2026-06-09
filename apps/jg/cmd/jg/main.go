@@ -300,7 +300,16 @@ func runJump(queryArgs []string) {
 		_ = entry.Save(valid)
 	}
 
-	if len(valid) == 0 {
+	// 무인자 실행일 때만 현재 저장소의 main working tree 를 최상단에 고정한다.
+	var pinnedMain string
+	if len(queryArgs) == 0 {
+		if cwd, err := os.Getwd(); err == nil {
+			pinnedMain = resolvePinnedMain(cwd)
+		}
+	}
+
+	// 추적 항목이 없고 고정할 main 도 없으면 띄울 것이 없다.
+	if len(valid) == 0 && pinnedMain == "" {
 		fmt.Fprintln(os.Stderr, "No entries. cd into git repos to start tracking.")
 		os.Exit(0)
 	}
@@ -308,7 +317,7 @@ func runJump(queryArgs []string) {
 	query := strings.Join(queryArgs, " ")
 	sorted := frecency.SortWithBoost(valid, query)
 
-	selected, err := fzf.Run(sorted, query, "")
+	selected, err := fzf.Run(sorted, query, pinnedMain)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
