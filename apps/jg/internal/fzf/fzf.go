@@ -68,9 +68,18 @@ type pickerLine struct {
 // buildPickerLines 는 fzf 에 넘길 줄 목록을 만든다. pinnedMain 이 비어 있지
 // 않으면 그 경로를 라벨과 함께 맨 앞에 고정하고, 본문 목록에서 같은 경로를
 // 제거해 중복을 막는다.
-// 수정 시 검토 관점: 라벨 문구("↑ main  ")를 바꾸면 표시만 바뀌고 반환 경로는
-// pathField 에서 떼므로 parseSelectedPath 와 짝이 깨지지 않는다. 단 display 와
-// pathField 사이 구분에 쓰는 탭은 호출부 입력 포맷·parseSelectedPath 와 한 쌍이다.
+// 수정 시 검토 관점:
+//   - 라벨 문구("↑ main  ")를 바꾸면 표시만 바뀌고 반환 경로는 pathField 에서
+//     떼므로 parseSelectedPath 와 짝이 깨지지 않는다. 라벨 끝 공백 2개는 화살표
+//     뒤 경로를 일반 항목과 시각적으로 띄우는 패딩이므로 개수를 임의로 줄이지 않는다.
+//   - display 와 pathField 를 호출부(Run)가 탭으로 이어 fzf 에 넘기고, fzf 는
+//     --delimiter=\t --with-nth=1 로 display 만 보여주며 preview 는 경로 필드({2})를
+//     본다. 이 탭 구분은 호출부 입력 포맷·fzf 옵션·parseSelectedPath 와 한 묶음이다.
+//   - 중복 제거는 e.Path == pinnedMain 의 raw 비교로 충분하다. 두 값 모두 git 이
+//     돌려준 경로(entry 는 rev-parse --show-toplevel, pinnedMain 은 worktree list)라
+//     같은 정규화 도메인이며, 심볼릭 링크 cwd 로 접근해도 git 이 동일 문자열을
+//     돌려준다. (splitCurrent 가 canonicalPath 로 정규화하는 것은 git 경로를 셸의
+//     미해석 os.Getwd() 와 비교하기 때문이라 사정이 다르다.)
 func buildPickerLines(entries []entry.Entry, pinnedMain, home string) []pickerLine {
 	var lines []pickerLine
 	if pinnedMain != "" {
