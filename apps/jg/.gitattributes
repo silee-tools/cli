@@ -14,4 +14,4 @@
 *.zsh text eol=lf
 
 # Shell/completion files without standard extensions.
-completions/_jg text eol=lf
+completions/_* text eol=lf

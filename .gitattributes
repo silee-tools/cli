@@ -20,3 +20,6 @@
 *.bash text eol=lf
 *.zsh text eol=lf
 *.plugin.zsh text eol=lf
+
+# Extensionless shell completion files
+apps/*/completions/_* text eol=lf
