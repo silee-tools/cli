@@ -86,3 +86,20 @@ func TestBuildPickerLinesNoPin(t *testing.T) {
 		t.Errorf("no-pin line = %+v", lines[0])
 	}
 }
+
+func TestParseSelectedPath(t *testing.T) {
+	home := "/home/tester"
+	tests := []struct{ in, want string }{
+		{"↑ main  ~/repos/main\t~/repos/main", "/home/tester/repos/main"},
+		{"~/repos/a\t~/repos/a", "/home/tester/repos/a"},
+		{"/opt/x\t/opt/x", "/opt/x"},
+		{"~/repos/a", "/home/tester/repos/a"},
+		{"", ""},
+		{"  ~/repos/a\t~/repos/a  ", "/home/tester/repos/a"},
+	}
+	for _, tt := range tests {
+		if got := parseSelectedPath(tt.in, home); got != tt.want {
+			t.Errorf("parseSelectedPath(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

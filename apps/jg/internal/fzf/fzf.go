@@ -106,6 +106,20 @@ func expandPath(path, home string) string {
 	return path
 }
 
+// parseSelectedPath 는 fzf 가 돌려준 선택 줄에서 경로 영역만 떼어 절대 경로로
+// 되돌린다. 줄은 "표시\t경로" 형식이므로 마지막 탭 뒤를 경로로 본다. 탭이
+// 없으면 줄 전체를 경로로 본다.
+func parseSelectedPath(selected, home string) string {
+	selected = strings.TrimSpace(selected)
+	if selected == "" {
+		return ""
+	}
+	if i := strings.LastIndex(selected, "\t"); i >= 0 {
+		selected = selected[i+1:]
+	}
+	return expandPath(selected, home)
+}
+
 // previewCmd builds the fzf preview command, expanding ~ to $HOME for git commands.
 func previewCmd(home string) string {
 	// fzf 가 {} 를 작은따옴표로 감싸 치환하므로 여기서 다시 따옴표로 감싸지
