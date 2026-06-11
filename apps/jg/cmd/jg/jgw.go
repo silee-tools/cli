@@ -62,7 +62,7 @@ func runJgwFlowA(repoRoot, cwd string) {
 	}
 	mainPath, mainBranch := splitMain(wts)
 	candidates, current := splitCurrent(wts, cwd)
-	if len(candidates) == 0 && current != "" {
+	if len(candidates) == 0 && current != nil {
 		// 사용자가 유일한 worktree 안에 이미 있음 — 점프 없음
 		os.Exit(0)
 	}
@@ -75,11 +75,11 @@ func runJgwFlowA(repoRoot, cwd string) {
 		_ = entry.AddOrUpdate(mainPath)
 		return
 	}
-	selected, err := fzf.RunWorktreePicker(fzf.WorktreePickerInput{
-		Candidates:  candidates,
-		CurrentPath: current,
-		StepHeader:  stepHeader(1, 1, "worktree 선택"),
-		OriginLine:  fmt.Sprintf("원본: %s (%s)", mainPath, mainBranch),
+	selected, err := fzf.RunWorktreeListPicker(fzf.WorktreeListPickerInput{
+		Candidates: candidates,
+		Current:    current,
+		StepHeader: stepHeader(1, 1, "worktree 선택"),
+		OriginLine: fmt.Sprintf("원본: %s (%s)", mainPath, mainBranch),
 	})
 	if err != nil || selected == "" {
 		os.Exit(1)
@@ -124,15 +124,11 @@ func runJgwFlowB(args []string) {
 		_ = entry.AddOrUpdate(mainPath)
 		return
 	}
-	candidates := make([]string, 0, len(wts))
-	for _, w := range wts {
-		candidates = append(candidates, w.Path)
-	}
-	selected, err := fzf.RunWorktreePicker(fzf.WorktreePickerInput{
-		Candidates:  candidates,
-		CurrentPath: "",
-		StepHeader:  stepHeader(2, 2, "worktree 선택"),
-		OriginLine:  fmt.Sprintf("원본: %s (%s)", mainPath, mainBranch),
+	selected, err := fzf.RunWorktreeListPicker(fzf.WorktreeListPickerInput{
+		Candidates: wts,
+		Current:    nil,
+		StepHeader: stepHeader(2, 2, "worktree 선택"),
+		OriginLine: fmt.Sprintf("원본: %s (%s)", mainPath, mainBranch),
 	})
 	if err != nil || selected == "" {
 		os.Exit(1)
@@ -151,18 +147,18 @@ func splitMain(wts []worktree.Worktree) (path, branch string) {
 	return "", ""
 }
 
-func splitCurrent(wts []worktree.Worktree, cwd string) (candidates []string, current string) {
+func splitCurrent(wts []worktree.Worktree, cwd string) (candidates []worktree.Worktree, current *worktree.Worktree) {
 	// os.Getwd() 는 셸이 넘긴 논리 경로를, git worktree list 는 심볼릭 링크를
 	// 푼 정규 경로를 돌려준다. 두 표기가 어긋나면 현재 worktree 를 못 찾으므로
-	// 양쪽을 정규화한 뒤 비교한다. 반환값은 원본 w.Path 를 유지한다.
+	// 양쪽을 정규화한 뒤 비교한다. 반환값은 원본 Worktree 를 유지한다.
 	cwdCanon := canonicalPath(cwd)
-	for _, w := range wts {
-		wPathCanon := canonicalPath(w.Path)
+	for i := range wts {
+		wPathCanon := canonicalPath(wts[i].Path)
 		if cwdCanon == wPathCanon || strings.HasPrefix(cwdCanon, wPathCanon+string(os.PathSeparator)) {
-			current = w.Path
+			current = &wts[i]
 			continue
 		}
-		candidates = append(candidates, w.Path)
+		candidates = append(candidates, wts[i])
 	}
 	return
 }
