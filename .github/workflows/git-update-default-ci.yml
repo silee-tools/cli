@@ -1,0 +1,27 @@
+name: git-update-default CI
+
+on:
+  push:
+    paths:
+      - 'apps/git-update-default/**'
+      - '.github/workflows/git-update-default-ci.yml'
+  pull_request:
+    paths:
+      - 'apps/git-update-default/**'
+      - '.github/workflows/git-update-default-ci.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/git-update-default
+    steps:
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v4
+        with:
+          working_directory: apps/git-update-default
+      - run: mise run fmt-check
+      - run: mise run lint
+      - run: mise run test
+      - run: mise run build

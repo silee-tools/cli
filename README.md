@@ -9,6 +9,7 @@ Monorepo of personal CLI tools under the `silee-tools` GitHub organization. Each
 | Tool | Language | Description |
 |------|----------|-------------|
 | [git-tidy](apps/git-tidy/) | Go | Cleans up local git branches that are done or stale — found by gone-upstream, merged, or staleness signals. |
+| [git-update-default](apps/git-update-default/) | Go | Switch the current repo to the latest remote default branch. |
 | [jg / jgw](apps/jg/) | Go | Frecency-based CLI for quickly jumping to git repositories (jg) and to worktrees within a repo (jgw). |
 | [totp](apps/totp/) | Go | macOS Keychain-backed TOTP code generator (macOS only). |
 
