@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/silee-tools/jg/internal/worktree"
@@ -95,6 +96,51 @@ func worktreeLabel(w worktree.Worktree) string {
 		return marker + name
 	}
 	return marker + name + "  " + w.Branch
+}
+
+// WorktreeListPickerInput 은 worktree 선택 단계 전용 picker 호출 파라미터다.
+// 후보는 경로 문자열이 아니라 worktree 구조체로 받아, 라벨을 이름 중심으로
+// 그리고 선택 결과는 인덱스로 역조회해 경로를 돌려준다.
+type WorktreeListPickerInput struct {
+	Candidates []worktree.Worktree // 선택 가능한 worktree 후보 (현재 위치 제외)
+	Current    *worktree.Worktree  // 현재 위치한 worktree. nil 이 아니면 헤더 줄로 고정 표시
+	StepHeader string              // "[1/1 worktree 선택]" / "[2/2 worktree 선택]"
+	OriginLine string              // "원본: <path> (<branch>)"
+}
+
+// buildWorktreeInput 은 fzf 에 넘길 입력 문자열과 헤더 줄 수를 만든다. 각 줄은
+// "<인덱스>\t<라벨>" 이며, 인덱스는 Candidates 슬라이스의 자리값이다. Current 가
+// 있으면 맨 앞에 인덱스 -1 의 헤더 줄을 두고 headerLines 를 1 로 돌려준다(이 줄은
+// fzf 의 --header-lines 로 고정돼 선택되지 않으므로 인덱스 값은 쓰이지 않는다).
+func buildWorktreeInput(in WorktreeListPickerInput) (input string, headerLines int) {
+	var b strings.Builder
+	if in.Current != nil {
+		fmt.Fprintf(&b, "-1\t%s\n", worktreeLabel(*in.Current))
+		headerLines = 1
+	}
+	for i, w := range in.Candidates {
+		fmt.Fprintf(&b, "%d\t%s\n", i, worktreeLabel(w))
+	}
+	return b.String(), headerLines
+}
+
+// selectedWorktreeIndex 는 fzf 가 돌려준 선택 줄에서 맨 앞 인덱스 필드를 떼어
+// 정수로 바꾼다. 줄은 "<인덱스>\t<라벨>" 형식이라 첫 탭 앞을 인덱스로 본다.
+// 비어 있거나 인덱스가 정수가 아니면 ok=false 를 돌려준다.
+func selectedWorktreeIndex(selected string) (int, bool) {
+	selected = strings.TrimSpace(selected)
+	if selected == "" {
+		return 0, false
+	}
+	field := selected
+	if i := strings.Index(selected, "\t"); i >= 0 {
+		field = selected[:i]
+	}
+	n, err := strconv.Atoi(field)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // worktreePreviewCmd 는 focused 항목의 브랜치/마지막 커밋 제목/마지막 커밋 시각을
