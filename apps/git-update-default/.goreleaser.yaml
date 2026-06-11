@@ -1,0 +1,36 @@
+version: 2
+
+project_name: git-update-default
+
+builds:
+  - main: ./cmd/git-update-default
+    binary: git-update-default
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}-v{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    files:
+      - completions/*
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+
+release:
+  disable: true
