@@ -144,6 +144,65 @@ func selectedWorktreeIndex(selected string) (int, bool) {
 	return n, true
 }
 
+// RunWorktreeListPicker 는 worktree 선택 단계 전용 fzf picker 를 띄우고 선택된
+// worktree 의 경로를 돌려준다. 취소 시 빈 문자열을 돌려준다. 입력은 인덱스를
+// 숨김 필드로 동행시킨 "<인덱스>\t<라벨>" 형식이며, --with-nth=2.. 로 인덱스를
+// 화면과 검색에서 빼고 라벨만 보여준다. worktree 단계에는 preview 를 띄우지 않는다.
+// 수정 시 검토 관점: --delimiter·--with-nth 와 buildWorktreeInput 의 필드 구성,
+// selectedWorktreeIndex 의 파싱은 한 묶음이다. 한쪽을 바꾸면 나머지도 맞춘다.
+func RunWorktreeListPicker(in WorktreeListPickerInput) (string, error) {
+	fzfPath, err := exec.LookPath("fzf")
+	if err != nil {
+		return "", fmt.Errorf("fzf not found. Install it: brew install fzf")
+	}
+
+	headerParts := []string{}
+	if in.StepHeader != "" {
+		headerParts = append(headerParts, in.StepHeader)
+	}
+	if in.OriginLine != "" {
+		headerParts = append(headerParts, in.OriginLine)
+	}
+	header := strings.Join(headerParts, "\n")
+
+	args := []string{
+		"--height=40%",
+		"--reverse",
+		"--no-sort",
+		"--select-1",
+		"--wrap",
+		"--delimiter=\t",
+		"--with-nth=2..",
+	}
+	if header != "" {
+		args = append(args, "--header", header)
+	}
+
+	input, headerLines := buildWorktreeInput(in)
+	if headerLines > 0 {
+		args = append(args, "--header-lines=1")
+	}
+
+	cmd := exec.Command(fzfPath, args...)
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if exitErr.ExitCode() == 1 || exitErr.ExitCode() == 130 {
+				return "", nil
+			}
+		}
+		return "", err
+	}
+
+	idx, ok := selectedWorktreeIndex(string(out))
+	if !ok || idx < 0 || idx >= len(in.Candidates) {
+		return "", nil
+	}
+	return in.Candidates[idx].Path, nil
+}
+
 // worktreePreviewCmd 는 focused 항목의 브랜치/마지막 커밋 제목/마지막 커밋 시각을
 // 표시하는 preview 명령을 만든다.
 func worktreePreviewCmd(home string) string {
