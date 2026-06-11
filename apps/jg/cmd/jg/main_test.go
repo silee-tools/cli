@@ -80,63 +80,54 @@ func TestSplitMainReturnsEmptyWhenNoMain(t *testing.T) {
 
 func TestSplitCurrentSeparatesCwd(t *testing.T) {
 	wts := []worktree.Worktree{
-		{Path: "/repo", IsMain: true},
-		{Path: "/repo-wt1", IsMain: false},
-		{Path: "/repo-wt2", IsMain: false},
+		{Path: "/repo", Branch: "main", IsMain: true},
+		{Path: "/repo-wt1", Branch: "feature/x"},
 	}
 	candidates, current := splitCurrent(wts, "/repo-wt1/subdir")
-	if current != "/repo-wt1" {
-		t.Errorf("current = %q, want /repo-wt1", current)
+	if current == nil || current.Path != "/repo-wt1" {
+		t.Fatalf("current = %v, want /repo-wt1", current)
 	}
-	if len(candidates) != 2 || candidates[0] != "/repo" || candidates[1] != "/repo-wt2" {
-		t.Errorf("candidates = %v, want [/repo /repo-wt2]", candidates)
-	}
-}
-
-func TestSplitCurrentDoesNotFalseMatchPrefix(t *testing.T) {
-	// /repo 는 /repo-wt1 의 prefix 처럼 보이지만 separator 가 없으므로 매칭 X
-	wts := []worktree.Worktree{
-		{Path: "/repo", IsMain: true},
-	}
-	candidates, current := splitCurrent(wts, "/repo-wt1/subdir")
-	if current != "" {
-		t.Errorf("current = %q, want empty (false prefix match)", current)
-	}
-	if len(candidates) != 1 || candidates[0] != "/repo" {
+	if len(candidates) != 1 || candidates[0].Path != "/repo" {
 		t.Errorf("candidates = %v, want [/repo]", candidates)
 	}
 }
 
-func TestSplitCurrentMatchesThroughSymlink(t *testing.T) {
-	// git worktree list 는 심볼릭 링크를 푼 정규 경로를, os.Getwd() 는 셸이
-	// 넘긴 논리 경로를 돌려준다. 두 표기가 달라도 같은 worktree 로 식별해야
-	// 한다. 식별하지 못하면 현재 worktree 가 후보 목록에 섞여 picker 의
-	// 비활성 행이 만들어지지 않는다.
-	realRoot := t.TempDir()
-	mainWT := filepath.Join(realRoot, "repo")
-	featWT := filepath.Join(realRoot, "repo-feature")
-	for _, d := range []string{mainWT, featWT} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
+func TestSplitCurrentDoesNotFalseMatchPrefix(t *testing.T) {
+	wts := []worktree.Worktree{
+		{Path: "/repo-wt1", Branch: "feature/x"},
+		{Path: "/repo-wt10", Branch: "feature/y"},
 	}
-	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(realRoot, link); err != nil {
+	candidates, current := splitCurrent(wts, "/repo-wt1/subdir")
+	if current == nil || current.Path != "/repo-wt1" {
+		t.Fatalf("current = %v, want /repo-wt1 (prefix /repo-wt10 과 혼동 금지)", current)
+	}
+	if len(candidates) != 1 || candidates[0].Path != "/repo-wt10" {
+		t.Errorf("candidates = %v, want [/repo-wt10]", candidates)
+	}
+}
+
+func TestSplitCurrentMatchesThroughSymlink(t *testing.T) {
+	realDir := t.TempDir()
+	wtReal := filepath.Join(realDir, "wt-real")
+	wtRealSubdir := filepath.Join(wtReal, "subdir")
+	if err := os.MkdirAll(wtRealSubdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-
+	link := filepath.Join(realDir, "wt-link")
+	if err := os.Symlink(wtReal, link); err != nil {
+		t.Fatal(err)
+	}
 	wts := []worktree.Worktree{
-		{Path: mainWT, IsMain: true},
-		{Path: featWT},
+		{Path: "/repo", Branch: "main", IsMain: true},
+		{Path: wtReal, Branch: "feature/x"},
 	}
-	// 심볼릭 링크를 통과한 경로로 현재 위치를 표현한다.
-	cwd := filepath.Join(link, "repo-feature")
+	cwd := filepath.Join(link, "subdir")
 	candidates, current := splitCurrent(wts, cwd)
-	if current != featWT {
-		t.Errorf("current = %q, want %q", current, featWT)
+	if current == nil || current.Path != wtReal {
+		t.Fatalf("current = %v, want %s", current, wtReal)
 	}
-	if len(candidates) != 1 || candidates[0] != mainWT {
-		t.Errorf("candidates = %v, want [%q]", candidates, mainWT)
+	if len(candidates) != 1 || candidates[0].Path != "/repo" {
+		t.Errorf("candidates = %v, want [/repo]", candidates)
 	}
 }
 

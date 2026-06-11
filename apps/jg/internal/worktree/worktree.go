@@ -9,7 +9,7 @@ import (
 
 type Worktree struct {
 	Path   string
-	Branch string
+	Branch string // git ref 의 refs/heads/ 접두사를 제외한 짧은 브랜치명. detached 면 빈 문자열.
 	IsMain bool
 }
 
