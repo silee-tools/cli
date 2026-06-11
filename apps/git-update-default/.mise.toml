@@ -1,0 +1,27 @@
+[tools]
+go = "1.23"
+"aqua:golangci/golangci-lint" = "latest"
+
+[tasks.build]
+description = "Build the project"
+run = "go build ./cmd/git-update-default"
+
+[tasks.test]
+description = "Run tests"
+run = "go test ./..."
+
+[tasks.lint]
+description = "Run linter"
+run = "golangci-lint run"
+
+[tasks.fmt]
+description = "Format code"
+run = "gofmt -w ."
+
+[tasks.fmt-check]
+description = "Check formatting (CI)"
+run = "test -z \"$(gofmt -l .)\""
+
+[tasks.install]
+description = "Build and install to ~/.local/bin"
+run = "go build -o ~/.local/bin/git-update-default ./cmd/git-update-default"
