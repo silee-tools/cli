@@ -165,6 +165,8 @@ func RunWorktreeListPicker(in WorktreeListPickerInput) (string, error) {
 	}
 	header := strings.Join(headerParts, "\n")
 
+	// RunWorktreePicker 와 달리 --keep-right 를 두지 않는다 — 라벨이 긴 경로가 아니라
+	// 이름 중심 짧은 표시라 오른쪽 고정이 필요 없다.
 	args := []string{
 		"--height=40%",
 		"--reverse",
@@ -197,6 +199,9 @@ func RunWorktreeListPicker(in WorktreeListPickerInput) (string, error) {
 	}
 
 	idx, ok := selectedWorktreeIndex(string(out))
+	// selectedWorktreeIndex 실패 경로는 (0, false) 라 !ok 로 걸린다. idx<0 은 헤더
+	// sentinel -1 이 만약 --header-lines 를 우회해 올 경우의 방어층이고, idx>=len 은
+	// 후보 범위 밖 선택을 취소로 처리한다.
 	if !ok || idx < 0 || idx >= len(in.Candidates) {
 		return "", nil
 	}
