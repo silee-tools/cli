@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/silee-tools/cli/compare/jg/v0.6.0...jg/v0.7.0) (2026-06-11)
+
+
+### Features
+
+* **jg:** jgw worktree picker 를 이름 중심 표시로 전환 ([#89](https://github.com/silee-tools/cli/issues/89)) ([1c9db27](https://github.com/silee-tools/cli/commit/1c9db276631b6e2ce082e15bbe1316fd1ea9ad08))
+
 ## [0.6.0](https://github.com/silee-tools/cli/compare/jg/v0.5.0...jg/v0.6.0) (2026-06-09)
 
 
