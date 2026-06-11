@@ -90,6 +90,7 @@ func worktreeLabel(w worktree.Worktree) string {
 	if w.Branch == "" {
 		return marker + name + "  (detached)"
 	}
+	// git ref 는 OS 와 무관하게 '/' 구분자를 쓰므로 filepath 가 아니라 path.Base 로 짧은 이름을 뗀다.
 	if path.Base(w.Branch) == name {
 		return marker + name
 	}
