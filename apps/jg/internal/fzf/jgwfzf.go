@@ -4,7 +4,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
+	"path/filepath"
 	"strings"
+
+	"github.com/silee-tools/jg/internal/worktree"
 )
 
 // WorktreePickerInput 은 jgw 의 fzf picker 호출 파라미터다.
@@ -68,6 +72,28 @@ func RunWorktreePicker(in WorktreePickerInput) (string, error) {
 		return "", err
 	}
 	return expandPath(strings.TrimSpace(string(out)), home), nil
+}
+
+// worktreeLabel 은 worktree 한 개를 picker 에 보여줄 한 줄 라벨로 만든다.
+// 이름은 경로 basename 이고, 원본(main) 은 "▸ " 마커를, 나머지는 같은 폭의
+// 공백을 앞에 둔다. 브랜치 basename 이 이름과 같으면 중복이므로 브랜치를
+// 생략하고, 다르면 이름 뒤에 공백 두 칸으로 브랜치를 잇는다. 브랜치가 없는
+// detached worktree 는 "(detached)" 를 덧붙인다.
+// 수정 시 검토 관점: 이 라벨은 buildWorktreeInput 이 "<인덱스>\t<라벨>" 로
+// 엮어 fzf 에 넘기고 fzf 는 라벨만 보여주므로, 라벨 안에 탭 문자를 넣지 않는다.
+func worktreeLabel(w worktree.Worktree) string {
+	name := filepath.Base(w.Path)
+	marker := "  "
+	if w.IsMain {
+		marker = "▸ "
+	}
+	if w.Branch == "" {
+		return marker + name + "  (detached)"
+	}
+	if path.Base(w.Branch) == name {
+		return marker + name
+	}
+	return marker + name + "  " + w.Branch
 }
 
 // worktreePreviewCmd 는 focused 항목의 브랜치/마지막 커밋 제목/마지막 커밋 시각을
