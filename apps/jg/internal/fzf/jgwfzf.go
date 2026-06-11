@@ -103,7 +103,7 @@ func worktreeLabel(w worktree.Worktree) string {
 // 그리고 선택 결과는 인덱스로 역조회해 경로를 돌려준다.
 type WorktreeListPickerInput struct {
 	Candidates []worktree.Worktree // 선택 가능한 worktree 후보 (현재 위치 제외)
-	Current    *worktree.Worktree  // 현재 위치한 worktree. nil 이 아니면 헤더 줄로 고정 표시
+	Current    *worktree.Worktree  // 현재 위치한 worktree. nil 이 아니면 헤더 줄로 고정 표시. 호출자 소유 슬라이스 원소를 가리키므로 picker 호출 동안 그 슬라이스가 유효해야 한다.
 	StepHeader string              // "[1/1 worktree 선택]" / "[2/2 worktree 선택]"
 	OriginLine string              // "원본: <path> (<branch>)"
 }
