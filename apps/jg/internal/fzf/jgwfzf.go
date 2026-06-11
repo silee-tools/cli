@@ -112,6 +112,7 @@ type WorktreeListPickerInput struct {
 // "<인덱스>\t<라벨>" 이며, 인덱스는 Candidates 슬라이스의 자리값이다. Current 가
 // 있으면 맨 앞에 인덱스 -1 의 헤더 줄을 두고 headerLines 를 1 로 돌려준다(이 줄은
 // fzf 의 --header-lines 로 고정돼 선택되지 않으므로 인덱스 값은 쓰이지 않는다).
+// StepHeader·OriginLine 은 RunWorktreeListPicker 가 fzf 헤더로 쓰며 이 함수는 읽지 않는다.
 func buildWorktreeInput(in WorktreeListPickerInput) (input string, headerLines int) {
 	var b strings.Builder
 	if in.Current != nil {

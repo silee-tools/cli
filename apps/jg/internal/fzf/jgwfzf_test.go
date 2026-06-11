@@ -101,6 +101,18 @@ func TestBuildWorktreeInputNoCurrent(t *testing.T) {
 	}
 }
 
+func TestBuildWorktreeInputNoCandidate(t *testing.T) {
+	cur := worktree.Worktree{Path: "/home/me/repos/acme-app", Branch: "main", IsMain: true}
+	in := WorktreeListPickerInput{Current: &cur, Candidates: []worktree.Worktree{}}
+	input, headerLines := buildWorktreeInput(in)
+	if headerLines != 1 {
+		t.Fatalf("headerLines = %d, want 1", headerLines)
+	}
+	if got := strings.TrimRight(input, "\n"); got != "-1\t▸ acme-app  main" {
+		t.Errorf("input = %q, want header-only line", got)
+	}
+}
+
 func TestSelectedWorktreeIndex(t *testing.T) {
 	cases := []struct {
 		in     string
@@ -109,6 +121,7 @@ func TestSelectedWorktreeIndex(t *testing.T) {
 	}{
 		{"0\t  ABC-101-login-timeout\n", 0, true},
 		{"2\t▸ acme-app  main", 2, true},
+		{"42", 42, true},
 		{"", 0, false},
 		{"notanumber\tlabel", 0, false},
 	}
