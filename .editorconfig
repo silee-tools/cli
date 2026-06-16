@@ -21,7 +21,7 @@ indent_size = 4
 indent_style = space
 indent_size = 2
 
-[apps/jg/completions/_jg]
+[apps/*/completions/_*]
 indent_style = space
 indent_size = 2
 
