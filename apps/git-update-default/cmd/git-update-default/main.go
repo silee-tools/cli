@@ -41,15 +41,15 @@ func main() {
 			_, _ = fmt.Fprint(os.Stdout, versionLine(invoked, version))
 			return
 		case "-h", "--help":
-			fmt.Print(helpText)
+			_, _ = fmt.Fprint(os.Stdout, helpText)
 			return
 		}
 	}
 
 	opts, err := parseArgs(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "git-update-default:", err)
-		fmt.Fprintln(os.Stderr, "git-update-default --help 로 사용법을 확인하세요.")
+		_, _ = fmt.Fprintln(os.Stderr, "git-update-default:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "git-update-default --help 로 사용법을 확인하세요.")
 		os.Exit(1)
 	}
 	os.Exit(run(opts))
@@ -113,17 +113,17 @@ const (
 // run 은 git-update-default 본체다. 종료 코드를 돌려준다.
 func run(opts options) int {
 	if !gitx.IsRepo() {
-		fmt.Fprintln(os.Stderr, "git-update-default: git 저장소가 아닙니다.")
+		_, _ = fmt.Fprintln(os.Stderr, "git-update-default: git 저장소가 아닙니다.")
 		return 1
 	}
 	if !gitx.HasOriginRemote() {
-		fmt.Fprintln(os.Stderr, "git-update-default: origin 원격이 없어 default branch 를 정할 수 없습니다.")
+		_, _ = fmt.Fprintln(os.Stderr, "git-update-default: origin 원격이 없어 default branch 를 정할 수 없습니다.")
 		return 1
 	}
 	if err := gitx.FetchPrune(); err != nil {
 		// fetch 실패(오프라인 등)는 치명적이지 않다. 로컬에 이미 있는 원격 추적
 		// 참조로 진행하되, 최신이 아닐 수 있음을 알린다.
-		fmt.Fprintln(os.Stderr, "경고: git fetch 실패 — 로컬의 원격 추적 정보로 진행합니다.")
+		_, _ = fmt.Fprintln(os.Stderr, "경고: git fetch 실패 — 로컬의 원격 추적 정보로 진행합니다.")
 	}
 
 	branch, ok := resolve.Default(resolve.Deps{
@@ -132,13 +132,13 @@ func run(opts options) int {
 		SymbolicRef:        gitx.SymbolicRefDefault,
 	})
 	if !ok {
-		fmt.Fprintln(os.Stderr, "git-update-default: default branch 를 정할 수 없습니다 (main·master·gh·origin/HEAD 모두 실패).")
+		_, _ = fmt.Fprintln(os.Stderr, "git-update-default: default branch 를 정할 수 없습니다 (main·master·gh·origin/HEAD 모두 실패).")
 		return 1
 	}
 
 	files, err := gitx.DirtyFiles()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "git-update-default:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "git-update-default:", err)
 		return 1
 	}
 	if len(files) > 0 {
@@ -155,12 +155,12 @@ func run(opts options) int {
 	}
 
 	if err := gitx.MergeFFOnly(branch); err != nil {
-		fmt.Fprintf(os.Stderr, "git-update-default: %s 가 origin/%s 와 갈라져 fast-forward 할 수 없습니다.\n", branch, branch)
-		fmt.Fprintln(os.Stderr, "  → 직접 rebase·reset 으로 정리하세요. 강제로 맞추지 않습니다.")
+		_, _ = fmt.Fprintf(os.Stderr, "git-update-default: %s 가 origin/%s 와 갈라져 fast-forward 할 수 없습니다.\n", branch, branch)
+		_, _ = fmt.Fprintln(os.Stderr, "  → 직접 rebase·reset 으로 정리하세요. 강제로 맞추지 않습니다.")
 		return 1
 	}
 
-	fmt.Printf("✓ %s 로 전환하고 origin/%s 최신까지 맞췄습니다.\n", branch, branch)
+	_, _ = fmt.Printf("✓ %s 로 전환하고 origin/%s 최신까지 맞췄습니다.\n", branch, branch)
 	return 0
 }
 
@@ -179,36 +179,36 @@ func handleDirty(files []string, opts options) dirtyResult {
 		action = confirm.ActionForce
 	case pathCancel:
 		printDirty(files)
-		fmt.Fprintln(os.Stderr, "git-update-default: 커밋되지 않은 변경이 있습니다. --stash 또는 --force 를 쓰거나 직접 정리하세요.")
+		_, _ = fmt.Fprintln(os.Stderr, "git-update-default: 커밋되지 않은 변경이 있습니다. --stash 또는 --force 를 쓰거나 직접 정리하세요.")
 		return dirtyAbortErr
 	}
 
 	switch action {
 	case confirm.ActionCancel:
-		fmt.Println("취소했습니다. 아무것도 바꾸지 않았습니다.")
+		_, _ = fmt.Fprintln(os.Stdout, "취소했습니다. 아무것도 바꾸지 않았습니다.")
 		return dirtyAbortOK
 	case confirm.ActionStash:
 		if err := gitx.StashPush(); err != nil {
-			fmt.Fprintln(os.Stderr, "git-update-default: stash 실패:", err)
+			_, _ = fmt.Fprintln(os.Stderr, "git-update-default: stash 실패:", err)
 			return dirtyAbortErr
 		}
 		cur := gitx.CurrentBranch()
-		fmt.Printf("변경을 stash 했습니다. 원래 브랜치(%s)로 돌아가 `git stash pop` 으로 복원하세요.\n", cur)
+		_, _ = fmt.Printf("변경을 stash 했습니다. 원래 브랜치(%s)로 돌아가 `git stash pop` 으로 복원하세요.\n", cur)
 	case confirm.ActionForce:
 		if err := gitx.ResetHard(); err != nil {
-			fmt.Fprintln(os.Stderr, "git-update-default: reset 실패:", err)
+			_, _ = fmt.Fprintln(os.Stderr, "git-update-default: reset 실패:", err)
 			return dirtyAbortErr
 		}
-		fmt.Println("추적 변경을 버렸습니다.")
+		_, _ = fmt.Fprintln(os.Stdout, "추적 변경을 버렸습니다.")
 	}
 	return dirtyProceed
 }
 
 // printDirty 는 변경 파일 목록을 그대로 출력한다(비-TTY·취소 안내용).
 func printDirty(files []string) {
-	fmt.Fprintf(os.Stderr, "커밋되지 않은 변경 %d개:\n", len(files))
+	_, _ = fmt.Fprintf(os.Stderr, "커밋되지 않은 변경 %d개:\n", len(files))
 	for _, f := range files {
-		fmt.Fprintln(os.Stderr, "  "+f)
+		_, _ = fmt.Fprintln(os.Stderr, "  "+f)
 	}
 }
 
@@ -224,7 +224,7 @@ func switchTo(branch string) int {
 		err = gitx.SwitchCreateTracking(branch)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "git-update-default: 브랜치 전환 실패:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "git-update-default: 브랜치 전환 실패:", err)
 		return 1
 	}
 	return 0
