@@ -96,15 +96,15 @@ func main() {
 			_, _ = fmt.Fprint(os.Stdout, versionLine(invoked, version))
 			return
 		case "-h", "--help":
-			fmt.Print(helpText)
+			_, _ = fmt.Print(helpText)
 			return
 		}
 	}
 
 	opts, err := parseArgs(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "git-tidy:", err)
-		fmt.Fprintln(os.Stderr, "git-tidy --help 로 사용법을 확인하세요.")
+		_, _ = fmt.Fprintln(os.Stderr, "git-tidy:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "git-tidy --help 로 사용법을 확인하세요.")
 		os.Exit(1)
 	}
 	os.Exit(run(opts))
@@ -113,7 +113,7 @@ func main() {
 // run 은 git-tidy 본체다. 종료 코드를 돌려준다.
 func run(opts options) int {
 	if !gitx.IsRepo() {
-		fmt.Fprintln(os.Stderr, "git-tidy: git 저장소가 아닙니다.")
+		_, _ = fmt.Fprintln(os.Stderr, "git-tidy: git 저장소가 아닙니다.")
 		return 1
 	}
 	if !opts.noFetch {
@@ -122,20 +122,20 @@ func run(opts options) int {
 
 	result, broken, err := buildClassification(opts)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "git-tidy:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "git-tidy:", err)
 		return 1
 	}
 	warnBrokenBranches(broken)
 
 	if len(result.ToDelete) == 0 {
-		fmt.Println("정리할 브랜치가 없습니다.")
+		_, _ = fmt.Println("정리할 브랜치가 없습니다.")
 		return 0
 	}
 	if !opts.run {
 		// dry-run 일 때만 목록을 출력한다. --run 이면 선택 화면이 같은 목록을
 		// 그리므로 여기서 출력하면 화면이 중복된다.
 		printTargets(result)
-		fmt.Println("\n→ git-tidy --run 으로 삭제를 진행하세요.")
+		_, _ = fmt.Println("\n→ git-tidy --run 으로 삭제를 진행하세요.")
 		return 0
 	}
 	return runDeletion(result, opts)
@@ -147,11 +147,11 @@ func warnBrokenBranches(broken []string) {
 	if len(broken) == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "경고: 객체가 유실돼 분류할 수 없는 브랜치 %d개 (저장소 손상 가능):\n", len(broken))
+	_, _ = fmt.Fprintf(os.Stderr, "경고: 객체가 유실돼 분류할 수 없는 브랜치 %d개 (저장소 손상 가능):\n", len(broken))
 	for _, name := range broken {
-		fmt.Fprintf(os.Stderr, "  %s\n", name)
+		_, _ = fmt.Fprintf(os.Stderr, "  %s\n", name)
 	}
-	fmt.Fprintln(os.Stderr, "  → git fsck 로 점검하세요. git-tidy 는 이 브랜치들을 건드리지 않습니다.")
+	_, _ = fmt.Fprintln(os.Stderr, "  → git fsck 로 점검하세요. git-tidy 는 이 브랜치들을 건드리지 않습니다.")
 }
 
 func buildClassification(opts options) (classify.Classified, []string, error) {
@@ -254,7 +254,7 @@ func runDeletion(c classify.Classified, opts options) int {
 	var ok bool
 	switch pick.DetectMode(opts.noTUI) {
 	case pick.ModeNone:
-		fmt.Fprintln(os.Stderr, "git-tidy: 삭제하려면 터미널이 필요합니다. 목록은 인자 없는 git-tidy 로 확인하세요.")
+		_, _ = fmt.Fprintln(os.Stderr, "git-tidy: 삭제하려면 터미널이 필요합니다. 목록은 인자 없는 git-tidy 로 확인하세요.")
 		return 1
 	case pick.ModeTUI:
 		var fellBack bool
@@ -266,7 +266,7 @@ func runDeletion(c classify.Classified, opts options) int {
 		chosen, ok = pick.RunLine(sel, os.Stdin, os.Stdout)
 	}
 	if !ok || len(chosen) == 0 {
-		fmt.Println("삭제하지 않았습니다.")
+		_, _ = fmt.Println("삭제하지 않았습니다.")
 		return 0
 	}
 	return deleteBranches(chosen, byName)
@@ -278,17 +278,17 @@ func deleteBranches(chosen []string, byName map[string]classify.Result) int {
 		r := byName[name]
 		if r.WorktreePath != "" {
 			if err := gitx.RemoveWorktree(r.WorktreePath); err != nil {
-				fmt.Printf("  실패: %s (worktree 정리 안 됨)\n", name)
+				_, _ = fmt.Printf("  실패: %s (worktree 정리 안 됨)\n", name)
 				failed++
 				continue
 			}
 		}
 		if err := gitx.DeleteBranch(name); err != nil {
-			fmt.Printf("  실패: %s\n", name)
+			_, _ = fmt.Printf("  실패: %s\n", name)
 			failed++
 			continue
 		}
-		fmt.Printf("  삭제됨: %s\n", name)
+		_, _ = fmt.Printf("  삭제됨: %s\n", name)
 	}
 	if failed > 0 {
 		return 1
