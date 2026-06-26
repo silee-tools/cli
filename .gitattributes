@@ -23,3 +23,15 @@
 
 # Extensionless shell completion files
 apps/*/completions/_* text eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
