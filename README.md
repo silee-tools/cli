@@ -49,8 +49,12 @@ Clone the repository and pick a tool to work on:
 ```bash
 git clone git@github.com:silee-tools/cli.git
 cd cli/apps/<tool>
+mise trust ../.. .
 mise run test
 ```
+
+`mise` requires explicit trust for both the repository root config and the
+per-tool config before running tasks in a fresh clone.
 
 ## Commit Policy
 

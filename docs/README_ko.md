@@ -49,8 +49,12 @@ silee-tools/cli/
 ```bash
 git clone git@github.com:silee-tools/cli.git
 cd cli/apps/<tool>
+mise trust ../.. .
 mise run test
 ```
+
+새로 클론한 환경에서는 루트 설정과 도구별 설정을 모두 `mise trust` 한 뒤
+태스크를 실행해야 한다.
 
 ## 커밋 정책
 
