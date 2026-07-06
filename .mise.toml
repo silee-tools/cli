@@ -16,3 +16,11 @@ run = "ls -1 apps/ 2>/dev/null || echo '(no tools yet)'"
 [tasks.version-check]
 description = "Conformance: every tool's --version matches the monorepo standard"
 run = "bash scripts/check-version-format.sh"
+
+[tasks.lint]
+description = "Check repository text hygiene"
+run = "sh scripts/check-editorconfig-hygiene.sh"
+
+[tasks.hygiene]
+description = "Check repository text hygiene"
+run = "sh scripts/check-editorconfig-hygiene.sh"
