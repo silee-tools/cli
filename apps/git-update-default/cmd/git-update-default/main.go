@@ -16,12 +16,13 @@ func versionLine(name, version string) string {
 	return fmt.Sprintf("%s v%s © 2026 silee-tools\n", name, version)
 }
 
-const helpText = `Usage: git-update-default [--stash | --force]
+const helpText = `Usage: git-update-default [--current] [--stash | --force]
 
 현재 위치가 속한 git 저장소를 원격 default branch 의 최신 상태로 전환한다.
 저장소 안 어느 하위 경로에서 실행해도 동작한다.
 
   git-update-default          default branch 로 전환하고 최신까지 fast-forward
+  --current                   전환 없이 현재 브랜치를 그 브랜치의 upstream 까지 fast-forward
   --stash                     dirty 일 때 묻지 않고 stash 후 진행
   --force                     dirty 일 때 묻지 않고 추적 변경을 버리고 진행
   -v, --version               버전 출력
@@ -129,6 +130,10 @@ func run(opts options) int {
 		_, _ = fmt.Fprintln(os.Stderr, "경고: git fetch 실패 — 로컬의 원격 추적 정보로 진행합니다.")
 	}
 
+	if opts.current {
+		return runCurrent(opts)
+	}
+
 	branch, ok := resolve.Default(resolve.Deps{
 		RemoteBranchExists: gitx.RemoteBranchExists,
 		GitHubDefault:      gitx.GitHubDefault,
@@ -164,6 +169,46 @@ func run(opts options) int {
 	}
 
 	_, _ = fmt.Printf("✓ %s 로 전환하고 origin/%s 최신까지 맞췄습니다.\n", branch, branch)
+	return 0
+}
+
+// runCurrent 는 --current 모드 본체다. 브랜치 전환 없이 현재 브랜치를 그 브랜치의
+// upstream 까지 fast-forward 한다. 이 함수는 run() 이 IsRepo·HasOriginRemote·
+// FetchPrune 을 이미 마친 뒤에만 호출된다.
+func runCurrent(opts options) int {
+	branch := gitx.CurrentBranch()
+	if branch == "" {
+		_, _ = fmt.Fprintln(os.Stderr, "git-update-default: detached HEAD 상태라 현재 브랜치를 갱신할 수 없습니다.")
+		return 1
+	}
+	upstream, err := gitx.Upstream()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "git-update-default: %s 에 upstream 이 설정되지 않았습니다.\n", branch)
+		_, _ = fmt.Fprintln(os.Stderr, "  → `git push -u origin <브랜치>` 로 upstream 을 설정한 뒤 다시 실행하세요.")
+		return 1
+	}
+
+	files, err := gitx.DirtyFiles()
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "git-update-default:", err)
+		return 1
+	}
+	if len(files) > 0 {
+		switch handleDirty(files, opts) {
+		case dirtyAbortOK:
+			return 0
+		case dirtyAbortErr:
+			return 1
+		}
+	}
+
+	if err := gitx.MergeFFOnlyRef(upstream); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "git-update-default: %s 가 %s 와 갈라져 fast-forward 할 수 없습니다.\n", branch, upstream)
+		_, _ = fmt.Fprintln(os.Stderr, "  → 직접 rebase·reset 으로 정리하세요. 강제로 맞추지 않습니다.")
+		return 1
+	}
+
+	_, _ = fmt.Printf("✓ %s 를 %s 최신까지 맞췄습니다.\n", branch, upstream)
 	return 0
 }
 
