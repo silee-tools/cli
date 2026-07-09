@@ -130,9 +130,28 @@ func SwitchCreateTracking(name string) error {
 	return err
 }
 
-// MergeFFOnly 는 현재 브랜치를 origin/<name> 까지 fast-forward 한다.
+// Upstream 은 현재 브랜치가 추적하는 upstream ref 이름을 돌려준다(예: "origin/main").
+// upstream 이 설정돼 있지 않으면 에러를 돌려준다. 추측하지 않는다.
+func Upstream() (string, error) {
+	out, err := run("rev-parse", "--abbrev-ref", "@{upstream}")
+	if err != nil {
+		return "", err
+	}
+	name := strings.TrimSpace(out)
+	if name == "" {
+		return "", fmt.Errorf("upstream 이 설정되지 않았습니다")
+	}
+	return name, nil
+}
+
+// MergeFFOnlyRef 은 현재 브랜치를 임의의 ref 까지 fast-forward 한다.
 // 갈라져서 fast-forward 가 불가능하면 에러를 돌려준다(강제하지 않는다).
-func MergeFFOnly(name string) error {
-	_, err := run("merge", "--ff-only", "origin/"+name)
+func MergeFFOnlyRef(ref string) error {
+	_, err := run("merge", "--ff-only", ref)
 	return err
+}
+
+// MergeFFOnly 는 현재 브랜치를 origin/<name> 까지 fast-forward 한다.
+func MergeFFOnly(name string) error {
+	return MergeFFOnlyRef("origin/" + name)
 }
