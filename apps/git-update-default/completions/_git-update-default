@@ -1,6 +1,7 @@
 #compdef git-update-default
 
 _arguments \
+  '--current[전환 없이 현재 브랜치를 upstream 까지 fast-forward]' \
   '--stash[dirty 일 때 묻지 않고 stash 후 진행]' \
   '--force[dirty 일 때 묻지 않고 추적 변경을 버리고 진행]' \
   '--version[버전 출력]' \
