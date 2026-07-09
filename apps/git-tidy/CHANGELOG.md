@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/silee-tools/cli/compare/git-tidy/v0.7.1...git-tidy/v0.7.2) (2026-07-09)
+
+
+### Bug Fixes
+
+* git-tidy 출력 오류 처리를 명시 ([#95](https://github.com/silee-tools/cli/issues/95)) ([c419d5f](https://github.com/silee-tools/cli/commit/c419d5fe112e292a628f9a821d81e01b47f0c818))
+
 ## [0.7.1](https://github.com/silee-tools/cli/compare/git-tidy/v0.7.0...git-tidy/v0.7.1) (2026-06-09)
 
 
