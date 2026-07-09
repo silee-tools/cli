@@ -56,8 +56,9 @@ func main() {
 }
 
 type options struct {
-	stash bool
-	force bool
+	stash   bool
+	force   bool
+	current bool
 }
 
 func parseArgs(args []string) (options, error) {
@@ -68,6 +69,8 @@ func parseArgs(args []string) (options, error) {
 			o.stash = true
 		case "--force":
 			o.force = true
+		case "--current":
+			o.current = true
 		default:
 			return o, fmt.Errorf("알 수 없는 옵션: %s", a)
 		}

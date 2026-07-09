@@ -12,15 +12,18 @@ func TestVersionLine(t *testing.T) {
 
 func TestParseArgs(t *testing.T) {
 	cases := []struct {
-		args      []string
-		wantStash bool
-		wantForce bool
-		wantErr   bool
+		args        []string
+		wantStash   bool
+		wantForce   bool
+		wantCurrent bool
+		wantErr     bool
 	}{
-		{nil, false, false, false},
-		{[]string{"--stash"}, true, false, false},
-		{[]string{"--force"}, false, true, false},
-		{[]string{"--bogus"}, false, false, true},
+		{nil, false, false, false, false},
+		{[]string{"--stash"}, true, false, false, false},
+		{[]string{"--force"}, false, true, false, false},
+		{[]string{"--current"}, false, false, true, false},
+		{[]string{"--current", "--stash"}, true, false, true, false},
+		{[]string{"--bogus"}, false, false, false, true},
 	}
 	for _, c := range cases {
 		o, err := parseArgs(c.args)
@@ -30,7 +33,7 @@ func TestParseArgs(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		if o.stash != c.wantStash || o.force != c.wantForce {
+		if o.stash != c.wantStash || o.force != c.wantForce || o.current != c.wantCurrent {
 			t.Fatalf("parseArgs(%v) = %+v", c.args, o)
 		}
 	}
