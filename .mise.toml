@@ -17,6 +17,10 @@ run = "ls -1 apps/ 2>/dev/null || echo '(no tools yet)'"
 description = "Conformance: every tool's --version matches the monorepo standard"
 run = "bash scripts/check-version-format.sh"
 
+[tasks.runtime-channel-check]
+description = "Conformance: dev and Homebrew installs deterministically select the active channel"
+run = "sh scripts/check-runtime-channel-contract.sh"
+
 [tasks.lint]
 description = "Check repository text hygiene"
 run = "sh scripts/check-editorconfig-hygiene.sh"

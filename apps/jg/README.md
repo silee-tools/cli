@@ -84,5 +84,7 @@ Once shell integration is set up, repositories are automatically tracked as you 
 mise run build      # Build
 mise run test       # Run tests
 mise run fmt-check  # Check gofmt formatting (CI parity)
-mise run install    # Install to ~/.local/bin/jg
+mise run install    # Install the development build to ~/.local/bin/jg and activate the dev channel
 ```
+
+The development installation remains available on `PATH`. A later Homebrew install, upgrade, or reinstall activates the release channel automatically, so the same command runs the Homebrew binary without manual cleanup. Running `mise run install` again deterministically reactivates the development build.

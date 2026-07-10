@@ -68,4 +68,4 @@ mise run test
 <tool>/v<MAJOR>.<MINOR>.<PATCH>
 ```
 
-예를 들어 `jg/v0.1.0` 은 `jg` 도구의 릴리스다. 공통 릴리스 워크플로우가 prefix 를 추출해 해당 도구를 빌드한다.
+예를 들어 `jg/v0.1.0` 은 `jg` 도구의 릴리스다. 공통 릴리스 워크플로우는 release-please의 `paths_released` 출력에 포함된 도구를 빌드한다.

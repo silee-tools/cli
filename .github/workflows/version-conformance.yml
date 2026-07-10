@@ -11,12 +11,19 @@ on:
     paths:
       - 'apps/**'
       - 'scripts/check-version-format.sh'
+      - 'scripts/check-runtime-channel-contract.sh'
+      - '.mise.toml'
       - '.github/workflows/version-conformance.yml'
   pull_request:
     paths:
       - 'apps/**'
       - 'scripts/check-version-format.sh'
+      - 'scripts/check-runtime-channel-contract.sh'
+      - '.mise.toml'
       - '.github/workflows/version-conformance.yml'
+
+permissions:
+  contents: read
 
 jobs:
   conformance:
@@ -33,6 +40,15 @@ jobs:
       CONFORMANCE_LEG: ${{ matrix.leg }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check out Homebrew tap contract
+        uses: actions/checkout@v6
+        with:
+          repository: silee-tools/homebrew-tap
+          ref: f5670e385219b19976d53226a5888625f5ad6d5d
+          persist-credentials: false
+          path: .runtime-channel/homebrew-tap
       - uses: jdx/mise-action@v4
       - name: Trust mise configs
         run: |
@@ -44,3 +60,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y zsh
       - name: Run version-format conformance
         run: bash scripts/check-version-format.sh
+      - name: Run runtime-channel conformance
+        env:
+          HOMEBREW_TAP_DIR: ${{ github.workspace }}/.runtime-channel/homebrew-tap
+        run: sh scripts/check-runtime-channel-contract.sh

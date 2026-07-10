@@ -6,19 +6,34 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/silee-tools/jg/internal/entry"
 	"github.com/silee-tools/jg/internal/frecency"
 	"github.com/silee-tools/jg/internal/fzf"
+	"github.com/silee-tools/jg/internal/runtimechannel"
 	"github.com/silee-tools/jg/internal/scheduler"
 	"github.com/silee-tools/jg/internal/shell"
 )
 
 var version = "dev"
+var runtimeStatePath string
 
 func main() {
 	tool := toolName(os.Args[0])
+	target, err := runtimechannel.ReleaseExecutable(version, runtimeStatePath, "jg")
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, tool+":", err)
+		os.Exit(1)
+	}
+	if target != "" {
+		if err := syscall.Exec(target, os.Args, os.Environ()); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, tool+": release 실행 실패:", err)
+			os.Exit(1)
+		}
+	}
+
 	args := os.Args[1:]
 
 	if tool == "jgw" {

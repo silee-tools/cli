@@ -10,15 +10,18 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 
 	"golang.org/x/term"
 
 	"github.com/silee-tools/cli/apps/totp/internal/code"
+	"github.com/silee-tools/cli/apps/totp/internal/runtimechannel"
 	"github.com/silee-tools/cli/apps/totp/internal/store"
 )
 
 // version is injected at build time via -ldflags "-X main.version=...".
 var version = "dev"
+var runtimeStatePath string
 
 const helpText = `totp %s — macOS Keychain 기반 TOTP 생성기
 
@@ -50,6 +53,18 @@ Subcommands:
 `
 
 func main() {
+	target, err := runtimechannel.ReleaseExecutable(version, runtimeStatePath, "totp")
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "totp:", err)
+		os.Exit(1)
+	}
+	if target != "" {
+		if err := syscall.Exec(target, os.Args, os.Environ()); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "totp: release 실행 실패:", err)
+			os.Exit(1)
+		}
+	}
+
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
 		// Special exit code 130 mirrors the zsh version (fzf cancellation).
 		var ec exitCodeError

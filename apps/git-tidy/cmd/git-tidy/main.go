@@ -6,15 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/silee-tools/git-tidy/internal/classify"
 	"github.com/silee-tools/git-tidy/internal/gitx"
 	"github.com/silee-tools/git-tidy/internal/pick"
 	"github.com/silee-tools/git-tidy/internal/reason"
+	"github.com/silee-tools/git-tidy/internal/runtimechannel"
 )
 
 var version = "dev"
+var runtimeStatePath string
 
 func versionLine(name, version string) string {
 	return fmt.Sprintf("%s v%s © 2026 silee-tools\n", name, version)
@@ -87,6 +90,18 @@ const helpText = `Usage: git-tidy [--run] [options]
 `
 
 func main() {
+	target, err := runtimechannel.ReleaseExecutable(version, runtimeStatePath, "git-tidy")
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "git-tidy:", err)
+		os.Exit(1)
+	}
+	if target != "" {
+		if err := syscall.Exec(target, os.Args, os.Environ()); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "git-tidy: release 실행 실패:", err)
+			os.Exit(1)
+		}
+	}
+
 	invoked := filepath.Base(os.Args[0])
 	args := effectiveArgs(invoked, os.Args[1:])
 

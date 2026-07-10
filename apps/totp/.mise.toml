@@ -23,7 +23,64 @@ run = "test -z \"$(gofmt -l .)\""
 
 [tasks.install]
 description = "Build and install to ~/.local/bin"
-run = "go build -o ~/.local/bin/totp ./cmd/totp"
+run = """
+set -eu
+mkdir -p "$HOME/.local/bin"
+
+state_path=""
+if command -v brew >/dev/null 2>&1; then
+  prefix="$(brew --prefix)"
+  state_path="$prefix/var/silee-tools/totp/active-channel"
+fi
+
+target="$HOME/.local/bin/totp"
+tmp="$(mktemp "$HOME/.local/bin/.totp.XXXXXX")"
+state_tmp=""
+binary_backup=""
+binary_installed=0
+cleanup() {
+  if [ "$binary_installed" -eq 1 ]; then
+    if [ -n "$binary_backup" ]; then
+      mv "$binary_backup" "$target"
+      binary_backup=""
+    else
+      rm -f "$target"
+    fi
+    binary_installed=0
+  fi
+  rm -f "$tmp"
+  [ -z "$state_tmp" ] || rm -f "$state_tmp"
+  [ -z "$binary_backup" ] || rm -f "$binary_backup"
+}
+trap cleanup EXIT HUP INT TERM
+if [ -n "$state_path" ]; then
+  go build -ldflags "-X=main.runtimeStatePath=$state_path" -o "$tmp" ./cmd/totp
+else
+  go build -o "$tmp" ./cmd/totp
+fi
+
+if [ -n "$state_path" ]; then
+  mkdir -p "$(dirname "$state_path")"
+  state_tmp="$(mktemp "$(dirname "$state_path")/.active-channel.XXXXXX")"
+  printf 'channel=dev\n' >"$state_tmp"
+fi
+
+if [ -f "$target" ]; then
+  binary_backup="$(mktemp "$HOME/.local/bin/.totp.backup.XXXXXX")"
+  cp -p "$target" "$binary_backup"
+fi
+mv "$tmp" "$target"
+tmp=""
+binary_installed=1
+
+if [ -n "$state_path" ]; then
+  mv "$state_tmp" "$state_path"
+  state_tmp=""
+fi
+binary_installed=0
+rm -f "$binary_backup"
+binary_backup=""
+"""
 
 [tasks.uninstall]
 description = "Remove local dev build, revert to brew version"

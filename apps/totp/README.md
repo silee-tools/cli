@@ -19,6 +19,11 @@ cd apps/totp
 mise run install        # ~/.local/bin/totp
 ```
 
+로컬 개발 빌드를 설치하면 활성 채널이 `dev`로 전환된다. 이후 Homebrew로
+설치·업그레이드·재설치하면 활성 채널이 `release`로 전환되어, PATH에서 로컬 개발
+바이너리가 먼저 발견되더라도 Homebrew 릴리스 바이너리를 실행한다. 다시
+`mise run install`을 실행하기 전까지 별도의 PATH 정리나 개발 바이너리 삭제가 필요 없다.
+
 ## 사용
 
 ```bash

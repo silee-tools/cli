@@ -71,4 +71,4 @@ Release tags use a per-tool prefix:
 <tool>/v<MAJOR>.<MINOR>.<PATCH>
 ```
 
-For example, `jg/v0.1.0` releases the `jg` tool. The shared release workflow extracts the prefix and builds the matching tool.
+For example, `jg/v0.1.0` identifies a release of the `jg` tool. The shared release workflow builds the tools listed in release-please's `paths_released` output.

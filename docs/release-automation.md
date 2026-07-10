@@ -2,17 +2,17 @@
 
 ## 흐름 (release-please + GoReleaser 정석 패턴)
 
-본 저장소의 릴리스는 main 으로 들어오는 Conventional Commits 가 자연스럽게 트리거하는 흐름을 따른다. 사람이 손으로 태그를 만들지 않고, 대신 release-please-action 이 항상 최신 상태로 유지해 두는 도구별 Release PR 을 review 하고 merge 하는 것이 릴리스 결정이다.
+본 저장소의 릴리스는 main 으로 들어오는 Conventional Commits 가 자연스럽게 트리거하는 흐름을 따른다. 사람이 손으로 태그를 만들지 않고, 대신 release-please-action 이 항상 최신 상태로 유지하는 단일 Release PR 을 review 하고 merge 하는 것이 그 PR에 포함된 변경 도구의 릴리스 결정이다.
 
 전체 단계는 다음과 같다.
 
 1. **개발자가 main 에 `feat`/`fix` 등 Conventional Commits 를 누적한다.** `commitlint.yml` workflow 가 매 PR 과 main push 마다 형식을 강제한다.
-2. **release-please-action 이 main push 마다 실행되어, 도구별로 다음 버전 bump + CHANGELOG 변경분이 들어 있는 Release PR 을 생성하거나 기존 PR 을 갱신한다.** `release-please-config.json` 의 packages 항목과 `.release-please-manifest.json` 의 현재 버전을 결합해 다음 버전을 계산한다.
+2. **release-please-action 이 main push 마다 실행되어, 변경된 도구의 다음 버전 bump와 CHANGELOG 변경분을 한 Release PR 에 모아 생성하거나 갱신한다.** `release-please-config.json` 의 packages 항목과 `.release-please-manifest.json` 의 현재 버전을 결합해 다음 버전을 계산한다.
 3. **개발자가 Release PR 의 본문을 검토한다.** 어느 도구가 어떤 commit 들을 받아 어떤 버전으로 가는지가 PR 본문에 그대로 보인다. 의도와 다르면 PR 을 수정하거나(commit 추가/회수) 그냥 두고 Release PR merge 만 미룬다.
 4. **개발자가 Release PR 을 merge 한다.** release-please-action 이 즉시 `<tool>/v<MAJOR>.<MINOR>.<PATCH>` 태그를 만들고, 빈 GitHub Release(노트는 CHANGELOG 변경분으로 자동 채워짐) 를 생성한다. CHANGELOG.md 갱신은 PR merge 와 함께 main 에 들어가 있다.
-5. **같은 release-please.yml 안의 build-and-upload matrix job 이 도구별로 한 번씩 실행된다.** 각 도구의 `.goreleaser.yaml` 로 GoReleaser 가 dist 산출물(tar.gz × 4 + checksums.txt) 을 만든 뒤 release-please 가 만들어 둔 release 에 `gh release upload` 로 첨부한다. GoReleaser 는 `release.disable: true` 로 release 객체 자체를 건드리지 않는다.
+5. **같은 release-please.yml 안의 build-and-upload matrix job 이 릴리스된 도구별로 한 번씩 실행된다.** 각 도구의 `.goreleaser.yaml`에 선언된 운영체제와 아키텍처에 맞춰 GoReleaser가 tar.gz와 checksums.txt를 만든 뒤 release-please가 만들어 둔 release에 `gh release upload`로 첨부한다. GoReleaser 는 `release.disable: true` 로 release 객체 자체를 건드리지 않는다.
 6. **같은 job 마지막 step 이 homebrew-tap 의 `Formula/<tool>.rb` 의 sha256 placeholder 와 version 라인을 새 값으로 자동 갱신하고 commit + push 한다.** `HOMEBREW_TAP_TOKEN` secret 이 설정된 경우에만 동작하며, 여러 도구 릴리스가 가까운 시점에 tap 저장소를 갱신하더라도 non-fast-forward 경합은 `git pull --rebase` 후 재시도한다. 미설정 시 step 자체가 skip 되고 `notice` 로 수동 갱신 안내가 출력된다.
-7. **사용자 머신에서 `brew update && brew upgrade silee-tools/tap/<tool>` 로 새 버전 설치.**
+7. **사용자 머신에서 `brew update && brew upgrade silee-tools/tap/<tool>` 로 새 버전을 설치한다.** Formula 의 `post_install`이 활성 채널을 `release`로 원자적으로 전환하므로, PATH 앞쪽에 개발 바이너리가 남아 있어도 새 Homebrew 바이너리가 실행된다.
 
 ## release-please 의 동작 원리
 
@@ -37,7 +37,8 @@ manifest 의 초기값은 마지막 릴리스된 버전을 그대로 둔다. 다
 | CHANGELOG.md main 반영 | 자동 | release-please (Release PR 안) |
 | 도구별 artifact 빌드 + 첨부 | 자동 | release-please.yml 의 build-and-upload job |
 | homebrew-tap formula 갱신 + push | 자동 | 같은 job 마지막 step |
-| `brew install/upgrade` | 수동 | 본인 |
+| `brew install/upgrade` 실행 | 수동 | 본인 |
+| 설치 후 `release` 채널 전환 | 자동 | Homebrew Formula `post_install` |
 
 사람의 결정 지점은 단 하나, "Release PR 을 merge 할지" 이며 그 외에는 모두 자동이다.
 
@@ -87,6 +88,8 @@ gh variable set RUNNER_MACOS --repo silee-tools/cli --body "self-hosted"
 
 | 도구 (apps/<tool>) | Formula |
 |---|---|
+| git-tidy | `git-tidy.rb` |
+| git-update-default | `git-update-default.rb` |
 | jg | `jg.rb` |
 | totp | `totp.rb` |
 
@@ -98,20 +101,18 @@ gh variable set RUNNER_MACOS --repo silee-tools/cli --body "self-hosted"
 2. `.github/workflows/<new-tool>-ci.yml` paths 필터 CI 추가
 3. `release-please-config.json` 의 `packages` 에 `"apps/<new-tool>": {"package-name": "<new-tool>"}` 추가
 4. `.release-please-manifest.json` 에 `"apps/<new-tool>": "0.0.0"` 추가
-5. `homebrew-tap/Formula/<new-tool>.rb` 골격 작성 (sha256 placeholder, prebuilt URL 패턴)
-6. main 으로 `feat(<new-tool>): initial release` commit push → release-please 가 0.1.0 Release PR 생성 → merge → 첫 릴리스
+5. `mise run install` 과 `internal/runtimechannel` 에 개발·배포 채널 선택 계약을 구현
+6. `homebrew-tap/Formula/<new-tool>.rb` 골격에 prebuilt URL 패턴과 `channel=release` 를 쓰는 `post_install` 구현
+7. main 으로 `feat(<new-tool>): initial release` commit push → release-please 가 0.1.0 Release PR 생성 → merge → 첫 릴리스
 
-## 검증 절차 (첫 적용 시)
+## 릴리스 검증 절차
 
-1. `HOMEBREW_TAP_TOKEN` secret 설정
-2. 작은 도구 하나에 `docs(<tool>): trivial doc tweak` 같은 commit 을 main 에 push
-3. Actions 탭에서 release-please-action 실행 확인 → 자동 생성된 Release PR 의 본문 점검 (CHANGELOG 변경분 + manifest version bump)
-4. Release PR merge → 같은 workflow 가 다시 돌아 build-and-upload job 이 실행되는지 확인
-5. 새 GitHub Release 페이지에서 tar.gz + checksums.txt 첨부 확인
-6. silee-tools/homebrew-tap 의 새 commit (`chore(<tool>): bump to v<X.Y.Z>...`) 확인
-7. 본인 머신에서 `brew update && brew upgrade silee-tools/tap/<tool>` 정상 동작
-
-7번까지 통과하면 마이그레이션 완료.
+1. 자동 생성된 Release PR 본문에서 변경된 도구의 CHANGELOG와 manifest version bump를 확인한다.
+2. Release PR merge 후 build-and-upload job이 `paths_released`에 포함된 도구만 처리하는지 확인한다.
+3. 새 GitHub Release에 tar.gz와 checksums.txt가 첨부됐는지 확인한다.
+4. silee-tools/homebrew-tap에 `chore(<tool>): bump to v<X.Y.Z>...` 커밋이 생성됐는지 확인한다.
+5. 본인 머신에서 `brew update && brew upgrade silee-tools/tap/<tool>`을 실행한다.
+6. 기존 개발 바이너리를 삭제하지 않은 상태에서도 `<tool> --version`이 배포 버전을 출력하는지 확인한다.
 
 ## 의도적으로 자동화하지 않은 항목
 
@@ -119,4 +120,4 @@ gh variable set RUNNER_MACOS --repo silee-tools/cli --body "self-hosted"
 |---|---|
 | 버전 결정의 최종 승인 | release-please 가 다음 버전을 추천하지만, 본인이 Release PR merge 시점에 최종 승인. semantic-release 류의 fully-automatic versioning 은 commit 메시지 형식 의존이 깨지기 쉬워 도입하지 않음 |
 | 신규 도구 formula 골격 작성 | 첫 릴리스 시 formula 골격은 본인이 직접 작성. 두 번째 릴리스부터 sha256/version 자동 갱신 |
-| `brew install/upgrade` | 본인 머신 동작이므로 자동화 대상 아님 |
+| `brew install/upgrade` 명령 실행 | 본인 머신의 패키지 변경은 사용자가 시작하되, 실행 후 배포 채널 선택은 Formula가 자동으로 처리 |

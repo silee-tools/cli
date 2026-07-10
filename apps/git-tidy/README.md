@@ -80,4 +80,10 @@ mise run build      # 빌드
 mise run test       # 테스트 실행
 mise run lint       # 린터
 mise run fmt-check  # gofmt 검사 (CI 동일)
+mise run install    # 개발 빌드와 gtidy/gtidy! 단축 명령을 사용자 PATH에 설치
 ```
+
+`mise run install` 은 개발 채널을 활성화한다. 이후 Homebrew로 설치·업그레이드·재설치하면
+릴리스 채널이 활성화되고, PATH 앞쪽에 남은 개발 실행 파일도 Homebrew 실행 파일로
+자동 연결한다. 다시 개발 빌드를 설치하면 개발 채널이 활성화되므로 사용자가 실행 파일을
+직접 삭제하거나 PATH 순서를 정리할 필요가 없다.

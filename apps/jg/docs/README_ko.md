@@ -84,5 +84,7 @@ jg --remove .   # 현재 디렉토리를 추적에서 제거
 mise run build      # 빌드
 mise run test       # 테스트 실행
 mise run fmt-check  # gofmt 포맷 검사 (CI와 동일)
-mise run install    # ~/.local/bin/jg에 설치
+mise run install    # 개발 빌드를 ~/.local/bin/jg에 설치하고 개발 채널 활성화
 ```
+
+개발용 설치 파일은 `PATH`에 그대로 유지됩니다. 이후 Homebrew로 설치, 업그레이드 또는 재설치하면 릴리스 채널이 자동으로 활성화되므로 별도 정리 없이 같은 명령이 Homebrew 바이너리를 실행합니다. `mise run install`을 다시 실행하면 개발 빌드가 결정론적으로 다시 활성화됩니다.

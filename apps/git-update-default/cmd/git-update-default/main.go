@@ -4,13 +4,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/silee-tools/git-update-default/internal/confirm"
 	"github.com/silee-tools/git-update-default/internal/gitx"
 	"github.com/silee-tools/git-update-default/internal/resolve"
+	"github.com/silee-tools/git-update-default/internal/runtimechannel"
 )
 
 var version = "dev"
+var runtimeStatePath string
 
 func versionLine(name, version string) string {
 	return fmt.Sprintf("%s v%s © 2026 silee-tools\n", name, version)
@@ -33,6 +36,18 @@ stash 후 진행 / force / 취소(기본값) 를 고를 수 있다.
 `
 
 func main() {
+	target, err := runtimechannel.ReleaseExecutable(version, runtimeStatePath, "git-update-default")
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "git-update-default:", err)
+		os.Exit(1)
+	}
+	if target != "" {
+		if err := syscall.Exec(target, os.Args, os.Environ()); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "git-update-default: release 실행 실패:", err)
+			os.Exit(1)
+		}
+	}
+
 	invoked := filepath.Base(os.Args[0])
 	args := os.Args[1:]
 

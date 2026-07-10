@@ -26,4 +26,7 @@ detached HEAD 이면 아무것도 바꾸지 않고 멈춘다.
 ## 설치
 
 Homebrew tap(silee-tools/homebrew-tap)으로 설치하거나, 개발 빌드는
-mise run install 로 ~/.local/bin 에 둔다.
+mise run install 로 ~/.local/bin 에 둔다. 개발 설치는 활성 채널을 `dev`로
+전환하고, 이후 Homebrew install·upgrade·reinstall은 활성 채널을 `release`로
+전환한다. PATH 앞쪽에 개발 바이너리가 남아 있어도 활성 채널에 따라 Homebrew
+바이너리를 실행하므로 별도 삭제나 PATH 정리가 필요하지 않다.
