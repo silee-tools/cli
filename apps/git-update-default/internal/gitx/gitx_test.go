@@ -109,6 +109,10 @@ func TestUpstreamAndMergeFFOnlyRef(t *testing.T) {
 	// origin 을 한 커밋 앞서게 만들고(다른 클론에서 push), fetch 후 ff 되는지 본다.
 	other := t.TempDir()
 	mustGitDir(t, other, "clone", upstreamDir, ".")
+	// GitHub Actions 러너처럼 전역 Git 사용자 정보가 없는 환경에서도
+	// 테스트용 원격 커밋을 독립적으로 만들 수 있게 한다.
+	mustGitDir(t, other, "config", "user.email", "test@example.com")
+	mustGitDir(t, other, "config", "user.name", "test")
 	if err := os.WriteFile(filepath.Join(other, "g.txt"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
