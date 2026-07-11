@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/silee-tools/cli/compare/jg/v0.7.0...jg/v0.7.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* **workflow:** make CLI installation channel deterministic ([afb612e](https://github.com/silee-tools/cli/commit/afb612e4e4a87247bad2e9b445236a79b66d7162))
+
 ## [0.7.0](https://github.com/silee-tools/cli/compare/jg/v0.6.0...jg/v0.7.0) (2026-06-11)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/silee-tools/cli/compare/totp/v1.1.1...totp/v1.1.2) (2026-07-11)
+
+
+### Bug Fixes
+
+* **workflow:** make CLI installation channel deterministic ([afb612e](https://github.com/silee-tools/cli/commit/afb612e4e4a87247bad2e9b445236a79b66d7162))
+
 ## [1.1.1](https://github.com/silee-tools/cli/compare/totp/v1.1.0...totp/v1.1.1) (2026-05-21)
 
 
