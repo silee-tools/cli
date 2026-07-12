@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/silee-tools/cli/compare/git-update-default/v0.2.0...git-update-default/v0.2.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* **workflow:** make CLI installation channel deterministic ([afb612e](https://github.com/silee-tools/cli/commit/afb612e4e4a87247bad2e9b445236a79b66d7162))
+* 테스트 원격 커밋의 Git 사용자 정보를 설정한다 ([#101](https://github.com/silee-tools/cli/issues/101)) ([13c190b](https://github.com/silee-tools/cli/commit/13c190b95d6289ebcec73f8013f0515e6bb7d644))
+
 ## [0.2.0](https://github.com/silee-tools/cli/compare/git-update-default/v0.1.0...git-update-default/v0.2.0) (2026-07-09)
 
 
