@@ -75,6 +75,7 @@ check_tool() {
   (
     cd "$repo_root/apps/$tool"
     HOME=$home \
+      MISE_TRUSTED_CONFIG_PATHS=$repo_root \
       FAKE_HOMEBREW_PREFIX=$prefix \
       GOCACHE=$gocache \
       GOMODCACHE=$gomodcache \
@@ -104,6 +105,7 @@ check_tool() {
   if (
     cd "$repo_root/apps/$tool"
     HOME=$home \
+      MISE_TRUSTED_CONFIG_PATHS=$repo_root \
       FAKE_HOMEBREW_PREFIX=$prefix \
       FAIL_MV_DEST=$state \
       GOCACHE=$gocache \
@@ -133,6 +135,7 @@ check_tool() {
   (
     cd "$repo_root/apps/$tool"
     HOME=$home \
+      MISE_TRUSTED_CONFIG_PATHS=$repo_root \
       FAKE_HOMEBREW_PREFIX=$prefix \
       GOCACHE=$gocache \
       GOMODCACHE=$gomodcache \
@@ -172,6 +175,7 @@ check_tool() {
   (
     cd "$repo_root/apps/$tool"
     HOME=$home \
+      MISE_TRUSTED_CONFIG_PATHS=$repo_root \
       FAKE_HOMEBREW_PREFIX=$prefix \
       GOCACHE=$gocache \
       GOMODCACHE=$gomodcache \
