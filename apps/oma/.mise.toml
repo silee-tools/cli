@@ -53,7 +53,10 @@ cleanup() {
   [ -z "$state_tmp" ] || rm -f "$state_tmp"
   [ -z "$binary_backup" ] || rm -f "$binary_backup"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 if [ -n "$state_path" ]; then
   go build -ldflags "-X=main.runtimeStatePath=$state_path" -o "$tmp" ./cmd/oma
 else
