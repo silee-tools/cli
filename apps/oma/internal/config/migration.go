@@ -59,6 +59,7 @@ type migrationFileOps struct {
 	afterInspectionReadDir             func(string)
 	beforeInspectionLstat              func(string)
 	beforeInspectionRead               func(string)
+	afterInspectionRead                func(string)
 	beforeCanonicalCommit              func(string) error
 	afterCanonicalCommit               func()
 	afterLegacyBackup                  func()
@@ -386,38 +387,54 @@ func readMigrationArtifact(path string, enumeratedIdentity fileIdentity) (migrat
 	case info.Mode().IsRegular():
 		data, err := os.ReadFile(path)
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return migrationArtifact{}, fmt.Errorf("%w: artifact disappeared before read: %s", ErrMigrationStateChanged, path)
+			if stateErr := verifyMigrationArtifactState(path, identity, info.Mode(), "while regular content was read"); stateErr != nil {
+				return migrationArtifact{}, stateErr
 			}
 			return migrationArtifact{}, err
 		}
-		after, err := os.Lstat(path)
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return migrationArtifact{}, fmt.Errorf("%w: artifact disappeared while it was read: %s", ErrMigrationStateChanged, path)
-			}
-			return migrationArtifact{}, err
+		if migrationOS.afterInspectionRead != nil {
+			migrationOS.afterInspectionRead(path)
 		}
-		owned, err := hasIdentity(after, identity)
-		if err != nil {
+		if err := verifyMigrationArtifactState(path, identity, info.Mode(), "after regular content was read"); err != nil {
 			return migrationArtifact{}, err
-		}
-		if !owned {
-			return migrationArtifact{}, fmt.Errorf("%w: artifact identity changed while it was read", ErrMigrationStateChanged)
 		}
 		artifact.data = data
 		artifact.digest = sha256.Sum256(data)
 	case info.Mode()&os.ModeSymlink != 0:
 		target, err := os.Readlink(path)
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return migrationArtifact{}, fmt.Errorf("%w: artifact disappeared before link read: %s", ErrMigrationStateChanged, path)
+			if stateErr := verifyMigrationArtifactState(path, identity, info.Mode(), "while link target was read"); stateErr != nil {
+				return migrationArtifact{}, stateErr
 			}
+			return migrationArtifact{}, err
+		}
+		if migrationOS.afterInspectionRead != nil {
+			migrationOS.afterInspectionRead(path)
+		}
+		if err := verifyMigrationArtifactState(path, identity, info.Mode(), "after link target was read"); err != nil {
 			return migrationArtifact{}, err
 		}
 		artifact.linkTarget = target
 	}
 	return artifact, nil
+}
+
+func verifyMigrationArtifactState(path string, identity fileIdentity, mode os.FileMode, phase string) error {
+	current, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%w: artifact disappeared %s: %s", ErrMigrationStateChanged, phase, path)
+		}
+		return err
+	}
+	owned, err := hasIdentity(current, identity)
+	if err != nil {
+		return err
+	}
+	if !owned || current.Mode().Type() != mode.Type() {
+		return fmt.Errorf("%w: artifact identity or type changed %s: %s", ErrMigrationStateChanged, phase, path)
+	}
+	return nil
 }
 
 func inspectInterruptedMigration(paths Paths, artifacts map[string]migrationArtifact, fingerprint string) (migrationInspection, error) {

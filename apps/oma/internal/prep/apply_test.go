@@ -140,11 +140,11 @@ func TestApplyConfigurationMigrationDriftReturnsFreshPlanBeforeWrites(t *testing
 	}
 }
 
-func TestApplyConfigurationMigrationApplyRaceReturnsFreshPlanBeforeExternalWrites(t *testing.T) {
+func TestApplyConfigurationMigrationTypeReplacementReturnsFreshPlanBeforeExternalWrites(t *testing.T) {
 	git := &fakeGitGateway{snapshot: testGitSnapshot()}
 	store := &fakePlanStore{}
 	j := &fakeJiraGateway{issue: jiraIssueInProgress()}
-	migration := &fakeMigration{applyErr: config.ErrMigrationStateChanged}
+	migration := &fakeMigration{applyErr: fmt.Errorf("%w: artifact type changed after inspection", config.ErrMigrationStateChanged)}
 	configs := fakeConfigGateway{config: testConfig(), migration: migration}
 	planner := testPlanner(store, git, configs, fakeJiraProvider{gateway: j})
 	input := Input{Kind: InputJira, IssueKey: "ABC-123", ProductType: "feature", Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"}
@@ -163,8 +163,8 @@ func TestApplyConfigurationMigrationApplyRaceReturnsFreshPlanBeforeExternalWrite
 	if result.Status != "planned" || result.PlanToken == "" || result.PlanToken == "old-token" || store.creates != 1 || store.consumes != 1 {
 		t.Fatalf("result=%+v creates=%d consumes=%d", result, store.creates, store.consumes)
 	}
-	if git.writes != 0 || slices.Contains(j.events, "fields") || slices.Contains(j.events, "transition") {
-		t.Fatalf("gitWrites=%d jira=%v", git.writes, j.events)
+	if migration.applied != 1 || git.writes != 0 || slices.Contains(j.events, "fields") || slices.Contains(j.events, "transition") {
+		t.Fatalf("migration=%d gitWrites=%d jira=%v", migration.applied, git.writes, j.events)
 	}
 }
 

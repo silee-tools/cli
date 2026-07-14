@@ -644,6 +644,76 @@ func TestInspectMigrationReturnsTypedDriftAcrossEnumerationAndReadBoundaries(t *
 		setHook func(*migrationFileOps, Paths)
 	}{
 		{
+			name: "regular artifact becomes directory before read",
+			setHook: func(ops *migrationFileOps, paths Paths) {
+				called := false
+				ops.beforeInspectionRead = func(path string) {
+					if called || path != paths.Legacy {
+						return
+					}
+					called = true
+					if err := os.Remove(path); err != nil {
+						panic(err)
+					}
+					if err := os.Mkdir(path, 0o700); err != nil {
+						panic(err)
+					}
+				}
+			},
+		},
+		{
+			name: "symlink artifact becomes regular before read",
+			prepare: func(t *testing.T, paths Paths) {
+				if err := os.MkdirAll(filepath.Dir(paths.Canonical), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("initial-target", paths.Canonical); err != nil {
+					t.Fatal(err)
+				}
+			},
+			setHook: func(ops *migrationFileOps, paths Paths) {
+				called := false
+				ops.beforeInspectionRead = func(path string) {
+					if called || path != paths.Canonical {
+						return
+					}
+					called = true
+					if err := os.Remove(path); err != nil {
+						panic(err)
+					}
+					if err := os.WriteFile(path, []byte("replacement"), 0o600); err != nil {
+						panic(err)
+					}
+				}
+			},
+		},
+		{
+			name: "symlink artifact is replaced after successful read",
+			prepare: func(t *testing.T, paths Paths) {
+				if err := os.MkdirAll(filepath.Dir(paths.Canonical), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("initial-target", paths.Canonical); err != nil {
+					t.Fatal(err)
+				}
+			},
+			setHook: func(ops *migrationFileOps, paths Paths) {
+				called := false
+				ops.afterInspectionRead = func(path string) {
+					if called || path != paths.Canonical {
+						return
+					}
+					called = true
+					if err := os.Remove(path); err != nil {
+						panic(err)
+					}
+					if err := os.Symlink("replacement-target", path); err != nil {
+						panic(err)
+					}
+				}
+			},
+		},
+		{
 			name: "owned marker disappears after enumeration",
 			prepare: func(t *testing.T, paths Paths) {
 				writeFile(t, migrationMarkerPath(paths), "owned marker", 0o600)
