@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -12,6 +14,28 @@ import (
 
 	"github.com/silee-tools/oma/internal/prep"
 )
+
+type fakeWorkflow struct {
+	plans       []prep.Result
+	applyResult prep.Result
+	inputs      []prep.Input
+	applyTokens []string
+}
+
+func (f *fakeWorkflow) Plan(_ context.Context, input prep.Input) (prep.Result, error) {
+	f.inputs = append(f.inputs, input)
+	if len(f.plans) == 0 {
+		return prep.Result{}, errors.New("unexpected Plan call")
+	}
+	result := f.plans[0]
+	f.plans = f.plans[1:]
+	return result, nil
+}
+
+func (f *fakeWorkflow) Apply(_ context.Context, token string) (prep.Result, error) {
+	f.applyTokens = append(f.applyTokens, token)
+	return f.applyResult, nil
+}
 
 func TestVersionLine(t *testing.T) {
 	if got := versionLine("oma", "1.2.3"); got != "oma v1.2.3 © 2026 silee-tools" {
@@ -69,6 +93,88 @@ func TestRunShowsPrepHelp(t *testing.T) {
 	}
 	if got := stdout.String(); !strings.Contains(got, "Usage: oma prep") {
 		t.Fatalf("stdout = %q, want prep usage", got)
+	}
+}
+
+func TestRunInteractiveCollectsRequiredInputsThenApprovesExactPlan(t *testing.T) {
+	workflow := &fakeWorkflow{
+		plans: []prep.Result{
+			{Status: "planned", RequiredInputs: []prep.RequiredInput{{
+				Kind: "product_type", Message: "Product type",
+				Options: []prep.InputOption{{Value: "feature", Label: "Feature"}},
+			}}},
+			{Status: "planned", PlanToken: "approved-token", Branch: "feature/work"},
+		},
+		applyResult: prep.Result{Status: "completed", Branch: "feature/work", WorktreePath: "/repo/.worktrees/work"},
+	}
+	prompt := &fakePrompter{selections: []string{"feature"}, confirmed: true}
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"prep", "ABC-123", "--base", "main"}, strings.NewReader(""), &stdout, &stderr, dependencies{
+		IsTerminal: func() bool { return true }, Prompter: prompt, Workflow: workflow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workflow.inputs) != 2 || workflow.inputs[1].ProductType != "feature" {
+		t.Fatalf("plan inputs = %+v", workflow.inputs)
+	}
+	if !reflect.DeepEqual(workflow.applyTokens, []string{"approved-token"}) {
+		t.Fatalf("apply tokens = %v", workflow.applyTokens)
+	}
+	if len(prompt.confirms) != 1 || !strings.Contains(stdout.String(), "completed") {
+		t.Fatalf("confirms = %v stdout = %q", prompt.confirms, stdout.String())
+	}
+}
+
+func TestRunJSONKeepsStdoutAsOneDocumentAndDoesNotApprove(t *testing.T) {
+	workflow := &fakeWorkflow{plans: []prep.Result{{Status: "planned", PlanToken: "opaque", InputKind: prep.InputEmpty}}}
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"prep", "--empty", "--base", "main", "--dry-run", "--json"}, strings.NewReader(""), &stdout, &stderr, dependencies{
+		IsTerminal: func() bool { return false }, Workflow: workflow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatalf("stdout = %q: %v", stdout.String(), err)
+	}
+	if len(workflow.applyTokens) != 0 {
+		t.Fatalf("--json approved apply: %v", workflow.applyTokens)
+	}
+	if stdout.String() == "" || stderr.String() == "" {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestRunMapsPartialResultToNonzeroAfterRendering(t *testing.T) {
+	workflow := &fakeWorkflow{applyResult: prep.Result{Status: "partial", InputKind: prep.InputEmpty, NextAction: "retry"}}
+	var stdout bytes.Buffer
+	err := run([]string{"prep", "--empty", "--base", "main", "--plan", "opaque", "--yes", "--json"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, dependencies{
+		IsTerminal: func() bool { return false }, Workflow: workflow,
+	})
+	if err == nil || !strings.Contains(err.Error(), "partial") {
+		t.Fatalf("error = %v", err)
+	}
+	if !json.Valid(stdout.Bytes()) {
+		t.Fatalf("stdout is not JSON: %q", stdout.String())
+	}
+}
+
+func TestRunNonInteractiveRequiredInputRendersAndFails(t *testing.T) {
+	workflow := &fakeWorkflow{plans: []prep.Result{{
+		Status: "planned", InputKind: prep.InputJira,
+		RequiredInputs: []prep.RequiredInput{{Kind: "transition_id", Message: "전환 선택"}},
+	}}}
+	var stdout bytes.Buffer
+	err := run([]string{"prep", "ABC-123", "--base", "main", "--dry-run", "--json"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, dependencies{
+		IsTerminal: func() bool { return false }, Workflow: workflow,
+	})
+	if err == nil || !strings.Contains(err.Error(), "필수 입력") {
+		t.Fatalf("error = %v", err)
+	}
+	if !json.Valid(stdout.Bytes()) {
+		t.Fatalf("stdout is not JSON: %q", stdout.String())
 	}
 }
 

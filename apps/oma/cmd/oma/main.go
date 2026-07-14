@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -8,8 +9,12 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/silee-tools/oma/internal/config"
+	"github.com/silee-tools/oma/internal/gitops"
+	"github.com/silee-tools/oma/internal/output"
 	"github.com/silee-tools/oma/internal/prep"
 	"github.com/silee-tools/oma/internal/runtimechannel"
+	"github.com/silee-tools/oma/internal/state"
 	"golang.org/x/term"
 )
 
@@ -22,9 +27,16 @@ type candidateProvider interface {
 }
 
 type dependencies struct {
-	IsTerminal func() bool
-	Prompter   Prompter
-	Candidates candidateProvider
+	IsTerminal    func() bool
+	Prompter      Prompter
+	Candidates    candidateProvider
+	CandidatesFor func(string) candidateProvider
+	Workflow      prepWorkflow
+}
+
+type prepWorkflow interface {
+	Plan(context.Context, prep.Input) (prep.Result, error)
+	Apply(context.Context, string) (prep.Result, error)
 }
 
 type options struct {
@@ -163,9 +175,65 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, deps dependen
 		if err != nil {
 			return err
 		}
-		return completeOptions(&parsed, deps)
+		if deps.Candidates == nil && deps.CandidatesFor != nil {
+			deps.Candidates = deps.CandidatesFor(parsed.Input.Repo)
+		}
+		if err := completeOptions(&parsed, deps); err != nil {
+			return err
+		}
+		if deps.Workflow == nil {
+			return nil
+		}
+		return executePrep(context.Background(), parsed, stdout, stderr, deps)
 	}
 	return fmt.Errorf("oma: 지원하지 않는 인자입니다")
+}
+
+type gitCandidates struct {
+	repo   string
+	runner gitops.Runner
+	err    *error
+}
+
+func (gitCandidates) InputKinds() []promptOption {
+	return []promptOption{
+		{Value: string(prep.InputJira), Label: "Jira 작업"},
+		{Value: string(prep.InputDescription), Label: "작업 설명"},
+		{Value: string(prep.InputEmpty), Label: "빈 작업"},
+	}
+}
+
+func (g gitCandidates) Bases() []promptOption {
+	root, _, err := gitops.NormalizeRepo(context.Background(), g.runner, g.repo)
+	if err != nil {
+		if g.err != nil {
+			*g.err = err
+		}
+		return nil
+	}
+	defaultRef, candidates, err := gitops.DefaultBase(context.Background(), g.runner, root)
+	if err != nil {
+		if g.err != nil {
+			*g.err = err
+		}
+		return nil
+	}
+	result := make([]promptOption, 0, len(candidates))
+	for _, candidate := range candidates {
+		label := candidate
+		if candidate == defaultRef {
+			label += " (기본값)"
+		}
+		result = append(result, promptOption{Value: candidate, Label: label})
+	}
+	return result
+}
+
+func (g gitCandidates) candidateError() error {
+	if g.err == nil {
+		return nil
+	}
+	return *g.err
 }
 
 func completeOptions(parsed *options, deps dependencies) error {
@@ -229,7 +297,11 @@ func completeOptions(parsed *options, deps dependencies) error {
 		if deps.Candidates == nil {
 			return fmt.Errorf("oma prep: 기준 브랜치 후보 공급자를 사용할 수 없습니다")
 		}
-		selected, err := deps.Prompter.Select("기준 브랜치를 선택하세요", deps.Candidates.Bases())
+		bases := deps.Candidates.Bases()
+		if provider, ok := deps.Candidates.(interface{ candidateError() error }); ok && provider.candidateError() != nil {
+			return provider.candidateError()
+		}
+		selected, err := deps.Prompter.Select("기준 브랜치를 선택하세요", bases)
 		if err != nil {
 			return err
 		}
@@ -238,12 +310,94 @@ func completeOptions(parsed *options, deps dependencies) error {
 		}
 		parsed.Input.Base = selected
 	}
-	approved, err := deps.Prompter.Confirm("이 계획을 적용할까요?")
-	if err != nil {
-		return err
+	if deps.Workflow == nil {
+		approved, err := deps.Prompter.Confirm("이 계획을 적용할까요?")
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return errCancelled
+		}
 	}
-	if !approved {
-		return errCancelled
+	return nil
+}
+
+func executePrep(ctx context.Context, parsed options, stdout, stderr io.Writer, deps dependencies) error {
+	interactive := deps.IsTerminal != nil && deps.IsTerminal()
+	var result prep.Result
+	var err error
+	if parsed.PlanToken != "" {
+		if interactive && !parsed.Yes {
+			approved, confirmErr := deps.Prompter.Confirm("승인한 계획을 적용할까요?")
+			if confirmErr != nil {
+				return confirmErr
+			}
+			if !approved {
+				return errCancelled
+			}
+		}
+		_, _ = fmt.Fprintln(stderr, "승인한 계획을 적용합니다")
+		result, err = deps.Workflow.Apply(ctx, parsed.PlanToken)
+	} else {
+		for {
+			_, _ = fmt.Fprintln(stderr, "현재 상태로 계획을 만듭니다")
+			result, err = deps.Workflow.Plan(ctx, parsed.Input)
+			if err != nil {
+				break
+			}
+			if len(result.RequiredInputs) == 0 || !interactive {
+				break
+			}
+			for _, required := range result.RequiredInputs {
+				options := make([]promptOption, 0, len(required.Options))
+				for _, option := range required.Options {
+					options = append(options, promptOption{Value: option.Value, Label: option.Label})
+				}
+				selected, selectErr := deps.Prompter.Select(required.Message, options)
+				if selectErr != nil {
+					return selectErr
+				}
+				switch required.Kind {
+				case "product_type":
+					parsed.Input.ProductType = selected
+				case "transition_id":
+					parsed.Input.TransitionID = selected
+				default:
+					return fmt.Errorf("oma prep: 지원하지 않는 필수 입력입니다: %s", required.Kind)
+				}
+			}
+		}
+		if err == nil && !parsed.DryRun && interactive && len(result.RequiredInputs) == 0 {
+			if parsed.JSON {
+				_ = output.Human(stderr, result)
+			} else {
+				_ = output.Human(stdout, result)
+			}
+			approved, confirmErr := deps.Prompter.Confirm("이 계획을 적용할까요?")
+			if confirmErr != nil {
+				return confirmErr
+			}
+			if !approved {
+				return errCancelled
+			}
+			result, err = deps.Workflow.Apply(ctx, result.PlanToken)
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("oma prep: %w", err)
+	}
+	if parsed.JSON {
+		if err := output.JSON(stdout, result); err != nil {
+			return fmt.Errorf("oma prep: JSON 출력 실패: %w", err)
+		}
+	} else if err := output.Human(stdout, result); err != nil {
+		return fmt.Errorf("oma prep: 출력 실패: %w", err)
+	}
+	if !interactive && len(result.RequiredInputs) != 0 {
+		return fmt.Errorf("oma prep: 비대화형 실행에 필수 입력이 남아 있습니다")
+	}
+	if result.Status == "partial" || result.Status == "failed" {
+		return fmt.Errorf("oma prep: %s", result.Status)
 	}
 	return nil
 }
@@ -281,7 +435,21 @@ func main() {
 
 	deps := dependencies{
 		IsTerminal: func() bool { return term.IsTerminal(int(os.Stdin.Fd())) },
-		Prompter:   &terminalPrompter{input: os.Stdin, output: os.Stdout},
+		Prompter:   &terminalPrompter{input: os.Stdin, output: os.Stderr},
+		CandidatesFor: func(repo string) candidateProvider {
+			var candidateErr error
+			return gitCandidates{repo: repo, runner: gitops.CommandRunner{}, err: &candidateErr}
+		},
+	}
+	if len(os.Args) > 1 && os.Args[1] == "prep" {
+		paths := config.ResolvePaths(os.Getenv, "")
+		store, storeErr := state.New(paths.StateRoot)
+		if storeErr != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "oma:", storeErr)
+			os.Exit(1)
+		}
+		defer func() { _ = store.Close() }()
+		deps.Workflow = prep.NewPlanner(paths, store, gitops.CommandRunner{}, nil)
 	}
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, deps); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
