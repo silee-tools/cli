@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/silee-tools/oma/internal/config"
+	"github.com/silee-tools/oma/internal/gitops"
 	"github.com/silee-tools/oma/internal/jira"
 	"github.com/silee-tools/oma/internal/state"
 )
@@ -216,6 +219,196 @@ func TestApplyRetrySkipsSetupAfterDurableReceipt(t *testing.T) {
 	}
 	if second.Status != "completed" || countEvent(git.events, "setup") != 0 || store.receiptCreates != 1 {
 		t.Fatalf("second=%+v events=%v receiptCreates=%d", second, git.events, store.receiptCreates)
+	}
+}
+
+func TestSetupReceiptKeyChangesWithSelectedSubmoduleState(t *testing.T) {
+	planner := testPlanner(&fakePlanStore{}, &fakeGitGateway{}, panicConfigGateway{}, panicJiraProvider{})
+	payload := planPayload{
+		CommonDir:    "/repo/.git",
+		WorktreePath: "/repo/.worktrees/work",
+		Branch:       "feature/work",
+		Base:         Base{SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+		Git: gitops.Snapshot{
+			SetupHash:  "setup-hash",
+			Submodules: []gitops.Submodule{{Path: "modules/a", URL: "https://example.test/a.git", BaseRef: "main", BaseSHA: "1111111111111111111111111111111111111111"}},
+		},
+	}
+	original, err := planner.setupReceiptKey(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := map[string]func(*gitops.Submodule){
+		"path":     func(value *gitops.Submodule) { value.Path = "modules/b" },
+		"url":      func(value *gitops.Submodule) { value.URL = "https://example.test/other.git" },
+		"base ref": func(value *gitops.Submodule) { value.BaseRef = "release" },
+		"base sha": func(value *gitops.Submodule) { value.BaseSHA = "2222222222222222222222222222222222222222" },
+	}
+	for name, change := range changes {
+		changed := payload
+		changed.Git.Submodules = append([]gitops.Submodule(nil), payload.Git.Submodules...)
+		change(&changed.Git.Submodules[0])
+		key, err := planner.setupReceiptKey(changed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if key == original {
+			t.Fatalf("%s did not change setup receipt key %s", name, original)
+		}
+	}
+}
+
+func TestSetupReceiptKeyNormalizesSubmoduleOrder(t *testing.T) {
+	planner := testPlanner(&fakePlanStore{}, &fakeGitGateway{}, panicConfigGateway{}, panicJiraProvider{})
+	payload := planPayload{
+		CommonDir: "/repo/.git", WorktreePath: "/repo/.worktrees/work", Branch: "feature/work",
+		Base: Base{SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, Git: gitops.Snapshot{SetupHash: "setup-hash",
+			Submodules: []gitops.Submodule{
+				{Path: "modules/b", URL: "https://example.test/b.git", BaseRef: "main", BaseSHA: "2222222222222222222222222222222222222222"},
+				{Path: "modules/a", URL: "https://example.test/a.git", BaseRef: "main", BaseSHA: "1111111111111111111111111111111111111111"},
+			}},
+	}
+	first, err := planner.setupReceiptKey(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Reverse(payload.Git.Submodules)
+	second, err := planner.setupReceiptKey(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("submodule order changed receipt key: %s != %s", first, second)
+	}
+}
+
+func TestApplyRerunsSetupWhenSelectedSubmoduleStateChanges(t *testing.T) {
+	git := &fakeGitGateway{snapshot: testGitSnapshot(), failAt: "push"}
+	git.snapshot.SetupHash = "setup-hash"
+	git.snapshot.Submodules = []gitops.Submodule{{Path: "modules/a", URL: "https://example.test/a.git", BaseRef: "main", BaseSHA: "1111111111111111111111111111111111111111"}}
+	store := &fakePlanStore{}
+	planner := testPlanner(store, git, panicConfigGateway{}, panicJiraProvider{})
+	input := Input{Kind: InputEmpty, Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new", Submodules: []string{"modules/a"}}
+	states := []struct{ path, sha string }{
+		{"modules/a", "1111111111111111111111111111111111111111"},
+		{"modules/a", "2222222222222222222222222222222222222222"},
+		{"modules/b", "2222222222222222222222222222222222222222"},
+	}
+	for index, submodule := range states {
+		git.snapshot.Submodules[0].Path = submodule.path
+		git.snapshot.Submodules[0].BaseSHA = submodule.sha
+		input.Submodules = []string{submodule.path}
+		planned, err := planner.build(context.Background(), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.claimed = planned.payload
+		store.claimRecord = state.Record{Fingerprint: planned.fingerprint}
+		result, err := planner.Apply(context.Background(), fmt.Sprintf("token-%d", index))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != "partial" {
+			t.Fatalf("apply %d result = %+v", index, result)
+		}
+	}
+	if countEvent(git.events, "setup") != 3 || store.receiptCreates != 3 {
+		t.Fatalf("events=%v receiptCreates=%d", git.events, store.receiptCreates)
+	}
+}
+
+func TestConcurrentPlannerApplyRunsSetupOnceAndReusesDurableReceipt(t *testing.T) {
+	store := &fakePlanStore{}
+	gits := []*fakeGitGateway{{snapshot: testGitSnapshot()}, {snapshot: testGitSnapshot()}}
+	for _, git := range gits {
+		git.snapshot.SetupHash = "setup-hash"
+	}
+	planners := []*Planner{
+		testPlanner(store, gits[0], panicConfigGateway{}, panicJiraProvider{}),
+		testPlanner(store, gits[1], panicConfigGateway{}, panicJiraProvider{}),
+	}
+	planned, err := planners[0].build(context.Background(), Input{Kind: InputEmpty, Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.claimed = planned.payload
+	store.claimRecord = state.Record{Fingerprint: planned.fingerprint}
+	for _, git := range gits {
+		git.events = nil
+	}
+	start := make(chan struct{})
+	results := make(chan Result, 2)
+	errorsFound := make(chan error, 2)
+	var wait sync.WaitGroup
+	for index, planner := range planners {
+		wait.Add(1)
+		go func(index int, planner *Planner) {
+			defer wait.Done()
+			<-start
+			result, applyErr := planner.Apply(context.Background(), fmt.Sprintf("token-%d", index))
+			results <- result
+			errorsFound <- applyErr
+		}(index, planner)
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	close(errorsFound)
+	for applyErr := range errorsFound {
+		if applyErr != nil {
+			t.Fatal(applyErr)
+		}
+	}
+	reused := 0
+	for result := range results {
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v", result)
+		}
+		for _, step := range result.Steps {
+			if step.Name == "setup" && step.Status == "reused" {
+				reused++
+			}
+		}
+	}
+	setupCalls := countEvent(gits[0].events, "setup") + countEvent(gits[1].events, "setup")
+	if setupCalls != 1 || reused != 1 || store.receiptCreates != 1 {
+		t.Fatalf("setupCalls=%d reused=%d receiptCreates=%d events=%v/%v", setupCalls, reused, store.receiptCreates, gits[0].events, gits[1].events)
+	}
+}
+
+func TestApplyWaitsForReceiptDurabilityRecoveryBeforePushAndJira(t *testing.T) {
+	git := &fakeGitGateway{snapshot: testGitSnapshot()}
+	git.snapshot.SetupHash = "setup-hash"
+	injected := errors.New("injected receipt directory sync failure")
+	committed := &state.SetupReceiptCommittedError{Key: strings.Repeat("a", 64), Ambiguous: true, Err: injected}
+	store := &fakePlanStore{receiptCreateErr: committed, receiptReuseErr: injected}
+	j := &fakeJiraGateway{issue: jiraIssueInProgress()}
+	planner := testPlanner(store, git, fakeConfigGateway{config: testConfig()}, fakeJiraProvider{gateway: j})
+	planned, err := planner.build(context.Background(), Input{Kind: InputJira, IssueKey: "ABC-123", ProductType: "feature", Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.claimed = planned.payload
+	store.claimRecord = state.Record{Fingerprint: planned.fingerprint}
+	for attempt := 0; attempt < 2; attempt++ {
+		git.events, j.events = nil, nil
+		result, applyErr := planner.Apply(context.Background(), fmt.Sprintf("token-%d", attempt))
+		if applyErr != nil {
+			t.Fatal(applyErr)
+		}
+		if result.Status != "partial" || slices.Contains(git.events, "push") || slices.Contains(j.events, "fields") || slices.Contains(j.events, "transition") {
+			t.Fatalf("attempt=%d result=%+v git=%v jira=%v", attempt, result, git.events, j.events)
+		}
+		store.receiptCreateErr = nil
+	}
+	store.receiptReuseErr = nil
+	git.events, j.events = nil, nil
+	result, err := planner.Apply(context.Background(), "token-recovered")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "completed" || !slices.Contains(git.events, "push") || slices.Contains(git.events, "setup") {
+		t.Fatalf("recovered result=%+v git=%v jira=%v", result, git.events, j.events)
 	}
 }
 

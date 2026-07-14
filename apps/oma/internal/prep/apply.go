@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/silee-tools/oma/internal/config"
@@ -121,19 +122,15 @@ func (p *Planner) Apply(ctx context.Context, token string) (result Result, resul
 		if err != nil {
 			return fail("setup-receipt", err)
 		}
-		exists, err := p.store.SetupReceiptExists(receiptKey)
+		reused, err := p.store.EnsureSetupReceipt(receiptKey, func() error {
+			return p.git.RunSetup(ctx, current.payload.WorktreePath, current.payload.Input.SetupArgs)
+		})
 		if err != nil {
 			return fail("setup-receipt", err)
 		}
-		if exists {
+		if reused {
 			addStep("setup", "reused", "durable setup receipt")
 		} else {
-			if err := p.git.RunSetup(ctx, current.payload.WorktreePath, current.payload.Input.SetupArgs); err != nil {
-				return fail("setup", err)
-			}
-			if err := p.store.CreateSetupReceipt(receiptKey); err != nil {
-				return fail("setup-receipt", err)
-			}
 			addStep("setup", "completed", "setup complete")
 		}
 	}
@@ -195,14 +192,20 @@ func (p *Planner) setupReceiptKey(payload planPayload) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("canonicalize worktree for setup receipt: %w", err)
 	}
+	submodules := append([]gitops.Submodule(nil), payload.Git.Submodules...)
+	sort.Slice(submodules, func(i, j int) bool {
+		left, right := submodules[i], submodules[j]
+		return left.Path < right.Path || (left.Path == right.Path && (left.URL < right.URL || (left.URL == right.URL && (left.BaseRef < right.BaseRef || (left.BaseRef == right.BaseRef && left.BaseSHA < right.BaseSHA)))))
+	})
 	identity := struct {
-		CommonDir string   `json:"common_dir"`
-		Worktree  string   `json:"worktree"`
-		Branch    string   `json:"branch"`
-		BaseSHA   string   `json:"base_sha"`
-		SetupHash string   `json:"setup_hash"`
-		SetupArgs []string `json:"setup_args"`
-	}{commonDir, worktree, payload.Branch, payload.Base.SHA, payload.Git.SetupHash, payload.Input.SetupArgs}
+		CommonDir  string             `json:"common_dir"`
+		Worktree   string             `json:"worktree"`
+		Branch     string             `json:"branch"`
+		BaseSHA    string             `json:"base_sha"`
+		SetupHash  string             `json:"setup_hash"`
+		SetupArgs  []string           `json:"setup_args"`
+		Submodules []gitops.Submodule `json:"submodules"`
+	}{commonDir, worktree, payload.Branch, payload.Base.SHA, payload.Git.SetupHash, payload.Input.SetupArgs, submodules}
 	encoded, err := json.Marshal(identity)
 	if err != nil {
 		return "", fmt.Errorf("encode setup receipt identity: %w", err)

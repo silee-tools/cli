@@ -25,8 +25,7 @@ type planStore interface {
 	Create(any, string) (state.Record, error)
 	Claim(string, any) (state.Record, error)
 	Consume(string) error
-	SetupReceiptExists(string) (bool, error)
-	CreateSetupReceipt(string) error
+	EnsureSetupReceipt(string, func() error) (bool, error)
 }
 
 type gitGateway interface {

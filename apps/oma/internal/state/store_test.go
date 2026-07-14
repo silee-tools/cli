@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -936,11 +937,9 @@ func TestSetupReceiptCreatesAndSurvivesStoreReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := strings.Repeat("a", 64)
-	if exists, err := store.SetupReceiptExists(key); err != nil || exists {
-		t.Fatalf("initial receipt exists=%t error=%v", exists, err)
-	}
-	if err := store.CreateSetupReceipt(key); err != nil {
-		t.Fatal(err)
+	callbackCalls := 0
+	if reused, err := store.EnsureSetupReceipt(key, func() error { callbackCalls++; return nil }); err != nil || reused || callbackCalls != 1 {
+		t.Fatalf("initial ensure reused=%t error=%v callbackCalls=%d", reused, err, callbackCalls)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -951,8 +950,8 @@ func TestSetupReceiptCreatesAndSurvivesStoreReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = reopened.Close() }()
-	if exists, err := reopened.SetupReceiptExists(key); err != nil || !exists {
-		t.Fatalf("reopened receipt exists=%t error=%v", exists, err)
+	if reused, err := reopened.EnsureSetupReceipt(key, func() error { return errors.New("unexpected setup callback") }); err != nil || !reused {
+		t.Fatalf("reopened receipt reused=%t error=%v", reused, err)
 	}
 	info, err := os.Stat(filepath.Join(root, "plans", "setup-"+key+".receipt"))
 	if err != nil {
@@ -963,9 +962,155 @@ func TestSetupReceiptCreatesAndSurvivesStoreReopen(t *testing.T) {
 	}
 }
 
+func TestSetupReceiptExistingEntryRequiresDirectorySync(t *testing.T) {
+	store := newReceiptTestStore(t)
+	key := strings.Repeat("f", 64)
+	if _, err := store.EnsureSetupReceipt(key, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected receipt directory sync failure")
+	store.syncDir = func(string) error { return injected }
+	reused, err := store.EnsureSetupReceipt(key, func() error { return errors.New("unexpected setup callback") })
+	if err == nil || !errors.Is(err, injected) || reused {
+		t.Fatalf("EnsureSetupReceipt() = (%t, %v), want false and sync failure", reused, err)
+	}
+}
+
+func TestEnsureSetupReceiptSerializesCallbackAcrossStores(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "oma")
+	first, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Close() }()
+	second, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Close() }()
+	stores := []*Store{first, second}
+	key := strings.Repeat("1", 64)
+	start := make(chan struct{})
+	results := make(chan error, 16)
+	var callbacks atomic.Int32
+	var reused atomic.Int32
+	var wait sync.WaitGroup
+	for index := 0; index < 16; index++ {
+		wait.Add(1)
+		go func(store *Store) {
+			defer wait.Done()
+			<-start
+			wasReused, ensureErr := store.EnsureSetupReceipt(key, func() error {
+				callbacks.Add(1)
+				time.Sleep(5 * time.Millisecond)
+				return nil
+			})
+			if wasReused {
+				reused.Add(1)
+			}
+			results <- ensureErr
+		}(stores[index%len(stores)])
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	for ensureErr := range results {
+		if ensureErr != nil {
+			t.Fatalf("EnsureSetupReceipt() error = %v", ensureErr)
+		}
+	}
+	if callbacks.Load() != 1 || reused.Load() != 15 {
+		t.Fatalf("callbacks=%d reused=%d, want 1 and 15", callbacks.Load(), reused.Load())
+	}
+}
+
+func TestEnsureSetupReceiptSerializesCallbackAcrossProcesses(t *testing.T) {
+	store := newReceiptTestStore(t)
+	key := strings.Repeat("5", 64)
+	outputs := runStateProcesses(t, store.dir, key, "setup", 4, "")
+	if callbacks, reused := countMarker(outputs, "RESULT=setup"), countMarker(outputs, "RESULT=reused"); callbacks != 1 || reused != 3 {
+		t.Fatalf("callbacks=%d reused=%d outputs=%q", callbacks, reused, outputs)
+	}
+}
+
+func TestEnsureSetupReceiptKeepsAmbiguousPublicationBeforeLaterReuse(t *testing.T) {
+	store := newReceiptTestStore(t)
+	key := strings.Repeat("2", 64)
+	originalSync := store.syncDir
+	injected := errors.New("injected setup receipt sync failure")
+	store.syncDir = func(string) error { return injected }
+	callbackCalls := 0
+	reused, err := store.EnsureSetupReceipt(key, func() error { callbackCalls++; return nil })
+	var committed *SetupReceiptCommittedError
+	if reused || !errors.As(err, &committed) || !committed.Ambiguous || callbackCalls != 1 {
+		t.Fatalf("first ensure reused=%t err=%v committed=%+v callbacks=%d", reused, err, committed, callbackCalls)
+	}
+	reused, err = store.EnsureSetupReceipt(key, func() error { callbackCalls++; return nil })
+	if reused || !errors.Is(err, injected) || callbackCalls != 1 {
+		t.Fatalf("persistent sync failure reused=%t err=%v callbacks=%d", reused, err, callbackCalls)
+	}
+	store.syncDir = originalSync
+	reused, err = store.EnsureSetupReceipt(key, func() error { callbackCalls++; return nil })
+	if err != nil || !reused || callbackCalls != 1 {
+		t.Fatalf("recovered ensure reused=%t err=%v callbacks=%d", reused, err, callbackCalls)
+	}
+}
+
+func TestEnsureSetupReceiptCallbackFailureAndPanicLeaveNoReceiptAndReleaseLock(t *testing.T) {
+	store := newReceiptTestStore(t)
+	key := strings.Repeat("3", 64)
+	injected := errors.New("injected setup failure")
+	if reused, err := store.EnsureSetupReceipt(key, func() error { return injected }); reused || !errors.Is(err, injected) {
+		t.Fatalf("callback failure reused=%t err=%v", reused, err)
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("EnsureSetupReceipt() swallowed callback panic")
+			}
+		}()
+		_, _ = store.EnsureSetupReceipt(key, func() error { panic("injected setup panic") })
+	}()
+	calls := 0
+	if reused, err := store.EnsureSetupReceipt(key, func() error { calls++; return nil }); err != nil || reused || calls != 1 {
+		t.Fatalf("post-panic ensure reused=%t err=%v calls=%d", reused, err, calls)
+	}
+}
+
+func TestEnsureSetupReceiptCloseWaitsForCallback(t *testing.T) {
+	store := newReceiptTestStore(t)
+	key := strings.Repeat("4", 64)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	ensureDone := make(chan error, 1)
+	go func() {
+		_, err := store.EnsureSetupReceipt(key, func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+		ensureDone <- err
+	}()
+	<-entered
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- store.Close() }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close() returned while callback held the store: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-ensureDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSetupReceiptRejectsInvalidKeySymlinkAndExternalHardlink(t *testing.T) {
 	store := newReceiptTestStore(t)
-	if _, err := store.SetupReceiptExists("not-a-key"); !errors.Is(err, ErrInvalidReceiptKey) {
+	if _, err := store.EnsureSetupReceipt("not-a-key", func() error { return nil }); !errors.Is(err, ErrInvalidReceiptKey) {
 		t.Fatalf("invalid key error = %v", err)
 	}
 	key := strings.Repeat("b", 64)
@@ -977,48 +1122,21 @@ func TestSetupReceiptRejectsInvalidKeySymlinkAndExternalHardlink(t *testing.T) {
 	if err := os.Symlink(target, path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SetupReceiptExists(key); !errors.Is(err, ErrUnsafeReceipt) {
+	if _, err := store.EnsureSetupReceipt(key, func() error { return nil }); !errors.Is(err, ErrUnsafeReceipt) {
 		t.Fatalf("symlink error = %v", err)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateSetupReceipt(key); err != nil {
+	if _, err := store.EnsureSetupReceipt(key, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	outside := filepath.Join(t.TempDir(), "outside-link")
 	if err := os.Link(path, outside); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SetupReceiptExists(key); !errors.Is(err, ErrUnsafeReceipt) {
+	if _, err := store.EnsureSetupReceipt(key, func() error { return nil }); !errors.Is(err, ErrUnsafeReceipt) {
 		t.Fatalf("external hardlink error = %v", err)
-	}
-}
-
-func TestSetupReceiptConcurrentCreateExistsAndClose(t *testing.T) {
-	store := newReceiptTestStore(t)
-	key := strings.Repeat("c", 64)
-	start := make(chan struct{})
-	errorsFound := make(chan error, 32)
-	var wg sync.WaitGroup
-	for index := 0; index < 16; index++ {
-		wg.Add(2)
-		go func() { defer wg.Done(); <-start; errorsFound <- store.CreateSetupReceipt(key) }()
-		go func() { defer wg.Done(); <-start; _, err := store.SetupReceiptExists(key); errorsFound <- err }()
-	}
-	close(start)
-	wg.Wait()
-	close(errorsFound)
-	for err := range errorsFound {
-		if err != nil {
-			t.Fatalf("concurrent receipt operation: %v", err)
-		}
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SetupReceiptExists(key); err == nil {
-		t.Fatal("receipt read succeeded after Close")
 	}
 }
 
@@ -1285,8 +1403,10 @@ func TestStoreRejectsOperationsAfterDirectoryDescriptorCloses(t *testing.T) {
 		{name: "Load", run: func() error { _, err := store.Load(created.Token, &payload); return err }},
 		{name: "Claim", run: func() error { _, err := store.Claim(created.Token, &payload); return err }},
 		{name: "Consume", run: func() error { return store.Consume(created.Token) }},
-		{name: "SetupReceiptExists", run: func() error { _, err := store.SetupReceiptExists(strings.Repeat("d", 64)); return err }},
-		{name: "CreateSetupReceipt", run: func() error { return store.CreateSetupReceipt(strings.Repeat("e", 64)) }},
+		{name: "EnsureSetupReceipt", run: func() error {
+			_, err := store.EnsureSetupReceipt(strings.Repeat("d", 64), func() error { return nil })
+			return err
+		}},
 	}
 	for _, check := range checks {
 		if err := check.run(); !errors.Is(err, ErrUnsafeRoot) {
@@ -1578,6 +1698,23 @@ func TestStoreProcessHelper(t *testing.T) {
 			t.Fatal("Create reused legacy token")
 		}
 		fmt.Println("RESULT=created-other")
+	case "setup":
+		marker := filepath.Join(root, "setup-callback-marker")
+		reused, err := store.EnsureSetupReceipt(token, func() error {
+			file, createErr := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			if createErr != nil {
+				return createErr
+			}
+			return file.Close()
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reused {
+			fmt.Println("RESULT=reused")
+		} else {
+			fmt.Println("RESULT=setup")
+		}
 	default:
 		t.Fatalf("unknown helper action")
 	}

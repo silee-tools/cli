@@ -72,6 +72,21 @@ func (e *CommittedError) Error() string {
 
 func (e *CommittedError) Unwrap() error { return e.Err }
 
+// SetupReceiptCommittedError reports that a setup receipt is visible but its
+// directory durability could not be confirmed. Callers must stop before later
+// side effects and retry durability confirmation without rerunning setup.
+type SetupReceiptCommittedError struct {
+	Key       string
+	Ambiguous bool
+	Err       error
+}
+
+func (e *SetupReceiptCommittedError) Error() string {
+	return fmt.Sprintf("setup receipt %s committed with a post-publication error: %v", e.Key, e.Err)
+}
+
+func (e *SetupReceiptCommittedError) Unwrap() error { return e.Err }
+
 type Record struct {
 	Token       string
 	Fingerprint string
@@ -1092,9 +1107,16 @@ func (s *Store) exists(path string) (bool, error) {
 	return false, err
 }
 
-func (s *Store) SetupReceiptExists(key string) (bool, error) {
+// EnsureSetupReceipt serializes the check, setup callback, atomic publication,
+// and directory durability confirmation under one cross-process lock. A panic
+// from setup propagates after the lock and stable directory descriptor are
+// released; callback failures never publish a receipt.
+func (s *Store) EnsureSetupReceipt(key string, setup func() error) (bool, error) {
 	if err := validateReceiptKey(key); err != nil {
 		return false, err
+	}
+	if setup == nil {
+		return false, errors.New("setup callback is nil")
 	}
 	if err := s.resource.begin(); err != nil {
 		return false, err
@@ -1105,25 +1127,23 @@ func (s *Store) SetupReceiptExists(key string) (bool, error) {
 		return false, err
 	}
 	defer unlock()
-	return s.setupReceiptExistsLocked(key)
+	exists, err := s.setupReceiptExistsLocked(key)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		if err := s.syncDir(s.dir); err != nil {
+			return false, &SetupReceiptCommittedError{Key: key, Ambiguous: true, Err: fmt.Errorf("confirm setup receipt durability: %w", err)}
+		}
+		return true, nil
+	}
+	if err := setup(); err != nil {
+		return false, err
+	}
+	return false, s.createSetupReceiptLocked(key)
 }
 
-func (s *Store) CreateSetupReceipt(key string) error {
-	if err := validateReceiptKey(key); err != nil {
-		return err
-	}
-	if err := s.resource.begin(); err != nil {
-		return err
-	}
-	defer s.resource.end()
-	unlock, err := s.lockReceipts()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	if exists, err := s.setupReceiptExistsLocked(key); err != nil || exists {
-		return err
-	}
+func (s *Store) createSetupReceiptLocked(key string) error {
 	random := make([]byte, 12)
 	if _, err := io.ReadFull(rand.Reader, random); err != nil {
 		return fmt.Errorf("create setup receipt nonce: %w", err)
@@ -1163,6 +1183,9 @@ func (s *Store) CreateSetupReceipt(key string) error {
 				return inspectErr
 			}
 			if exists {
+				if syncErr := s.syncDir(s.dir); syncErr != nil {
+					return &SetupReceiptCommittedError{Key: key, Ambiguous: true, Err: fmt.Errorf("confirm colliding setup receipt durability: %w", syncErr)}
+				}
 				return nil
 			}
 		}
@@ -1171,8 +1194,8 @@ func (s *Store) CreateSetupReceipt(key string) error {
 	if err := unix.Unlinkat(s.resource.fd(), temporary, 0); err != nil {
 		return fmt.Errorf("remove setup receipt publication link: %w", err)
 	}
-	if err := s.resource.file.Sync(); err != nil {
-		return fmt.Errorf("sync setup receipt directory: %w", err)
+	if err := s.syncDir(s.dir); err != nil {
+		return &SetupReceiptCommittedError{Key: key, Ambiguous: true, Err: fmt.Errorf("sync setup receipt directory: %w", err)}
 	}
 	return nil
 }

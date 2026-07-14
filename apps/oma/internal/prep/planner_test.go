@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -162,6 +163,7 @@ func testConfig() config.Config {
 }
 
 type fakePlanStore struct {
+	mu               sync.Mutex
 	payloads         []planPayload
 	fingerprints     []string
 	creates          int
@@ -172,10 +174,13 @@ type fakePlanStore struct {
 	receiptCreates   int
 	receiptChecks    int
 	receiptCreateErr error
+	receiptReuseErr  error
 	consumeErr       error
 }
 
 func (f *fakePlanStore) Create(payload any, fingerprint string) (state.Record, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.creates++
 	value := payload.(planPayload)
 	f.payloads = append(f.payloads, value)
@@ -184,25 +189,47 @@ func (f *fakePlanStore) Create(payload any, fingerprint string) (state.Record, e
 }
 
 func (f *fakePlanStore) Claim(_ string, payload any) (state.Record, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	value := payload.(*planPayload)
 	*value = f.claimed
 	return f.claimRecord, nil
 }
-func (f *fakePlanStore) Consume(string) error { f.consumes++; return f.consumeErr }
-func (f *fakePlanStore) SetupReceiptExists(key string) (bool, error) {
-	f.receiptChecks++
-	return f.receipts != nil && f.receipts[key], nil
+func (f *fakePlanStore) Consume(string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.consumes++
+	return f.consumeErr
 }
-func (f *fakePlanStore) CreateSetupReceipt(key string) error {
+func (f *fakePlanStore) EnsureSetupReceipt(key string, setup func() error) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.receiptChecks++
+	if f.receipts != nil && f.receipts[key] {
+		if f.receiptReuseErr != nil {
+			return false, f.receiptReuseErr
+		}
+		return true, nil
+	}
+	if err := setup(); err != nil {
+		return false, err
+	}
 	f.receiptCreates++
 	if f.receiptCreateErr != nil {
-		return f.receiptCreateErr
+		var committed *state.SetupReceiptCommittedError
+		if errors.As(f.receiptCreateErr, &committed) {
+			if f.receipts == nil {
+				f.receipts = make(map[string]bool)
+			}
+			f.receipts[key] = true
+		}
+		return false, f.receiptCreateErr
 	}
 	if f.receipts == nil {
 		f.receipts = make(map[string]bool)
 	}
 	f.receipts[key] = true
-	return nil
+	return false, nil
 }
 
 type fakeGitGateway struct {
