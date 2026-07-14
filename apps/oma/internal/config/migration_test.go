@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -101,7 +102,7 @@ func TestMigration(t *testing.T) {
 		migrationOS.symlink = func(string, string) error { return symlinkErr }
 		migrationOS.remove = func(path string) error {
 			err := os.Remove(path)
-			if path == paths.Canonical && err == nil {
+			if strings.HasPrefix(path, paths.Canonical+".oma-quarantine-") && err == nil {
 				return rollbackErr
 			}
 			return err
@@ -301,6 +302,193 @@ func TestDirectorySyncSupported(t *testing.T) {
 	dir := t.TempDir()
 	if err := syncDirectory(dir); err != nil {
 		t.Fatalf("syncDirectory(%s): %v", dir, err)
+	}
+}
+
+func TestMigrationSerializesActiveApplyAndRecovery(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	migration, err := PlanMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migration == nil {
+		t.Fatal("PlanMigration() = nil, want migration")
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFirst := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseFirst()
+	originalOps := migrationOS
+	var once sync.Once
+	migrationOS.afterCanonicalCommit = func() {
+		once.Do(func() { close(entered) })
+		<-release
+	}
+	t.Cleanup(func() { migrationOS = originalOps })
+
+	applyResult := make(chan error, 1)
+	go func() { applyResult <- migration.Apply(func(Config) error { return nil }) }()
+	<-entered
+	_, planBusyErr := PlanMigration(paths)
+	applyBusyErr := migration.Apply(func(Config) error { return nil })
+	releaseFirst()
+	if err := <-applyResult; err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(planBusyErr, errMigrationBusy) {
+		t.Errorf("concurrent PlanMigration() error = %v, want busy", planBusyErr)
+	}
+	if !errors.Is(applyBusyErr, errMigrationBusy) {
+		t.Errorf("concurrent Apply() error = %v, want busy", applyBusyErr)
+	}
+
+	assertRegularFile(t, paths.Canonical, validTOML, 0o600)
+	assertSymlink(t, paths.Legacy, paths.Canonical)
+	marker, backup := transactionPaths(paths)
+	assertAbsent(t, marker)
+	assertAbsent(t, backup)
+}
+
+func TestQuarantinePreservesReplacementAfterOwnershipCheck(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	sentinel := "replacement after ownership check"
+	symlinkErr := errors.New("injected symlink failure")
+	originalOps := migrationOS
+	replaced := false
+	migrationOS.afterOwnershipCheck = func(path string) {
+		if path != paths.Canonical || replaced {
+			return
+		}
+		replaced = true
+		if err := os.Remove(path); err != nil {
+			panic(err)
+		}
+		if err := os.WriteFile(path, []byte(sentinel), 0o644); err != nil {
+			panic(err)
+		}
+	}
+	migrationOS.symlink = func(string, string) error { return symlinkErr }
+	t.Cleanup(func() { migrationOS = originalOps })
+
+	migration, err := PlanMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = migration.Apply(func(Config) error { return nil })
+	if !errors.Is(err, symlinkErr) || !strings.Contains(err.Error(), "quarantine") {
+		t.Fatalf("Apply() error = %v, want symlink and quarantine ownership errors", err)
+	}
+	assertRegularFile(t, paths.Canonical, sentinel, 0o644)
+	matches, err := filepath.Glob(paths.Canonical + ".oma-quarantine-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("quarantine matches = %v, want one preserved copy", matches)
+	}
+	assertRegularFile(t, matches[0], sentinel, 0o644)
+}
+
+func TestSymlinkQuarantineRestoresRegularReplacement(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "legacy-link")
+	target := filepath.Join(root, "canonical")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := "regular replacement for owned symlink"
+	originalOps := migrationOS
+	migrationOS.afterOwnershipCheck = func(checked string) {
+		if checked != path {
+			return
+		}
+		if err := os.Remove(path); err != nil {
+			panic(err)
+		}
+		if err := os.WriteFile(path, []byte(sentinel), 0o644); err != nil {
+			panic(err)
+		}
+	}
+	t.Cleanup(func() { migrationOS = originalOps })
+
+	err := removeOwnedSymlink(path, target, "test-token")
+	if err == nil || !strings.Contains(err.Error(), "quarantine") {
+		t.Fatalf("removeOwnedSymlink() error = %v, want quarantine conflict", err)
+	}
+	assertRegularFile(t, path, sentinel, 0o644)
+	quarantine := path + ".oma-quarantine-test-token"
+	assertRegularFile(t, quarantine, sentinel, 0o644)
+}
+
+func TestPlanMigrationRecoversEarlyTransactionInterruptions(t *testing.T) {
+	tests := []struct {
+		name     string
+		setCrash func(*migrationFileOps)
+	}{
+		{
+			name: "before marker",
+			setCrash: func(ops *migrationFileOps) {
+				ops.beforeMarker = func() { panic(simulatedCrash{}) }
+			},
+		},
+		{
+			name: "after marker established",
+			setCrash: func(ops *migrationFileOps) {
+				ops.afterMarkerEstablished = func() { panic(simulatedCrash{}) }
+			},
+		},
+		{
+			name: "after canonical link before staged cleanup",
+			setCrash: func(ops *migrationFileOps) {
+				ops.afterCanonicalLink = func() { panic(simulatedCrash{}) }
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testPaths(t)
+			writeFile(t, paths.Legacy, validTOML, 0o640)
+			migration, err := PlanMigration(paths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalOps := migrationOS
+			tt.setCrash(&migrationOS)
+			assertSimulatedCrash(t, func() {
+				_ = migration.Apply(func(Config) error { return nil })
+			})
+			migrationOS = originalOps
+			t.Cleanup(func() { migrationOS = originalOps })
+
+			if _, err := PlanMigration(paths); err != nil {
+				t.Fatal(err)
+			}
+			assertNoMatches(t, filepath.Join(filepath.Dir(paths.Canonical), ".config.toml.*"))
+			assertNoMatches(t, paths.Canonical+".oma-staged-*")
+			assertNoMatches(t, filepath.Join(filepath.Dir(paths.Legacy), ".oma-migration.*"))
+			marker, backup := transactionPaths(paths)
+			assertAbsent(t, marker)
+			assertAbsent(t, backup)
+			if _, err := os.Lstat(paths.Legacy); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func assertNoMatches(t *testing.T, pattern string) {
+	t.Helper()
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("matches for %s = %v, want none", pattern, matches)
 	}
 }
 

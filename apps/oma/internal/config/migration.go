@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,17 +18,23 @@ const (
 	migrationBackupSuffix = ".oma-migration-backup"
 )
 
+var errMigrationBusy = errors.New("configuration migration is busy")
+
 type Migration struct {
 	paths Paths
 }
 
 type migrationFileOps struct {
-	symlink               func(string, string) error
-	remove                func(string) error
-	beforeCanonicalCommit func(string) error
-	afterCanonicalCommit  func()
-	afterLegacyBackup     func()
-	afterSymlink          func()
+	symlink                func(string, string) error
+	remove                 func(string) error
+	beforeCanonicalCommit  func(string) error
+	afterCanonicalCommit   func()
+	afterLegacyBackup      func()
+	afterSymlink           func()
+	afterOwnershipCheck    func(string)
+	beforeMarker           func()
+	afterMarkerEstablished func()
+	afterCanonicalLink     func()
 }
 
 var migrationOS = migrationFileOps{
@@ -40,10 +49,12 @@ type fileIdentity struct {
 
 type transactionRecord struct {
 	Version     int          `json:"version"`
+	Token       string       `json:"token"`
 	Canonical   string       `json:"canonical"`
 	Legacy      string       `json:"legacy"`
 	CanonicalID fileIdentity `json:"canonical_identity"`
 	LegacyID    fileIdentity `json:"legacy_identity"`
+	Digest      string       `json:"config_sha256"`
 }
 
 type migrationTransaction struct {
@@ -55,6 +66,15 @@ type migrationTransaction struct {
 }
 
 func PlanMigration(paths Paths) (*Migration, error) {
+	lock, err := acquireMigrationLock(paths)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.release()
+	return planMigrationLocked(paths)
+}
+
+func planMigrationLocked(paths Paths) (*Migration, error) {
 	if err := recoverInterruptedMigration(paths); err != nil {
 		return nil, err
 	}
@@ -87,6 +107,15 @@ func PlanMigration(paths Paths) (*Migration, error) {
 }
 
 func (m Migration) Apply(validate func(Config) error) error {
+	lock, err := acquireMigrationLock(m.paths)
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	return m.applyLocked(validate)
+}
+
+func (m Migration) applyLocked(validate func(Config) error) error {
 	if err := recoverInterruptedMigration(m.paths); err != nil {
 		return err
 	}
@@ -120,28 +149,39 @@ func (m Migration) Apply(validate func(Config) error) error {
 		}
 	}
 
-	tmpPath, canonicalID, err := createCanonicalTemporary(m.paths.Canonical, data)
+	token, err := newTransactionToken()
 	if err != nil {
 		return err
 	}
-	tmpPresent := true
-	defer func() {
-		if tmpPresent {
-			_ = removeOwnedRegular(tmpPath, canonicalID)
-		}
-	}()
-
+	if migrationOS.beforeMarker != nil {
+		migrationOS.beforeMarker()
+	}
 	record := transactionRecord{
-		Version:     1,
-		Canonical:   m.paths.Canonical,
-		Legacy:      m.paths.Legacy,
-		CanonicalID: canonicalID,
-		LegacyID:    legacyID,
+		Version:   2,
+		Token:     token,
+		Canonical: m.paths.Canonical,
+		Legacy:    m.paths.Legacy,
+		LegacyID:  legacyID,
+		Digest:    fmt.Sprintf("%x", sha256.Sum256(data)),
 	}
 	markerID, err := createTransactionMarker(m.paths, record)
 	if err != nil {
 		return err
 	}
+	if migrationOS.afterMarkerEstablished != nil {
+		migrationOS.afterMarkerEstablished()
+	}
+	tmpPath, canonicalID, err := createCanonicalTemporary(m.paths.Canonical, data, token)
+	if err != nil {
+		return errors.Join(err, removeOwnedRegular(migrationMarkerPath(m.paths), markerID, token))
+	}
+	record.CanonicalID = canonicalID
+	tmpPresent := true
+	defer func() {
+		if tmpPresent {
+			_ = removeOwnedRegular(tmpPath, canonicalID, token)
+		}
+	}()
 	tx := migrationTransaction{paths: m.paths, record: record, markerID: markerID}
 	fail := func(primary error) error {
 		return errors.Join(primary, rollbackTransaction(tx))
@@ -159,7 +199,10 @@ func (m Migration) Apply(validate func(Config) error) error {
 	if err := syncDirectory(filepath.Dir(m.paths.Canonical)); err != nil {
 		return fail(fmt.Errorf("sync canonical configuration directory after commit: %w", err))
 	}
-	if err := removeOwnedRegular(tmpPath, canonicalID); err != nil {
+	if migrationOS.afterCanonicalLink != nil {
+		migrationOS.afterCanonicalLink()
+	}
+	if err := removeOwnedRegular(tmpPath, canonicalID, token); err != nil {
 		return fail(fmt.Errorf("remove canonical temporary file: %w", err))
 	}
 	tmpPresent = false
@@ -175,7 +218,7 @@ func (m Migration) Apply(validate func(Config) error) error {
 	if err := syncDirectory(filepath.Dir(backup)); err != nil {
 		return fail(fmt.Errorf("sync legacy directory after backup: %w", err))
 	}
-	if err := removeOwnedRegular(m.paths.Legacy, legacyID); err != nil {
+	if err := removeOwnedRegular(m.paths.Legacy, legacyID, token); err != nil {
 		return fail(fmt.Errorf("remove legacy configuration after backup: %w", err))
 	}
 	if migrationOS.afterLegacyBackup != nil {
@@ -192,16 +235,59 @@ func (m Migration) Apply(validate func(Config) error) error {
 		migrationOS.afterSymlink()
 	}
 
-	if err := removeOwnedRegular(backup, legacyID); err != nil {
+	if err := verifyFinalState(m.paths, canonicalID); err != nil {
+		return fmt.Errorf("verify final configuration before backup cleanup: %w", err)
+	}
+	if err := removeOwnedRegular(backup, legacyID, token); err != nil {
 		return fmt.Errorf("remove legacy backup: %w", err)
 	}
-	if err := removeOwnedRegular(migrationMarkerPath(m.paths), markerID); err != nil {
+	if err := removeOwnedRegular(migrationMarkerPath(m.paths), markerID, token); err != nil {
 		return fmt.Errorf("remove migration marker: %w", err)
 	}
 	return nil
 }
 
-func createCanonicalTemporary(path string, data []byte) (string, fileIdentity, error) {
+type migrationLock struct {
+	file *os.File
+}
+
+func acquireMigrationLock(paths Paths) (*migrationLock, error) {
+	parent := filepath.Dir(paths.Legacy)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return nil, fmt.Errorf("create migration lock directory: %w", err)
+	}
+	if err := os.Chmod(parent, 0o700); err != nil {
+		return nil, fmt.Errorf("protect migration lock directory: %w", err)
+	}
+	path := paths.Legacy + ".oma-migration.lock"
+	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open migration lock: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("protect migration lock: %w", err)
+	}
+	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, errMigrationBusy
+		}
+		return nil, fmt.Errorf("lock configuration migration: %w", err)
+	}
+	return &migrationLock{file: file}, nil
+}
+
+func (l *migrationLock) release() {
+	if l == nil || l.file == nil {
+		return
+	}
+	_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+	_ = l.file.Close()
+}
+
+func createCanonicalTemporary(path string, data []byte, token string) (string, fileIdentity, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fileIdentity{}, fmt.Errorf("create canonical configuration directory: %w", err)
@@ -209,11 +295,11 @@ func createCanonicalTemporary(path string, data []byte) (string, fileIdentity, e
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return "", fileIdentity{}, fmt.Errorf("protect canonical configuration directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".config.toml.*")
+	tmpPath := path + ".oma-staged-" + token
+	tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if err != nil {
 		return "", fileIdentity{}, fmt.Errorf("create canonical configuration temporary file: %w", err)
 	}
-	tmpPath := tmp.Name()
 	ok := false
 	defer func() {
 		if !ok {
@@ -251,46 +337,37 @@ func createTransactionMarker(paths Paths, record transactionRecord) (fileIdentit
 	if err != nil {
 		return fileIdentity{}, fmt.Errorf("encode migration marker: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(marker), ".oma-migration.*")
+	file, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if err != nil {
-		return fileIdentity{}, fmt.Errorf("create migration marker temporary file: %w", err)
+		return fileIdentity{}, fmt.Errorf("create migration marker without replacement: %w", err)
 	}
-	tmpPath := tmp.Name()
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
 		return fileIdentity{}, fmt.Errorf("protect migration marker: %w", err)
 	}
-	if _, err := tmp.Write(data); err != nil {
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
 		return fileIdentity{}, fmt.Errorf("write migration marker: %w", err)
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
 		return fileIdentity{}, fmt.Errorf("sync migration marker: %w", err)
 	}
-	info, err := tmp.Stat()
+	info, err := file.Stat()
 	if err != nil {
+		_ = file.Close()
 		return fileIdentity{}, fmt.Errorf("stat migration marker: %w", err)
 	}
 	id, err := identityOf(info)
 	if err != nil {
+		_ = file.Close()
 		return fileIdentity{}, fmt.Errorf("identify migration marker: %w", err)
 	}
-	if err := tmp.Close(); err != nil {
+	if err := file.Close(); err != nil {
 		return fileIdentity{}, fmt.Errorf("close migration marker: %w", err)
-	}
-	if err := os.Link(tmpPath, marker); err != nil {
-		return fileIdentity{}, fmt.Errorf("create migration marker without replacement: %w", err)
 	}
 	if err := syncDirectory(filepath.Dir(marker)); err != nil {
 		return fileIdentity{}, fmt.Errorf("sync legacy directory after marker creation: %w", err)
-	}
-	if err := os.Remove(tmpPath); err != nil {
-		return fileIdentity{}, fmt.Errorf("remove migration marker temporary file: %w", err)
-	}
-	if err := syncDirectory(filepath.Dir(marker)); err != nil {
-		return fileIdentity{}, fmt.Errorf("sync legacy directory after marker temporary cleanup: %w", err)
 	}
 	return id, nil
 }
@@ -309,8 +386,12 @@ func recoverInterruptedMigration(paths Paths) error {
 	if err != nil {
 		return err
 	}
-	if record.Version != 1 || record.Canonical != paths.Canonical || record.Legacy != paths.Legacy {
+	if record.Version != 2 || record.Token == "" || record.Canonical != paths.Canonical || record.Legacy != paths.Legacy {
 		return fmt.Errorf("migration marker does not belong to requested paths: %s", marker)
+	}
+	record, err = hydrateCanonicalIdentity(paths, record)
+	if err != nil {
+		return err
 	}
 
 	legacyInfo, legacyErr := os.Lstat(paths.Legacy)
@@ -325,10 +406,13 @@ func recoverInterruptedMigration(paths Paths) error {
 		if err := requireOwnedRegular(paths.Canonical, record.CanonicalID); err != nil {
 			return fmt.Errorf("recovery conflict: %w", err)
 		}
-		if err := removeOwnedRegularIfPresent(migrationBackupPath(paths), record.LegacyID); err != nil {
+		if err := verifyFinalState(paths, record.CanonicalID); err != nil {
+			return fmt.Errorf("recovery final-state verification: %w", err)
+		}
+		if err := removeOwnedRegularIfPresent(migrationBackupPath(paths), record.LegacyID, record.Token); err != nil {
 			return err
 		}
-		return removeOwnedRegular(marker, markerID)
+		return removeOwnedRegular(marker, markerID, record.Token)
 	}
 	if legacyErr == nil && legacyInfo.Mode().IsRegular() {
 		owned, err := hasIdentity(legacyInfo, record.LegacyID)
@@ -367,7 +451,7 @@ func rollbackTransaction(tx migrationTransaction) error {
 			rollbackErrors = append(rollbackErrors, fmt.Errorf("read legacy symlink during rollback: %w", err))
 		} else if target != tx.paths.Canonical {
 			rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback conflict: legacy symlink belongs to another process"))
-		} else if err := removeOwnedSymlink(tx.paths.Legacy, tx.paths.Canonical); err != nil {
+		} else if err := removeOwnedSymlink(tx.paths.Legacy, tx.paths.Canonical, tx.record.Token); err != nil {
 			rollbackErrors = append(rollbackErrors, err)
 		} else {
 			legacyErr = fs.ErrNotExist
@@ -398,16 +482,16 @@ func rollbackTransaction(tx migrationTransaction) error {
 		return errors.Join(rollbackErrors...)
 	}
 	if tx.backupCreated {
-		if err := removeOwnedRegularIfPresent(migrationBackupPath(tx.paths), tx.record.LegacyID); err != nil {
+		if err := removeOwnedRegularIfPresent(migrationBackupPath(tx.paths), tx.record.LegacyID, tx.record.Token); err != nil {
 			rollbackErrors = append(rollbackErrors, err)
 		}
 	}
 	if tx.canonicalCommitted {
-		if err := removeOwnedRegularIfPresent(tx.paths.Canonical, tx.record.CanonicalID); err != nil {
+		if err := removeOwnedRegularIfPresent(tx.paths.Canonical, tx.record.CanonicalID, tx.record.Token); err != nil {
 			rollbackErrors = append(rollbackErrors, err)
 		}
 	}
-	if err := removeOwnedRegularIfPresent(migrationMarkerPath(tx.paths), tx.markerID); err != nil {
+	if err := removeOwnedRegularIfPresent(migrationMarkerPath(tx.paths), tx.markerID, tx.record.Token); err != nil {
 		rollbackErrors = append(rollbackErrors, err)
 	}
 	return errors.Join(rollbackErrors...)
@@ -415,13 +499,20 @@ func rollbackTransaction(tx migrationTransaction) error {
 
 func finishRollback(paths Paths, record transactionRecord, markerID fileIdentity) error {
 	var rollbackErrors []error
-	if err := removeOwnedRegularIfPresent(migrationBackupPath(paths), record.LegacyID); err != nil {
+	if record.CanonicalID != (fileIdentity{}) {
+		if err := removeOwnedRegularIfPresent(canonicalStagedPath(paths, record.Token), record.CanonicalID, record.Token); err != nil {
+			rollbackErrors = append(rollbackErrors, err)
+		}
+	}
+	if err := removeOwnedRegularIfPresent(migrationBackupPath(paths), record.LegacyID, record.Token); err != nil {
 		rollbackErrors = append(rollbackErrors, err)
 	}
-	if err := removeOwnedRegularIfPresent(paths.Canonical, record.CanonicalID); err != nil {
-		rollbackErrors = append(rollbackErrors, err)
+	if record.CanonicalID != (fileIdentity{}) {
+		if err := removeOwnedRegularIfPresent(paths.Canonical, record.CanonicalID, record.Token); err != nil {
+			rollbackErrors = append(rollbackErrors, err)
+		}
 	}
-	if err := removeOwnedRegularIfPresent(migrationMarkerPath(paths), markerID); err != nil {
+	if err := removeOwnedRegularIfPresent(migrationMarkerPath(paths), markerID, record.Token); err != nil {
 		rollbackErrors = append(rollbackErrors, err)
 	}
 	return errors.Join(rollbackErrors...)
@@ -437,25 +528,44 @@ func linkOwnedNoReplace(source, destination string, expected fileIdentity) error
 	return syncDirectory(filepath.Dir(destination))
 }
 
-func removeOwnedRegularIfPresent(path string, expected fileIdentity) error {
+func removeOwnedRegularIfPresent(path string, expected fileIdentity, token string) error {
 	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return err
 	}
-	return removeOwnedRegular(path, expected)
+	return removeOwnedRegular(path, expected, token)
 }
 
-func removeOwnedRegular(path string, expected fileIdentity) error {
+func removeOwnedRegular(path string, expected fileIdentity, token string) error {
 	if err := requireOwnedRegular(path, expected); err != nil {
 		return err
 	}
-	removeErr := migrationOS.remove(path)
-	syncErr := syncDirectory(filepath.Dir(path))
+	if migrationOS.afterOwnershipCheck != nil {
+		migrationOS.afterOwnershipCheck(path)
+	}
+	quarantine := path + ".oma-quarantine-" + token
+	if _, err := os.Lstat(quarantine); err == nil {
+		return fmt.Errorf("quarantine conflict: %s already exists", quarantine)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(path, quarantine); err != nil {
+		return fmt.Errorf("move regular file to quarantine: %w", err)
+	}
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return err
+	}
+	if err := requireOwnedRegular(quarantine, expected); err != nil {
+		restoreErr := restoreQuarantinedRegular(quarantine, path)
+		return errors.Join(fmt.Errorf("quarantine identity conflict: %w", err), restoreErr)
+	}
+	removeErr := migrationOS.remove(quarantine)
+	syncErr := syncDirectory(filepath.Dir(quarantine))
 	return errors.Join(removeErr, syncErr)
 }
 
-func removeOwnedSymlink(path, expectedTarget string) error {
+func removeOwnedSymlink(path, expectedTarget, token string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
@@ -470,9 +580,113 @@ func removeOwnedSymlink(path, expectedTarget string) error {
 	if target != expectedTarget {
 		return fmt.Errorf("refuse to remove symlink with unexpected target %s", target)
 	}
-	removeErr := migrationOS.remove(path)
-	syncErr := syncDirectory(filepath.Dir(path))
+	if migrationOS.afterOwnershipCheck != nil {
+		migrationOS.afterOwnershipCheck(path)
+	}
+	quarantine := path + ".oma-quarantine-" + token
+	if err := os.Rename(path, quarantine); err != nil {
+		return fmt.Errorf("move symlink to quarantine: %w", err)
+	}
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return err
+	}
+	actualTarget, err := os.Readlink(quarantine)
+	if err != nil || actualTarget != expectedTarget {
+		restoreErr := restoreQuarantinedObject(quarantine, path)
+		return errors.Join(fmt.Errorf("quarantine symlink target conflict: got %q: %w", actualTarget, err), restoreErr)
+	}
+	removeErr := migrationOS.remove(quarantine)
+	syncErr := syncDirectory(filepath.Dir(quarantine))
 	return errors.Join(removeErr, syncErr)
+}
+
+func restoreQuarantinedRegular(quarantine, destination string) error {
+	if err := os.Link(quarantine, destination); err != nil {
+		return fmt.Errorf("restore quarantined regular file without replacement: %w", err)
+	}
+	return syncDirectory(filepath.Dir(destination))
+}
+
+func restoreQuarantinedObject(quarantine, destination string) error {
+	info, err := os.Lstat(quarantine)
+	if err != nil {
+		return err
+	}
+	if info.Mode().IsRegular() {
+		return restoreQuarantinedRegular(quarantine, destination)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("quarantined replacement has unsupported type: %s", info.Mode())
+	}
+	target, err := os.Readlink(quarantine)
+	if err != nil {
+		return err
+	}
+	if err := os.Symlink(target, destination); err != nil {
+		return fmt.Errorf("restore quarantined symlink without replacement: %w", err)
+	}
+	return syncDirectory(filepath.Dir(destination))
+}
+
+func verifyFinalState(paths Paths, canonicalID fileIdentity) error {
+	if err := requireOwnedRegular(paths.Canonical, canonicalID); err != nil {
+		return err
+	}
+	info, err := os.Lstat(paths.Legacy)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("legacy path is not a symlink")
+	}
+	target, err := os.Readlink(paths.Legacy)
+	if err != nil {
+		return err
+	}
+	if target != paths.Canonical {
+		return fmt.Errorf("legacy symlink target is %s", target)
+	}
+	return nil
+}
+
+func hydrateCanonicalIdentity(paths Paths, record transactionRecord) (transactionRecord, error) {
+	if record.CanonicalID != (fileIdentity{}) {
+		return record, nil
+	}
+	for _, path := range []string{canonicalStagedPath(paths, record.Token), paths.Canonical} {
+		info, err := os.Lstat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return record, err
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			return record, fmt.Errorf("recovery conflict: staged canonical has unexpected type or mode")
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return record, err
+		}
+		if fmt.Sprintf("%x", sha256.Sum256(data)) != record.Digest {
+			return record, fmt.Errorf("recovery conflict: staged canonical digest does not match marker")
+		}
+		record.CanonicalID, err = identityOf(info)
+		return record, err
+	}
+	return record, nil
+}
+
+func canonicalStagedPath(paths Paths, token string) string {
+	return paths.Canonical + ".oma-staged-" + token
+}
+
+func newTransactionToken() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate migration transaction token: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
 }
 
 func requireOwnedRegular(path string, expected fileIdentity) error {
