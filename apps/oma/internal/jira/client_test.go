@@ -400,6 +400,93 @@ func TestClientRejectsSemanticallyInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestClientRejectsSemanticallyInvalidIssueFields(t *testing.T) {
+	validStatus := `{"id":"1","name":"Open","statusCategory":{"key":"new"}}`
+	tests := []struct {
+		name   string
+		fields string
+	}{
+		{name: "null summary", fields: `"summary":null,"status":` + validStatus},
+		{name: "empty summary", fields: `"summary":"","status":` + validStatus},
+		{name: "whitespace summary", fields: `"summary":"  \t ","status":` + validStatus},
+		{name: "empty assignee object", fields: `"summary":"summary","status":` + validStatus + `,"assignee":{}`},
+		{name: "assignee missing account ID", fields: `"summary":"summary","status":` + validStatus + `,"assignee":{"displayName":"Assigned User"}`},
+		{name: "assignee whitespace account ID", fields: `"summary":"summary","status":` + validStatus + `,"assignee":{"accountId":"   "}`},
+		{name: "empty description object", fields: `"summary":"summary","status":` + validStatus + `,"description":{}`},
+		{name: "wrong description root", fields: `"summary":"summary","status":` + validStatus + `,"description":{"type":"paragraph","version":1,"content":[]}`},
+		{name: "unsupported description version", fields: `"summary":"summary","status":` + validStatus + `,"description":{"type":"doc","version":2,"content":[]}`},
+		{name: "missing description content", fields: `"summary":"summary","status":` + validStatus + `,"description":{"type":"doc","version":1}`},
+		{name: "null description content", fields: `"summary":"summary","status":` + validStatus + `,"description":{"type":"doc","version":1,"content":null}`},
+		{name: "malformed description content", fields: `"summary":"summary","status":` + validStatus + `,"description":{"type":"doc","version":1,"content":[1]}`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := `{"key":"OMA-42","fields":{` + test.fields + `}}`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, body)
+			}))
+			defer server.Close()
+			client := newTestClient(t, server.URL, server.Client())
+			_, _, err := client.FetchIssue(context.Background(), "OMA-42")
+			assertSafeError(t, err, body)
+		})
+	}
+}
+
+func TestClientAllowsNullDescriptionAndUnassignedOrIdentifiedAssignee(t *testing.T) {
+	for _, assignee := range []string{`null`, `{"accountId":"acct-1"}`} {
+		t.Run(assignee, func(t *testing.T) {
+			body := `{"key":"OMA-42","fields":{"summary":"summary","status":{"id":"1","name":"Open","statusCategory":{"key":"new"}},"description":null,"assignee":` + assignee + `}}`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, body)
+			}))
+			defer server.Close()
+			client := newTestClient(t, server.URL, server.Client())
+			issue, _, err := client.FetchIssue(context.Background(), "OMA-42")
+			if err != nil {
+				t.Fatalf("FetchIssue: %v", err)
+			}
+			if issue.DescriptionText != "" {
+				t.Fatalf("description = %q, want empty", issue.DescriptionText)
+			}
+			if assignee == `null` && issue.Assignee != nil {
+				t.Fatalf("null assignee = %#v", issue.Assignee)
+			}
+			if assignee != `null` && (issue.Assignee == nil || issue.Assignee.AccountID != "acct-1") {
+				t.Fatalf("identified assignee = %#v", issue.Assignee)
+			}
+		})
+	}
+}
+
+func TestClientRendersADFBlockAndInlineDisplayText(t *testing.T) {
+	description := `{"type":"doc","version":1,"content":[` +
+		`{"type":"paragraph","content":[{"type":"text","text":"Hello "},{"type":"mention","attrs":{"text":"@Agent"}},{"type":"emoji","attrs":{"shortName":":wave:"}}]},` +
+		`{"type":"codeBlock","content":[{"type":"text","text":"code()"}]},` +
+		`{"type":"unknownWrapper","content":[{"type":"mention","text":"@Fallback"}]},` +
+		`{"type":"paragraph","content":[{"type":"text","text":"Done"}]}` +
+		`]}`
+	body := `{"key":"OMA-42","fields":{"summary":"summary","status":{"id":"1","name":"Open","statusCategory":{"key":"new"}},"description":` + description + `}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL, server.Client())
+	issue, _, err := client.FetchIssue(context.Background(), "OMA-42")
+	if err != nil {
+		t.Fatalf("FetchIssue: %v", err)
+	}
+	want := "Hello @Agent:wave:\ncode()\n@FallbackDone"
+	if issue.DescriptionText != want {
+		t.Fatalf("description = %q, want %q", issue.DescriptionText, want)
+	}
+}
+
 func TestCredentialsFromNetrcRejectsMalformedWithoutPanic(t *testing.T) {
 	for _, content := range []string{
 		"machine",

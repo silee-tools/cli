@@ -100,21 +100,30 @@ func (c *Client) FetchIssue(ctx context.Context, key string) (Issue, []byte, err
 	if err := decodeField(response.Fields, "summary", &issue.Summary); err != nil {
 		return Issue{}, nil, err
 	}
+	if strings.TrimSpace(issue.Summary) == "" {
+		return Issue{}, nil, errors.New("decode Jira field summary: value is empty")
+	}
 	if err := decodeField(response.Fields, "status", &issue.Status); err != nil {
 		return Issue{}, nil, err
 	}
 	if err := validateStatus(issue.Status, "issue status"); err != nil {
 		return Issue{}, nil, err
 	}
-	if assignee, ok := response.Fields["assignee"]; ok && string(assignee) != "null" {
+	if assignee, ok := response.Fields["assignee"]; ok && !isJSONNull(assignee) {
 		if err := json.Unmarshal(assignee, &issue.Assignee); err != nil {
 			return Issue{}, nil, boundedError("decode Jira field assignee", err)
 		}
+		if issue.Assignee == nil || strings.TrimSpace(issue.Assignee.AccountID) == "" {
+			return Issue{}, nil, errors.New("decode Jira field assignee: accountId missing")
+		}
 	}
-	if description, ok := response.Fields["description"]; ok && string(description) != "null" {
+	if description, ok := response.Fields["description"]; ok && !isJSONNull(description) {
 		var document adfNode
 		if err := json.Unmarshal(description, &document); err != nil {
 			return Issue{}, nil, boundedError("decode Jira field description", err)
+		}
+		if document.Type != "doc" || document.Version != 1 || document.Content == nil {
+			return Issue{}, nil, errors.New("decode Jira field description: invalid ADF document root")
 		}
 		issue.DescriptionText = strings.TrimRight(renderADF(document), "\n")
 	}
@@ -255,6 +264,10 @@ func decodeField(fields map[string]json.RawMessage, name string, destination any
 	return nil
 }
 
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
 func validateStatus(status Status, context string) error {
 	if status.ID == "" || status.Name == "" || status.CategoryKey == "" {
 		return fmt.Errorf("decode Jira %s: id, name, or status category missing", context)
@@ -280,26 +293,50 @@ func (status *Status) UnmarshalJSON(raw []byte) error {
 }
 
 type adfNode struct {
-	Type    string    `json:"type"`
-	Text    string    `json:"text"`
+	Type    string `json:"type"`
+	Version int    `json:"version"`
+	Text    string `json:"text"`
+	Attrs   struct {
+		Text      string `json:"text"`
+		ShortName string `json:"shortName"`
+	} `json:"attrs"`
 	Content []adfNode `json:"content"`
 }
 
 func renderADF(node adfNode) string {
-	if node.Type == "text" {
+	switch node.Type {
+	case "text":
 		return node.Text
-	}
-	if node.Type == "hardBreak" {
+	case "mention", "emoji":
+		if node.Text != "" {
+			return node.Text
+		}
+		if node.Attrs.Text != "" {
+			return node.Attrs.Text
+		}
+		if node.Attrs.ShortName != "" {
+			return node.Attrs.ShortName
+		}
+	case "hardBreak":
 		return "\n"
 	}
 	var builder strings.Builder
 	for _, child := range node.Content {
 		builder.WriteString(renderADF(child))
 	}
-	if node.Type == "paragraph" || node.Type == "heading" {
+	if isADFBlock(node.Type) && builder.Len() > 0 && !strings.HasSuffix(builder.String(), "\n") {
 		builder.WriteByte('\n')
 	}
 	return builder.String()
+}
+
+func isADFBlock(nodeType string) bool {
+	switch nodeType {
+	case "paragraph", "heading", "codeBlock", "blockquote", "listItem":
+		return true
+	default:
+		return false
+	}
 }
 
 func boundedError(operation string, err error) error {
