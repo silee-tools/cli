@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,6 +94,97 @@ func TestRunShowsPrepHelp(t *testing.T) {
 	}
 	if got := stdout.String(); !strings.Contains(got, "Usage: oma prep") {
 		t.Fatalf("stdout = %q, want prep usage", got)
+	}
+}
+
+func TestRunHiddenProductTypeCompletionUsesTOMLParserAndNoWorkflow(t *testing.T) {
+	configHome := t.TempDir()
+	configPath := filepath.Join(configHome, "oma", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := `jira_base_url = "https://jira.example.com"
+product_type_options = { "quoted key" = "Quoted", feature = "Feature", "한글" = "Korean" }
+`
+	if err := os.WriteFile(configPath, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	workflow := &fakeWorkflow{}
+	var stdout bytes.Buffer
+	if err := run([]string{"__complete", "product-types"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, dependencies{Workflow: workflow}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "feature\x00quoted key\x00한글\x00"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if len(workflow.inputs) != 0 || len(workflow.applyTokens) != 0 {
+		t.Fatalf("hidden completion touched workflow: %+v", workflow)
+	}
+}
+
+func TestRunHiddenProductTypeCompletionRejectsInvalidTOML(t *testing.T) {
+	configHome := t.TempDir()
+	configPath := filepath.Join(configHome, "oma", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("product_type_options = { invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	var stdout bytes.Buffer
+	err := run([]string{"__complete", "product-types"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, dependencies{})
+	if err == nil || !strings.Contains(fmt.Sprint(err), "configuration") || stdout.Len() != 0 {
+		t.Fatalf("error = %v, stdout = %q", err, stdout.String())
+	}
+}
+
+func TestRunHiddenProductTypeCompletionRejectsEmptyProtocolKey(t *testing.T) {
+	configHome := t.TempDir()
+	configPath := filepath.Join(configHome, "oma", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("product_type_options = { \"\" = \"Empty\" }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	var stdout bytes.Buffer
+	err := run([]string{"__complete", "product-types"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, dependencies{})
+	if err == nil || !strings.Contains(err.Error(), "invalid completion key") || stdout.Len() != 0 {
+		t.Fatalf("error = %v, stdout = %q", err, stdout.String())
+	}
+}
+
+func TestRunHiddenProductTypeCompletionMissingConfigIsEmpty(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stdout bytes.Buffer
+	if err := run([]string{"__complete", "product-types"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, dependencies{}); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestRunHiddenProductTypeCompletionUsesHomeLegacyFallback(t *testing.T) {
+	home := t.TempDir()
+	legacyPath := filepath.Join(home, ".config", "prep-task", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("product_type_options = { maintenance = \"Maintenance\" }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	var stdout bytes.Buffer
+	if err := run([]string{"__complete", "product-types"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, dependencies{}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "maintenance\x00"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 }
 

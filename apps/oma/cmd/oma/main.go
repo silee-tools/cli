@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -176,6 +179,9 @@ func versionLine(name, version string) string {
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer, deps dependencies) error {
+	if len(args) == 2 && args[0] == "__complete" && args[1] == "product-types" {
+		return writeProductTypeCompletions(stdout)
+	}
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
 		_, err := fmt.Fprint(stdout, rootHelp)
 		return err
@@ -201,6 +207,31 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, deps dependen
 		return executePrep(context.Background(), parsed, stdout, stderr, deps)
 	}
 	return fmt.Errorf("oma: 지원하지 않는 인자입니다")
+}
+
+func writeProductTypeCompletions(stdout io.Writer) error {
+	paths := config.ResolvePaths(os.Getenv, "")
+	cfg, _, err := config.Load(paths)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("oma __complete product-types: load configuration: %w", err)
+	}
+	keys := make([]string, 0, len(cfg.ProductTypeOptions))
+	for key := range cfg.ProductTypeOptions {
+		if key == "" || strings.ContainsRune(key, '\x00') {
+			return fmt.Errorf("oma __complete product-types: configuration contains an invalid completion key")
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if _, err := io.WriteString(stdout, key+"\x00"); err != nil {
+			return fmt.Errorf("oma __complete product-types: write candidate: %w", err)
+		}
+	}
+	return nil
 }
 
 type gitCandidates struct {

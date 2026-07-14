@@ -71,6 +71,8 @@ oma prep --plan "$token" --yes --json
 
 계획 token은 30분 동안 유효하며 한 번만 적용할 수 있다. 적용 전에 저장소, 기준 SHA, 브랜치, worktree, submodule, 셋업 스크립트, Jira 상태를 다시 확인한다. 상태가 달라졌거나 token이 만료됐으면 외부 변경을 시작하지 않고 현재 상태의 새 계획과 token을 반환한다.
 
+Jira가 Product type이나 전환 선택을 더 요구하면 JSON의 `required_inputs`에 후보를 반환하고 `plan_token`은 발급하지 않는다. 필요한 `--product-type` 또는 `--transition-id`를 추가해 `--dry-run`을 다시 실행해야 한다. 상태 변경이나 만료로 새 token이 반환된 경우에도 이전 승인은 이어받지 않으므로 새 계획을 확인한 뒤 다시 적용한다.
+
 `--dry-run`은 worktree, 브랜치, 원격 브랜치와 Jira 필드를 바꾸지 않지만 최신 계획을 만들기 위한 로컬 운영 상태는 갱신한다. 원격이 있으면 `git fetch origin`을 실행하고, Jira 입력이면 이슈를 조회해 스냅샷을 교체하며, 승인 대기 계획 파일을 만든다. `--json`은 출력 형식만 바꾸며 승인을 뜻하지 않는다.
 
 ## 적용 순서와 재실행

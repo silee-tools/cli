@@ -69,6 +69,8 @@ git -C "$repo" worktree add -qb feature/space "$work/tree with space"
 newline_worktree="$work/tree
 newline"
 git -C "$repo" worktree add -qb feature/newline "$newline_worktree"
+mkdir -p "$repo/nested/repository/path"
+nested_repo="$repo/nested/repository/path"
 space_worktree="$(cd "$work/tree with space" && pwd -P)"
 newline_worktree="$(cd "$newline_worktree" && pwd -P)"
 cat >"$repo/.gitmodules" <<'EOF'
@@ -86,10 +88,39 @@ config_home="$work/config"
 mkdir -p "$config_home/oma"
 cat >"$config_home/oma/config.toml" <<'EOF'
 jira_base_url = "https://jira.example.com"
-[product_type_options]
-zeta = "Zeta"
-alpha = "Alpha"
+product_type_options = { zeta = "Zeta", alpha = "Alpha", "10" = "Ten", "2" = "Two", "quoted key" = "Quoted", "한글" = "Korean" }
 EOF
+
+real_git="$(command -v git)"
+fake_bin="$work/fake-bin"
+mkdir -p "$fake_bin"
+go build -o "$fake_bin/oma-real" ./cmd/oma
+cat >"$fake_bin/oma" <<'EOF'
+#!/bin/sh
+set -eu
+if [ "$#" -eq 2 ] && [ "$1" = "__complete" ] && [ "$2" = "product-types" ]; then
+  exec "$(dirname "$0")/oma-real" "$@"
+fi
+echo "completion called disallowed oma command" >&2
+exit 97
+EOF
+cat >"$fake_bin/git" <<'EOF'
+#!/bin/sh
+set -eu
+[ "$#" -ge 3 ] && [ "$1" = "-C" ] || { echo "completion called git without -C" >&2; exit 97; }
+repo=$2
+shift 2
+case "$1" in
+  rev-parse) [ "${2-}" = "--show-toplevel" ] && [ "$#" -eq 2 ] || exit 97 ;;
+  for-each-ref) ;;
+  worktree) [ "${2-}" = "list" ] || exit 97 ;;
+  config) ;;
+  *) echo "completion called disallowed git command: $1" >&2; exit 97 ;;
+esac
+exec "$COMPLETION_REAL_GIT" -C "$repo" "$@"
+EOF
+chmod +x "$fake_bin/oma" "$fake_bin/git"
+completion_path="$fake_bin:$PATH"
 
 run_candidates() {
   shell_name="$1"
@@ -98,10 +129,10 @@ run_candidates() {
   target_repo="$4"
   case "$shell_name" in
     bash)
-      XDG_CONFIG_HOME="$config_home" bash -c '. "$1"; _oma_candidates "$2" "$3"' _ completions/oma.bash "$kind" "$target_repo" >"$output"
+      PATH="$completion_path" COMPLETION_REAL_GIT="$real_git" XDG_CONFIG_HOME="$config_home" bash -c '. "$1"; _oma_candidates "$2" "$3"' _ completions/oma.bash "$kind" "$target_repo" >"$output"
       ;;
     zsh)
-      XDG_CONFIG_HOME="$config_home" zsh -fc 'compdef() { :; }; _arguments() { return 0; }; source "$1"; _oma_candidates "$2" "$3"' _ completions/_oma "$kind" "$target_repo" >"$output"
+      PATH="$completion_path" COMPLETION_REAL_GIT="$real_git" XDG_CONFIG_HOME="$config_home" zsh -fc 'compdef() { :; }; _arguments() { return 0; }; source "$1"; _oma_candidates "$2" "$3"' _ completions/_oma "$kind" "$target_repo" >"$output"
       ;;
   esac
 }
@@ -109,7 +140,7 @@ run_candidates() {
 assert_candidate() {
   file="$1"
   expected="$2"
-  bash -c '
+  LC_ALL=C bash -c '
     found=0
     while IFS= read -r -d "" candidate; do
       if [[ "$candidate" == "$2" ]]; then found=1; fi
@@ -120,7 +151,7 @@ assert_candidate() {
 
 assert_sorted_unique() {
   file="$1"
-  bash -c '
+  LC_ALL=C bash -c '
     first=1
     previous=
     while IFS= read -r -d "" candidate; do
@@ -132,6 +163,24 @@ assert_sorted_unique() {
       previous="$candidate"
     done <"$1"
   ' _ "$file"
+}
+
+assert_candidate_sequence() {
+  file="$1"
+  shift
+  LC_ALL=C bash -c '
+    file=$1
+    shift
+    index=1
+    while IFS= read -r -d "" candidate; do
+      [[ "$index" -le "$#" && "$candidate" == "${!index}" ]] || {
+        printf "unexpected candidate at %d: %q\n" "$index" "$candidate" >&2
+        exit 1
+      }
+      index=$((index + 1))
+    done <"$file"
+    [[ "$index" -eq $(($# + 1)) ]]
+  ' _ "$file" "$@"
 }
 
 for shell_name in bash zsh; do
@@ -154,9 +203,21 @@ for shell_name in bash zsh; do
   assert_candidate "$work/$shell_name-submodule" 'modules/$(touch-pwned)'
   assert_candidate "$work/$shell_name-branch-type" feature
   assert_candidate "$work/$shell_name-product-type" alpha
+  assert_candidate "$work/$shell_name-product-type" "quoted key"
+  assert_candidate "$work/$shell_name-product-type" "한글"
 done
 
-if XDG_CONFIG_HOME="$work/missing-config" bash -c '. "$1"; _oma_candidates product-type "$2"' _ completions/oma.bash "$repo" >"$work/missing-product"; then
+for shell_name in bash zsh; do
+  assert_candidate_sequence "$work/$shell_name-product-type" 10 2 alpha "quoted key" zeta "한글"
+done
+
+for shell_name in bash zsh; do
+  output="$work/$shell_name-submodule-nested"
+  run_candidates "$shell_name" submodule "$output" "$nested_repo"
+  assert_candidate "$output" "modules/with space"
+done
+
+if PATH="$completion_path" XDG_CONFIG_HOME="$work/missing-config" bash -c '. "$1"; _oma_candidates product-type "$2"' _ completions/oma.bash "$repo" >"$work/missing-product"; then
   test ! -s "$work/missing-product"
 else
   echo "completion assertion failed: a missing optional config must be an empty successful result" >&2
@@ -164,7 +225,7 @@ else
 fi
 
 set +e
-bash -c '. "$1"; _oma_candidates base "$2"' _ completions/oma.bash "$work/not-a-repo" >"$work/non-repo" 2>/dev/null
+PATH="$completion_path" COMPLETION_REAL_GIT="$real_git" bash -c '. "$1"; _oma_candidates base "$2"' _ completions/oma.bash "$work/not-a-repo" >"$work/non-repo" 2>/dev/null
 candidate_status=$?
 set -e
 if [ "$candidate_status" -ne 2 ]; then
@@ -177,18 +238,83 @@ if ! LC_ALL=en_US.UTF-8 bash -c '. "$1"; _oma_candidates branch-type . >/dev/nul
   exit 1
 fi
 
-if ! bash -uc '. "$1"; _oma_candidates base "$2" >/dev/null; COMP_WORDS=(oma prep --base ""); COMP_CWORD=3; _oma' _ completions/oma.bash "$repo"; then
+if ! LC_ALL=en_US.UTF-8 zsh -fc 'compdef() { :; }; _arguments() { return 0; }; source "$1"; _oma_candidates branch-type . >/dev/null; [[ "$LC_ALL" == en_US.UTF-8 ]]' _ completions/_oma; then
+  echo "completion assertion failed: Zsh candidate lookup must preserve the caller locale" >&2
+  exit 1
+fi
+
+if ! PATH="$completion_path" COMPLETION_REAL_GIT="$real_git" bash -uc '. "$1"; _oma_candidates base "$2" >/dev/null; COMP_WORDS=(oma prep --base ""); COMP_CWORD=3; _oma' _ completions/oma.bash "$repo"; then
   echo "completion assertion failed: Bash candidate lookup must tolerate nounset" >&2
   exit 1
 fi
 
-if ! bash -c '. "$1"; COMP_WORDS=(oma prep --repo "$2" --base ""); COMP_CWORD=5; [[ "$(_oma_repo_from_words)" == "$2" ]]; _oma' _ completions/oma.bash "$repo"; then
+if ! PATH="$completion_path" COMPLETION_REAL_GIT="$real_git" bash -c '. "$1"; COMP_WORDS=(oma prep --repo "$2" --base ""); COMP_CWORD=5; [[ "$(_oma_repo_from_words)" == "$2" ]]; _oma' _ completions/oma.bash "$repo"; then
   echo "completion assertion failed: Bash completion must tolerate repository paths with spaces" >&2
   exit 1
 fi
 
 if ! bash -c '. "$1"; COMP_WORDS=(oma prep --repo "$2"); COMP_CWORD=3; _oma; [[ "${COMPREPLY[0]-}" == "$2" && -z "${COMPREPLY[1]-}" ]]' _ completions/oma.bash "$repo"; then
   echo "completion assertion failed: Bash directory completion must preserve spaces" >&2
+  exit 1
+fi
+
+if ! PATH="$completion_path" COMPLETION_REAL_GIT="$real_git" bash -c '. "$1"; COMP_WORDS=(oma prep --repo "$2" "--base=hot"); COMP_CWORD=4; _oma; [[ "${COMPREPLY[*]}" == "--base=hotfix/urgent" ]]' _ completions/oma.bash "$repo"; then
+  echo "completion assertion failed: Bash must complete --flag=value dynamic values" >&2
+  exit 1
+fi
+
+if ! PATH="$completion_path" COMPLETION_REAL_GIT="$real_git" bash -c '. "$1"; COMP_WORDS=(oma prep --repo "$2" --base "change/"); COMP_CWORD=5; _oma; [[ "${COMPREPLY[0]-}" == "$3" ]]' _ completions/oma.bash "$repo" 'change/$(touch-pwned)'; then
+  echo "completion assertion failed: Bash must preserve literal command-like candidates" >&2
+  exit 1
+fi
+
+newline_directory="$work/directory
+with newline"
+mkdir -p "$newline_directory"
+if ! bash -c '. "$1"; COMP_WORDS=(oma prep --repo "$2"); COMP_CWORD=3; _oma; [[ "${COMPREPLY[0]-}" == "$2" ]]' _ completions/oma.bash "$newline_directory"; then
+  echo "completion assertion failed: Bash directory completion must preserve newlines" >&2
+  exit 1
+fi
+
+if ! PATH="$completion_path" COMPLETION_REAL_GIT="$real_git" XDG_CONFIG_HOME="$config_home" zsh -fc '
+  compdef() { :; }
+  _arguments() { return 0; }
+  source "$1"
+  typeset -ga captured
+  compadd() {
+    [[ "$1" != -Q ]] || return 97
+    [[ "$1" == -- ]] || return 97
+    captured+=("$2")
+  }
+  words=(oma prep --product-type "")
+  CURRENT=4
+  _oma_values product-type
+  (( ${captured[(Ie)quoted key]} ))
+  (( ${captured[(Ie)한글]} ))
+  captured=()
+  words=(oma prep --repo "$2" --base "")
+  CURRENT=6
+  _oma_values base
+  (( ${captured[(Ie)$3]} ))
+' _ completions/_oma "$repo" 'change/$(touch-pwned)'; then
+  echo "completion assertion failed: Zsh must delegate literal candidates to standard compadd quoting" >&2
+  exit 1
+fi
+
+cat >"$config_home/oma/config.toml" <<'EOF'
+product_type_options = { invalid
+EOF
+set +e
+PATH="$completion_path" XDG_CONFIG_HOME="$config_home" bash -c '. "$1"; _oma_candidates product-type "$2"' _ completions/oma.bash "$repo" >"$work/invalid-product" 2>"$work/invalid-product-error"
+invalid_status=$?
+set -e
+if [ "$invalid_status" -ne 2 ] || [ -s "$work/invalid-product" ] || [ -s "$work/invalid-product-error" ]; then
+  echo "completion assertion failed: invalid TOML must be a silent status-2 lookup failure" >&2
+  exit 1
+fi
+
+if PATH="$completion_path" "$fake_bin/oma-real" --help | grep -Fq __complete; then
+  echo "completion assertion failed: hidden completion command appeared in help" >&2
   exit 1
 fi
 

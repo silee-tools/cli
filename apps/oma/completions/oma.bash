@@ -1,38 +1,17 @@
 _oma_raw_candidates() {
   local kind="${1-}" repo="${2-}" output="${3-}"
-  local records="${output}.records" line value path config_root
+  local records="${output}.records" line value repo_root
 
   case "$kind" in
     branch-type)
       printf '%s\0' change chore feature fix hotfix release >"$output"
       ;;
     product-type)
-      config_root="${XDG_CONFIG_HOME:-${HOME:-}/.config}"
-      path="$config_root/oma/config.toml"
-      if [[ ! -e "$path" ]]; then
-        path="$config_root/prep-task/config.toml"
-      fi
-      if [[ ! -e "$path" ]]; then
-        : >"$output"
-        return 0
-      fi
-      if [[ ! -r "$path" ]]; then
-        return 2
-      fi
-      awk '
-        /^\[product_type_options\][[:space:]]*$/ { inside = 1; next }
-        /^\[/ { inside = 0 }
-        inside && match($0, /^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=/) {
-          key = substr($0, RSTART, RLENGTH)
-          sub(/^[[:space:]]*/, "", key)
-          sub(/[[:space:]]*=.*/, "", key)
-          printf "%s%c", key, 0
-        }
-      ' "$path" >"$output" || return 2
+      oma __complete product-types >"$output" 2>/dev/null || return 2
       ;;
     base)
-      git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 2
-      git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads refs/remotes/origin >"$records" 2>/dev/null || return 2
+      repo_root="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" || return 2
+      git -C "$repo_root" for-each-ref --format='%(refname:short)' -- refs/heads refs/remotes/origin >"$records" 2>/dev/null || return 2
       : >"$output"
       while IFS= read -r line || [[ -n "$line" ]]; do
         [[ -n "$line" ]] && printf '%s\0' "$line" >>"$output"
@@ -40,8 +19,8 @@ _oma_raw_candidates() {
       rm -f "$records"
       ;;
     worktree)
-      git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 2
-      git -C "$repo" worktree list --porcelain -z >"$records" 2>/dev/null || return 2
+      repo_root="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" || return 2
+      git -C "$repo_root" worktree list --porcelain -z >"$records" 2>/dev/null || return 2
       printf '%s\0' current new >"$output"
       while IFS= read -r -d '' value; do
         case "$value" in
@@ -51,12 +30,12 @@ _oma_raw_candidates() {
       rm -f "$records"
       ;;
     submodule)
-      git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 2
-      if [[ ! -e "$repo/.gitmodules" ]]; then
+      repo_root="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" || return 2
+      if [[ ! -e "$repo_root/.gitmodules" ]]; then
         : >"$output"
         return 0
       fi
-      git -C "$repo" config -z --file .gitmodules --get-regexp '^submodule\..*\.path$' >"$records" 2>/dev/null
+      git -C "$repo_root" config -z --file .gitmodules --get-regexp '^submodule\..*\.path$' >"$records" 2>/dev/null
       case "$?" in
         0) ;;
         1) : >"$output"; rm -f "$records"; return 0 ;;
@@ -137,15 +116,47 @@ _oma_repo_from_words() {
 }
 
 _oma_complete_dynamic() {
-  local kind="$1" prefix="$2" repo candidate
+  local kind="$1" prefix="$2" decoration="${3-}" repo candidate
   repo="$(_oma_repo_from_words)"
   while IFS= read -r -d '' candidate; do
     if [[ "$candidate" == "$prefix"* ]]; then
-      COMPREPLY[reply_count]="$candidate"
+      COMPREPLY[reply_count]="${decoration}${candidate}"
       reply_count=$((reply_count + 1))
     fi
   done < <(_oma_candidates "$kind" "$repo" 2>/dev/null)
   return 0
+}
+
+_oma_complete_directories() {
+  local prefix="$1" decoration="${2-}" search_dir leaf display_dir candidate value
+  local restore_nullglob restore_dotglob
+  restore_nullglob="$(shopt -p nullglob || true)"
+  restore_dotglob="$(shopt -p dotglob || true)"
+  shopt -s nullglob dotglob
+  if [[ "$prefix" == */* ]]; then
+    search_dir="${prefix%/*}"
+    leaf="${prefix##*/}"
+    display_dir="${prefix%/*}/"
+    [[ -n "$search_dir" ]] || search_dir=/
+  else
+    search_dir=.
+    leaf="$prefix"
+    display_dir=
+  fi
+  for candidate in "$search_dir"/"$leaf"*/; do
+    value="${candidate%/}"
+    if [[ "$search_dir" == . ]]; then
+      value="${value#./}"
+    elif [[ "$display_dir" == / ]]; then
+      value="/${value##*/}"
+    else
+      value="${display_dir}${value##*/}"
+    fi
+    COMPREPLY[reply_count]="${decoration}${value}"
+    reply_count=$((reply_count + 1))
+  done
+  eval "$restore_nullglob"
+  eval "$restore_dotglob"
 }
 
 _oma_compgen() {
@@ -171,6 +182,15 @@ _oma() {
   fi
   [[ "$command" == prep ]] || return 0
 
+  case "$cur" in
+    --base=*) _oma_complete_dynamic base "${cur#--base=}" "--base="; return 0 ;;
+    --worktree=*) _oma_complete_dynamic worktree "${cur#--worktree=}" "--worktree="; return 0 ;;
+    --submodule=*) _oma_complete_dynamic submodule "${cur#--submodule=}" "--submodule="; return 0 ;;
+    --type=*) _oma_complete_dynamic branch-type "${cur#--type=}" "--type="; return 0 ;;
+    --product-type=*) _oma_complete_dynamic product-type "${cur#--product-type=}" "--product-type="; return 0 ;;
+    --repo=*) _oma_complete_directories "${cur#--repo=}" "--repo="; return 0 ;;
+  esac
+
   case "$previous" in
     --base) kind=base ;;
     --worktree) kind=worktree ;;
@@ -178,7 +198,7 @@ _oma() {
     --type) kind=branch-type ;;
     --product-type) kind=product-type ;;
     --repo)
-      _oma_compgen -d -- "$cur"
+      _oma_complete_directories "$cur"
       return 0
       ;;
   esac
