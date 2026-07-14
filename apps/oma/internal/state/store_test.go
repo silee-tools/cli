@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/silee-tools/oma/internal/config"
+	"golang.org/x/sys/unix"
 )
 
 type testPayload struct {
@@ -36,6 +37,7 @@ func TestStoreCreatesAndLoadsAPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.close() })
 	store.now = func() time.Time { return now }
 	store.random = bytes.NewReader(random)
 
@@ -92,6 +94,7 @@ func TestStoreUsesResolvedApplicationStateRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.close() })
 	canonicalRoot, err := filepath.EvalSymlinks(paths.StateRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -736,7 +739,7 @@ func TestStoreReportsConsumedFinalizeErrorsAsCommitted(t *testing.T) {
 	})
 }
 
-func TestStoreReconcilesLegacyPublicationLinks(t *testing.T) {
+func TestStorePreservesAcceptedPublicationLinks(t *testing.T) {
 	t.Run("same inode", func(t *testing.T) {
 		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x5a}, tokenBytes))
 		created, err := store.Create(testPayload{Title: "legacy temp"}, "fingerprint")
@@ -751,12 +754,12 @@ func TestStoreReconcilesLegacyPublicationLinks(t *testing.T) {
 		if _, err := store.Load(created.Token, &payload); err != nil {
 			t.Fatalf("Load() = %v", err)
 		}
-		if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("legacy link was not reconciled: %v", err)
+		if _, err := os.Stat(legacy); err != nil {
+			t.Fatalf("legacy link was not preserved: %v", err)
 		}
 	})
 
-	t.Run("cleanup error", func(t *testing.T) {
+	t.Run("second legacy name", func(t *testing.T) {
 		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x5b}, tokenBytes))
 		created, err := store.Create(testPayload{Title: "legacy error"}, "fingerprint")
 		if err != nil {
@@ -766,19 +769,13 @@ func TestStoreReconcilesLegacyPublicationLinks(t *testing.T) {
 		if err := os.Link(store.path(created.Token, pendingSuffix), legacy); err != nil {
 			t.Fatal(err)
 		}
-		injected := errors.New("legacy cleanup failed")
-		originalRemove := store.remove
-		store.remove = func(path string) error {
-			if path == legacy {
-				return injected
-			}
-			return originalRemove(path)
-		}
 		var payload testPayload
 		loaded, err := store.Load(created.Token, &payload)
-		assertCommittedError(t, err, Pending, false)
-		if loaded.Token != created.Token || !errors.Is(err, injected) {
+		if err != nil || loaded.Token != created.Token {
 			t.Fatalf("Load() = (%#v, %v)", loaded, err)
+		}
+		if _, err := os.Stat(legacy); err != nil {
+			t.Fatalf("legacy link was not preserved: %v", err)
 		}
 	})
 
@@ -828,14 +825,33 @@ func TestStoreReconcilesLegacyPublicationLinks(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, path := range []string{firstLegacy, secondLegacy} {
-			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("legacy link remains at %s: %v", path, err)
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("legacy link was not preserved at %s: %v", path, err)
 			}
+		}
+	})
+
+	t.Run("token temp", func(t *testing.T) {
+		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x5f}, tokenBytes))
+		created, err := store.Create(testPayload{Title: "temp artifact"}, "fingerprint")
+		if err != nil {
+			t.Fatal(err)
+		}
+		temp := filepath.Join(store.dir, "."+created.Token+".tmp-crash")
+		if err := os.Link(store.path(created.Token, pendingSuffix), temp); err != nil {
+			t.Fatal(err)
+		}
+		var payload testPayload
+		if _, err := store.Load(created.Token, &payload); err != nil {
+			t.Fatalf("Load() = %v", err)
+		}
+		if _, err := os.Stat(temp); err != nil {
+			t.Fatalf("token temp link was not preserved: %v", err)
 		}
 	})
 }
 
-func TestStoreCleansLegacyLinksOnlyAfterValidatedRead(t *testing.T) {
+func TestStoreNeverMutatesLegacyLinksDuringRead(t *testing.T) {
 	t.Run("corrupt JSON remains untouched", func(t *testing.T) {
 		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x5f}, tokenBytes))
 		created, err := store.Create(testPayload{Title: "corrupt"}, "fingerprint")
@@ -888,7 +904,7 @@ func TestStoreCleansLegacyLinksOnlyAfterValidatedRead(t *testing.T) {
 		}
 	})
 
-	t.Run("cleanup sync failure is committed", func(t *testing.T) {
+	t.Run("valid legacy link is preserved without sync", func(t *testing.T) {
 		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x61}, tokenBytes))
 		created, err := store.Create(testPayload{Title: "sync"}, "fingerprint")
 		if err != nil {
@@ -898,16 +914,14 @@ func TestStoreCleansLegacyLinksOnlyAfterValidatedRead(t *testing.T) {
 		if err := os.Link(store.path(created.Token, pendingSuffix), legacy); err != nil {
 			t.Fatal(err)
 		}
-		injected := errors.New("cleanup sync failed")
-		store.syncDir = func(string) error { return injected }
+		store.syncDir = func(string) error { return errors.New("unexpected sync") }
 		var payload testPayload
 		loaded, err := store.Load(created.Token, &payload)
-		assertCommittedError(t, err, Pending, true)
-		if loaded.Token != created.Token || !errors.Is(err, injected) {
+		if err != nil || loaded.Token != created.Token {
 			t.Fatalf("Load() = (%#v, %v)", loaded, err)
 		}
-		if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("legacy link was not removed: %v", err)
+		if _, err := os.Stat(legacy); err != nil {
+			t.Fatalf("legacy link was not preserved: %v", err)
 		}
 	})
 }
@@ -930,6 +944,7 @@ func TestStoreCanonicalizesIntermediateSymlinkOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.close() })
 	canonicalFirst, err := filepath.EvalSymlinks(firstTarget)
 	if err != nil {
 		t.Fatal(err)
@@ -954,6 +969,57 @@ func TestStoreCanonicalizesIntermediateSymlinkOnce(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(secondTarget, "nested")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("retargeted symlink moved Store: %v", err)
+	}
+}
+
+func TestStoreRejectsSymlinkSwapForMissingComponents(t *testing.T) {
+	for _, name := range []string{"intermediate", "final-app-root"} {
+		t.Run(name, func(t *testing.T) {
+			parent := t.TempDir()
+			attacker := filepath.Join(parent, "attacker")
+			if err := os.Mkdir(attacker, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			firstMissing := filepath.Join(parent, "missing")
+			logicalRoot := filepath.Join(firstMissing, "oma")
+			if name == "final-app-root" {
+				firstMissing = filepath.Join(parent, "oma")
+				logicalRoot = firstMissing
+			}
+			hookCalled := false
+			_, err := newWithDirectoryHook(logicalRoot, func(path string) {
+				if path != firstMissing || hookCalled {
+					return
+				}
+				hookCalled = true
+				if err := os.Symlink(attacker, path); err != nil {
+					t.Fatalf("install swap symlink: %v", err)
+				}
+			})
+			if !hookCalled {
+				t.Fatal("directory creation hook was not reached")
+			}
+			if !errors.Is(err, ErrUnsafeRoot) {
+				t.Fatalf("New() error = %v, want ErrUnsafeRoot", err)
+			}
+			assertMode(t, attacker, 0o755)
+			if _, err := os.Stat(filepath.Join(attacker, "oma")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("attacker directory was modified: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(attacker, "plans")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("attacker directory received plans: %v", err)
+			}
+		})
+	}
+}
+
+func TestStoreRejectsOperationsAfterDirectoryDescriptorCloses(t *testing.T) {
+	store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x63}, tokenBytes))
+	if err := store.close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(testPayload{Title: "closed"}, "fingerprint"); !errors.Is(err, ErrUnsafeRoot) {
+		t.Fatalf("Create() error = %v, want ErrUnsafeRoot", err)
 	}
 }
 
@@ -1110,12 +1176,12 @@ func TestStorePropagatesExistenceErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 			injected := &os.PathError{Op: "lstat", Path: store.path(created.Token, suffix), Err: syscall.EACCES}
-			originalLstat := store.lstat
-			store.lstat = func(path string) (os.FileInfo, error) {
+			originalStatAt := store.statAt
+			store.statAt = func(path string) (unix.Stat_t, error) {
 				if strings.HasSuffix(path, suffix) {
-					return nil, injected
+					return unix.Stat_t{}, injected
 				}
-				return originalLstat(path)
+				return originalStatAt(path)
 			}
 			var payload testPayload
 			if _, err := store.Load(created.Token, &payload); !errors.Is(err, syscall.EACCES) {
@@ -1131,12 +1197,12 @@ func TestStorePropagatesExistenceErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 		injected := &os.PathError{Op: "lstat", Path: store.path(created.Token, pendingSuffix), Err: syscall.EIO}
-		originalLstat := store.lstat
-		store.lstat = func(path string) (os.FileInfo, error) {
+		originalStatAt := store.statAt
+		store.statAt = func(path string) (unix.Stat_t, error) {
 			if strings.HasSuffix(path, pendingSuffix) {
-				return nil, injected
+				return unix.Stat_t{}, injected
 			}
-			return originalLstat(path)
+			return originalStatAt(path)
 		}
 		if err := store.Consume(created.Token); !errors.Is(err, syscall.EIO) {
 			t.Fatalf("Consume() error = %v, want EIO", err)
@@ -1251,12 +1317,16 @@ func TestStoreCreatesOwnedDirectoriesWithRestrictiveUmask(t *testing.T) {
 	if err := os.Mkdir(stateRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Mkdir(filepath.Join(stateRoot, "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	oldUmask := syscall.Umask(0o777)
 	defer syscall.Umask(oldUmask)
 	store, err := New(stateRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.close() })
 	assertMode(t, stateRoot, 0o700)
 	assertMode(t, store.dir, 0o700)
 
@@ -1265,6 +1335,7 @@ func TestStoreCreatesOwnedDirectoriesWithRestrictiveUmask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = missingStore.close() })
 	assertMode(t, missingRoot, 0o700)
 	assertMode(t, missingStore.dir, 0o700)
 	for path := filepath.Dir(missingRoot); path != parent; path = filepath.Dir(path) {
@@ -1331,6 +1402,7 @@ func newTestStore(t *testing.T, now time.Time, random []byte) *Store {
 	}
 	store.now = func() time.Time { return now }
 	store.random = bytes.NewReader(random)
+	t.Cleanup(func() { _ = store.close() })
 	return store
 }
 

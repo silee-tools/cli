@@ -10,9 +10,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -83,9 +87,14 @@ type diskRecord struct {
 
 type Store struct {
 	dir       string
+	dirFile   *os.File
+	dirDev    uint64
+	dirIno    uint64
+	closeOnce sync.Once
 	now       func() time.Time
 	random    io.Reader
-	lstat     func(string) (os.FileInfo, error)
+	statAt    func(string) (unix.Stat_t, error)
+	readDir   func() ([]os.DirEntry, error)
 	link      func(string, string) error
 	remove    func(string) error
 	syncDir   func(string) error
@@ -94,6 +103,10 @@ type Store struct {
 }
 
 func New(stateRoot string) (*Store, error) {
+	return newWithDirectoryHook(stateRoot, nil)
+}
+
+func newWithDirectoryHook(stateRoot string, hook func(string)) (*Store, error) {
 	if stateRoot == "" {
 		return nil, fmt.Errorf("%w: path is empty", ErrUnsafeRoot)
 	}
@@ -104,19 +117,51 @@ func New(stateRoot string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureSecurePath(appRoot); err != nil {
+	appFD, err := openApplicationRoot(stateRoot, hook)
+	if err != nil {
 		return nil, err
 	}
-	plansDir := filepath.Join(appRoot, "plans")
-	if err := ensureSecurePath(plansDir); err != nil {
-		return nil, err
+	plansFD, err := openOrCreateDirectoryAt(appFD, "plans", true, nil, filepath.Join(stateRoot, "plans"))
+	if err == nil {
+		if chmodErr := unix.Fchmod(plansFD, 0o700); chmodErr != nil {
+			err = fmt.Errorf("%w: secure plans directory: %v", ErrUnsafeRoot, chmodErr)
+		}
 	}
-	return &Store{
-		dir: plansDir, now: time.Now, random: rand.Reader,
-		lstat: os.Lstat, link: os.Link, remove: os.Remove,
-		syncDir: syncDirectory, openRead: openNoFollow,
+	closeAppErr := unix.Close(appFD)
+	if err != nil {
+		if plansFD >= 0 {
+			return nil, errors.Join(err, closeAppErr, unix.Close(plansFD))
+		}
+		return nil, errors.Join(err, closeAppErr)
+	}
+	if closeAppErr != nil {
+		_ = unix.Close(plansFD)
+		return nil, closeAppErr
+	}
+	plansFile := os.NewFile(uintptr(plansFD), filepath.Join(appRoot, "plans"))
+	if plansFile == nil {
+		_ = unix.Close(plansFD)
+		return nil, fmt.Errorf("%w: retain plans directory", ErrUnsafeRoot)
+	}
+	var plansStat unix.Stat_t
+	if err := unix.Fstat(plansFD, &plansStat); err != nil {
+		_ = plansFile.Close()
+		return nil, fmt.Errorf("%w: inspect plans directory: %v", ErrUnsafeRoot, err)
+	}
+	store := &Store{
+		dir: filepath.Join(appRoot, "plans"), dirFile: plansFile,
+		dirDev: uint64(plansStat.Dev), dirIno: plansStat.Ino,
+		now: time.Now, random: rand.Reader,
 		closeRead: func(file *os.File) error { return file.Close() },
-	}, nil
+	}
+	store.statAt = store.defaultStatAt
+	store.readDir = store.defaultReadDir
+	store.link = store.defaultLink
+	store.remove = store.defaultRemove
+	store.syncDir = func(string) error { return store.dirFile.Sync() }
+	store.openRead = store.defaultOpenRead
+	runtime.SetFinalizer(store, func(value *Store) { _ = value.close() })
+	return store, nil
 }
 
 func canonicalApplicationRoot(logicalRoot string) (string, error) {
@@ -160,10 +205,76 @@ func canonicalApplicationRoot(logicalRoot string) (string, error) {
 	return filepath.Join(canonicalAncestor, remainder), nil
 }
 
+func openApplicationRoot(stateRoot string, hook func(string)) (int, error) {
+	cleaned := filepath.Clean(stateRoot)
+	currentFD, err := unix.Open(string(os.PathSeparator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, fmt.Errorf("%w: open filesystem root: %v", ErrUnsafeRoot, err)
+	}
+	logicalPath := string(os.PathSeparator)
+	parts := strings.Split(strings.TrimPrefix(cleaned, string(os.PathSeparator)), string(os.PathSeparator))
+	for index, part := range parts {
+		if part == "" {
+			continue
+		}
+		logicalPath = filepath.Join(logicalPath, part)
+		nextFD, openErr := openOrCreateDirectoryAt(currentFD, part, index == len(parts)-1, hook, logicalPath)
+		closeErr := unix.Close(currentFD)
+		if openErr != nil {
+			return -1, errors.Join(openErr, closeErr)
+		}
+		if closeErr != nil {
+			_ = unix.Close(nextFD)
+			return -1, fmt.Errorf("%w: close state root ancestor: %v", ErrUnsafeRoot, closeErr)
+		}
+		currentFD = nextFD
+	}
+	if err := unix.Fchmod(currentFD, 0o700); err != nil {
+		closeErr := unix.Close(currentFD)
+		return -1, errors.Join(fmt.Errorf("%w: secure application state directory: %v", ErrUnsafeRoot, err), closeErr)
+	}
+	return currentFD, nil
+}
+
+func openOrCreateDirectoryAt(parentFD int, name string, noFollow bool, hook func(string), logicalPath string) (int, error) {
+	flags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC
+	if noFollow {
+		flags |= unix.O_NOFOLLOW
+	}
+	fd, err := unix.Openat(parentFD, name, flags, 0)
+	if err == nil {
+		return fd, nil
+	}
+	if !errors.Is(err, unix.ENOENT) {
+		return -1, fmt.Errorf("%w: open state directory %s: %v", ErrUnsafeRoot, logicalPath, err)
+	}
+	if hook != nil {
+		hook(logicalPath)
+	}
+	if err := unix.Mkdirat(parentFD, name, 0o700); err != nil {
+		return -1, fmt.Errorf("%w: create state directory %s: %v", ErrUnsafeRoot, logicalPath, err)
+	}
+	if err := unix.Fchmodat(parentFD, name, 0o700, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return -1, fmt.Errorf("%w: secure new state directory %s: %v", ErrUnsafeRoot, logicalPath, err)
+	}
+	fd, err = unix.Openat(parentFD, name, flags|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, fmt.Errorf("%w: open new state directory %s: %v", ErrUnsafeRoot, logicalPath, err)
+	}
+	if err := unix.Fchmod(fd, 0o700); err != nil {
+		closeErr := unix.Close(fd)
+		return -1, errors.Join(fmt.Errorf("%w: secure new state directory %s: %v", ErrUnsafeRoot, logicalPath, err), closeErr)
+	}
+	return fd, nil
+}
+
 // Create stores a plan under an opaque, non-empty fingerprint. Expiration uses
 // the local clock captured here and the local clock at Load or Claim; a clock
 // moved backward therefore extends validity until it reaches ExpiresAt again.
 func (s *Store) Create(payload any, fingerprint string) (Record, error) {
+	if err := s.verifyDirectory(); err != nil {
+		return Record{}, err
+	}
 	if strings.TrimSpace(fingerprint) == "" {
 		return Record{}, ErrInvalidFingerprint
 	}
@@ -218,6 +329,9 @@ func (s *Store) Create(payload any, fingerprint string) (Record, error) {
 }
 
 func (s *Store) Load(token string, payload any) (Record, error) {
+	if err := s.verifyDirectory(); err != nil {
+		return Record{}, err
+	}
 	if err := validateToken(token); err != nil {
 		return Record{}, err
 	}
@@ -242,6 +356,9 @@ func (s *Store) Load(token string, payload any) (Record, error) {
 }
 
 func (s *Store) Claim(token string, payload any) (Record, error) {
+	if err := s.verifyDirectory(); err != nil {
+		return Record{}, err
+	}
 	if err := validateToken(token); err != nil {
 		return Record{}, err
 	}
@@ -298,6 +415,9 @@ func (s *Store) Claim(token string, payload any) (Record, error) {
 // Consume is idempotent for an already-consumed token so callers can safely
 // defer it after Claim. The durable tombstone remains and Claim never replays it.
 func (s *Store) Consume(token string) error {
+	if err := s.verifyDirectory(); err != nil {
+		return err
+	}
 	if err := validateToken(token); err != nil {
 		return err
 	}
@@ -423,9 +543,14 @@ func (s *Store) tokenOccupied(token string) (bool, error) {
 
 func (s *Store) createReservation(token string) error {
 	path := s.path(token, reservationSuffix)
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	fd, err := unix.Openat(int(s.dirFile.Fd()), filepath.Base(path), unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return fmt.Errorf("open plan reservation")
 	}
 	var result error
 	if err := file.Chmod(0o600); err != nil {
@@ -471,16 +596,12 @@ func (s *Store) ensureReservation(token string) error {
 }
 
 func (s *Store) validateReservation(token string) error {
-	data, legacyLinks, err := s.readSafeFile(s.path(token, reservationSuffix), token)
+	data, err := s.readSafeFile(s.path(token, reservationSuffix), token)
 	if err != nil {
 		return err
 	}
 	if string(data) != token+"\n" {
 		return ErrStateConflict
-	}
-	cleaned := s.cleanupLegacyLinks(legacyLinks)
-	if err := cleaned.err(); err != nil {
-		return &CommittedError{Token: token, State: Pending, Ambiguous: cleaned.syncErr != nil, Err: err}
 	}
 	return nil
 }
@@ -528,7 +649,7 @@ func (s *Store) read(token, suffix string, wantState State, payload any) (diskRe
 
 func (s *Store) decodeRecord(token, suffix string, wantState State) (diskRecord, error) {
 	path := s.path(token, suffix)
-	data, legacyLinks, err := s.readSafeFile(path, token)
+	data, err := s.readSafeFile(path, token)
 	if err != nil {
 		return diskRecord{}, err
 	}
@@ -543,129 +664,106 @@ func (s *Store) decodeRecord(token, suffix string, wantState State) (diskRecord,
 		!disk.ExpiresAt.Equal(disk.CreatedAt.Add(planTTL)) || !json.Valid(disk.Payload) {
 		return diskRecord{}, ErrCorrupt
 	}
-	cleaned := s.cleanupLegacyLinks(legacyLinks)
-	if cleanupErr := cleaned.err(); cleanupErr != nil {
-		return disk, &CommittedError{Token: token, State: wantState, Ambiguous: cleaned.syncErr != nil, Err: cleanupErr}
-	}
 	return disk, nil
 }
 
-func (s *Store) readSafeFile(path, token string) ([]byte, []string, error) {
+func (s *Store) readSafeFile(path, token string) ([]byte, error) {
 	file, err := s.openRead(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil, ErrMissing
+			return nil, ErrMissing
 		}
 		if errors.Is(err, syscall.ELOOP) {
-			return nil, nil, ErrUnsafeRecord
+			return nil, ErrUnsafeRecord
 		}
-		return nil, nil, fmt.Errorf("open plan record: %w", err)
+		return nil, fmt.Errorf("open plan record: %w", err)
 	}
 	info, statErr := file.Stat()
 	if statErr != nil {
 		_ = file.Close()
-		return nil, nil, fmt.Errorf("inspect open plan record: %w", statErr)
+		return nil, fmt.Errorf("inspect open plan record: %w", statErr)
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	fileSecurityMode := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
 	if !ok || !info.Mode().IsRegular() || fileSecurityMode != 0o600 ||
 		uint32(stat.Uid) != uint32(os.Geteuid()) {
 		_ = file.Close()
-		return nil, nil, ErrUnsafeRecord
+		return nil, ErrUnsafeRecord
 	}
-	legacyLinks, err := s.validateLinkTopology(file, path, token)
+	err = s.validateLinkTopology(file, path, token)
 	if err != nil {
 		_ = file.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	data, readErr := io.ReadAll(file)
 	closeErr := s.closeRead(file)
 	if readErr != nil {
-		return nil, nil, fmt.Errorf("read plan record: %w", readErr)
+		return nil, fmt.Errorf("read plan record: %w", readErr)
 	}
 	if closeErr != nil {
-		return nil, nil, fmt.Errorf("close plan record: %w", closeErr)
+		return nil, fmt.Errorf("close plan record: %w", closeErr)
 	}
-	return data, legacyLinks, nil
+	return data, nil
 }
 
-func (s *Store) validateLinkTopology(file *os.File, path, token string) ([]string, error) {
+func (s *Store) validateLinkTopology(file *os.File, path, token string) error {
 	for range 4 {
 		before, err := file.Stat()
 		if err != nil {
-			return nil, fmt.Errorf("inspect plan link count: %w", err)
+			return fmt.Errorf("inspect plan link count: %w", err)
 		}
 		beforeStat, ok := before.Sys().(*syscall.Stat_t)
 		if !ok {
-			return nil, ErrUnsafeRecord
+			return ErrUnsafeRecord
 		}
 		if beforeStat.Nlink == 0 {
-			return nil, ErrMissing
+			return ErrMissing
 		}
-		entries, err := os.ReadDir(s.dir)
+		entries, err := s.readDir()
 		if err != nil {
-			return nil, fmt.Errorf("inspect plan link topology: %w", err)
+			return fmt.Errorf("inspect plan link topology: %w", err)
 		}
 		wantBase := filepath.Base(path)
 		tempPrefix := "." + token + ".tmp-"
 		knownLinks := uint64(0)
 		sawTarget := false
-		legacyLinks := make([]string, 0)
 		for _, entry := range entries {
 			entryPath := filepath.Join(s.dir, entry.Name())
-			info, err := s.lstat(entryPath)
+			entryStat, err := s.statAt(entryPath)
 			if err != nil {
 				if errors.Is(err, os.ErrNotExist) {
 					continue
 				}
-				return nil, fmt.Errorf("inspect plan link: %w", err)
+				return fmt.Errorf("inspect plan link: %w", err)
 			}
-			sameFile := os.SameFile(before, info)
+			sameFile := uint64(entryStat.Dev) == uint64(beforeStat.Dev) && entryStat.Ino == beforeStat.Ino
 			if !sameFile {
 				continue
 			}
 			legacy := strings.HasPrefix(entry.Name(), ".plan-")
 			if entry.Name() != wantBase && !strings.HasPrefix(entry.Name(), tempPrefix) && !legacy {
-				return nil, ErrUnsafeRecord
-			}
-			if legacy {
-				legacyLinks = append(legacyLinks, entryPath)
+				return ErrUnsafeRecord
 			}
 			sawTarget = sawTarget || entry.Name() == wantBase
 			knownLinks++
 		}
 		after, err := file.Stat()
 		if err != nil {
-			return nil, fmt.Errorf("recheck plan link count: %w", err)
+			return fmt.Errorf("recheck plan link count: %w", err)
 		}
 		afterStat, ok := after.Sys().(*syscall.Stat_t)
 		if !ok {
-			return nil, ErrUnsafeRecord
+			return ErrUnsafeRecord
 		}
 		if beforeStat.Nlink != afterStat.Nlink {
 			continue
 		}
 		if !sawTarget || knownLinks != uint64(afterStat.Nlink) {
-			return nil, ErrUnsafeRecord
+			return ErrUnsafeRecord
 		}
-		return legacyLinks, nil
+		return nil
 	}
-	return nil, ErrUnsafeRecord
-}
-
-func (s *Store) cleanupLegacyLinks(paths []string) finalizeOutcome {
-	var cleaned finalizeOutcome
-	for _, path := range paths {
-		if err := s.remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			cleaned.cleanupErr = errors.Join(cleaned.cleanupErr, fmt.Errorf("remove legacy publication link: %w", err))
-		}
-	}
-	if len(paths) > 0 {
-		if err := s.syncDir(s.dir); err != nil {
-			cleaned.syncErr = fmt.Errorf("sync legacy publication cleanup: %w", err)
-		}
-	}
-	return cleaned
+	return ErrUnsafeRecord
 }
 
 func (s *Store) absentState(token string) error {
@@ -763,7 +861,7 @@ func committedError(token string, state State, outcome publishOutcome) error {
 }
 
 func (s *Store) publish(token, target string, data []byte) publishOutcome {
-	temp, err := os.CreateTemp(s.dir, "."+token+".tmp-*")
+	temp, err := s.createTemp(token)
 	if err != nil {
 		return publishOutcome{err: err}
 	}
@@ -804,59 +902,28 @@ func (s *Store) publish(token, target string, data []byte) publishOutcome {
 	return outcome
 }
 
-func ensureSecurePath(path string) error {
-	volume := filepath.VolumeName(path)
-	current := volume + string(os.PathSeparator)
-	relative := strings.TrimPrefix(path, current)
-	parts := strings.Split(relative, string(os.PathSeparator))
-	for index, part := range parts {
-		if part == "" {
-			continue
+func (s *Store) createTemp(token string) (*os.File, error) {
+	for range maxCollisions {
+		raw := make([]byte, 8)
+		if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+			return nil, err
 		}
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if errors.Is(err, os.ErrNotExist) {
-			if err := os.Mkdir(current, 0o700); err != nil {
-				return fmt.Errorf("create state directory: %w", err)
-			}
-			if err := os.Chmod(current, 0o700); err != nil {
-				return fmt.Errorf("secure new state directory: %w", err)
-			}
+		name := "." + token + ".tmp-" + base64.RawURLEncoding.EncodeToString(raw)
+		fd, err := unix.Openat(int(s.dirFile.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+		if errors.Is(err, unix.EEXIST) {
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrUnsafeRoot, err)
+			return nil, err
 		}
-		if info.Mode()&os.ModeSymlink != 0 && index != len(parts)-1 {
-			resolved, statErr := os.Stat(current)
-			if statErr != nil || !resolved.IsDir() {
-				return fmt.Errorf("%w: %s is not a directory", ErrUnsafeRoot, current)
-			}
-			continue
+		file := os.NewFile(uintptr(fd), filepath.Join(s.dir, name))
+		if file == nil {
+			_ = unix.Close(fd)
+			return nil, fmt.Errorf("retain plan temp file")
 		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("%w: %s is not a real directory", ErrUnsafeRoot, current)
-		}
-		if index == len(parts)-1 {
-			if err := os.Chmod(current, 0o700); err != nil {
-				return fmt.Errorf("secure application state directory: %w", err)
-			}
-		}
+		return file, nil
 	}
-	return nil
-}
-
-func syncDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	syncErr := dir.Sync()
-	closeErr := dir.Close()
-	if syncErr != nil {
-		return syncErr
-	}
-	return closeErr
+	return nil, fmt.Errorf("create plan temp after %d collisions", maxCollisions)
 }
 
 func metadata(disk diskRecord) Record {
@@ -874,7 +941,7 @@ func (s *Store) path(token, suffix string) string {
 }
 
 func (s *Store) exists(path string) (bool, error) {
-	_, err := s.lstat(path)
+	_, err := s.statAt(path)
 	if err == nil {
 		return true, nil
 	}
@@ -884,10 +951,70 @@ func (s *Store) exists(path string) (bool, error) {
 	return false, err
 }
 
-func openNoFollow(path string) (*os.File, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+func (s *Store) verifyDirectory() error {
+	if s.dirFile == nil {
+		return ErrUnsafeRoot
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(s.dirFile.Fd()), &stat); err != nil {
+		return fmt.Errorf("%w: verify plans directory: %v", ErrUnsafeRoot, err)
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Nlink == 0 || uint64(stat.Dev) != s.dirDev || stat.Ino != s.dirIno {
+		return fmt.Errorf("%w: plans directory identity changed", ErrUnsafeRoot)
+	}
+	return nil
+}
+
+func (s *Store) close() error {
+	var err error
+	s.closeOnce.Do(func() {
+		runtime.SetFinalizer(s, nil)
+		if s.dirFile != nil {
+			err = s.dirFile.Close()
+		}
+	})
+	return err
+}
+
+func (s *Store) defaultStatAt(path string) (unix.Stat_t, error) {
+	var stat unix.Stat_t
+	err := unix.Fstatat(int(s.dirFile.Fd()), filepath.Base(path), &stat, unix.AT_SYMLINK_NOFOLLOW)
+	return stat, err
+}
+
+func (s *Store) defaultReadDir() ([]os.DirEntry, error) {
+	fd, err := unix.Openat(int(s.dirFile.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
-	return os.NewFile(uintptr(fd), path), nil
+	file := os.NewFile(uintptr(fd), s.dir)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("retain plans directory scan")
+	}
+	entries, readErr := file.ReadDir(-1)
+	closeErr := file.Close()
+	return entries, errors.Join(readErr, closeErr)
+}
+
+func (s *Store) defaultLink(oldPath, newPath string) error {
+	fd := int(s.dirFile.Fd())
+	return unix.Linkat(fd, filepath.Base(oldPath), fd, filepath.Base(newPath), 0)
+}
+
+func (s *Store) defaultRemove(path string) error {
+	return unix.Unlinkat(int(s.dirFile.Fd()), filepath.Base(path), 0)
+}
+
+func (s *Store) defaultOpenRead(path string) (*os.File, error) {
+	fd, err := unix.Openat(int(s.dirFile.Fd()), filepath.Base(path), unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("retain open plan record")
+	}
+	return file, nil
 }
