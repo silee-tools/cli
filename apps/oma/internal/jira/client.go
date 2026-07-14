@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,7 +17,13 @@ import (
 
 const maxResponseBytes = 8 << 20
 
-func CredentialsFromNetrc(path, host string) (Credentials, error) {
+func CredentialsFromNetrc(path, host string) (credentials Credentials, resultErr error) {
+	defer func() {
+		if recover() != nil {
+			credentials = Credentials{}
+			resultErr = errors.New("read netrc: invalid format")
+		}
+	}()
 	if strings.TrimSpace(path) == "" || strings.TrimSpace(host) == "" {
 		return Credentials{}, errors.New("netrc path and host are required")
 	}
@@ -28,7 +35,7 @@ func CredentialsFromNetrc(path, host string) (Credentials, error) {
 	if machine == nil {
 		return Credentials{}, fmt.Errorf("netrc has no machine for %q", host)
 	}
-	credentials := Credentials{
+	credentials = Credentials{
 		Username: machine.Get("login"),
 		Password: machine.Get("password"),
 	}
@@ -46,6 +53,9 @@ func NewClient(baseURL string, httpClient *http.Client, credentials Credentials)
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return nil, errors.New("jira base URL must use HTTP or HTTPS")
 	}
+	if parsed.Scheme == "http" && !isLoopbackHost(parsed.Hostname()) {
+		return nil, errors.New("jira base URL must use HTTPS unless the host is loopback")
+	}
 	if parsed.User != nil {
 		return nil, errors.New("jira base URL must not contain credentials")
 	}
@@ -55,19 +65,24 @@ func NewClient(baseURL string, httpClient *http.Client, credentials Credentials)
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
+	clientCopy := *httpClient
+	clientCopy.Jar = nil
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	parsed.RawPath = ""
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return &Client{
 		baseURL:     strings.TrimRight(parsed.String(), "/"),
-		httpClient:  httpClient,
+		httpClient:  &clientCopy,
 		credentials: credentials,
 	}, nil
 }
 
 func (c *Client) FetchIssue(ctx context.Context, key string) (Issue, []byte, error) {
-	raw, err := c.request(ctx, http.MethodGet, "/rest/api/3/issue/"+url.PathEscape(key), url.Values{"fields": {"*all"}}, nil)
+	raw, err := c.request(ctx, http.MethodGet, "/rest/api/3/issue/"+url.PathEscape(key), url.Values{"fields": {"*all"}}, nil, http.StatusOK)
 	if err != nil {
 		return Issue{}, nil, err
 	}
@@ -86,6 +101,9 @@ func (c *Client) FetchIssue(ctx context.Context, key string) (Issue, []byte, err
 		return Issue{}, nil, err
 	}
 	if err := decodeField(response.Fields, "status", &issue.Status); err != nil {
+		return Issue{}, nil, err
+	}
+	if err := validateStatus(issue.Status, "issue status"); err != nil {
 		return Issue{}, nil, err
 	}
 	if assignee, ok := response.Fields["assignee"]; ok && string(assignee) != "null" {
@@ -112,7 +130,7 @@ func (c *Client) FetchIssue(ctx context.Context, key string) (Issue, []byte, err
 }
 
 func (c *Client) Myself(ctx context.Context) (User, error) {
-	raw, err := c.request(ctx, http.MethodGet, "/rest/api/3/myself", nil, nil)
+	raw, err := c.request(ctx, http.MethodGet, "/rest/api/3/myself", nil, nil, http.StatusOK)
 	if err != nil {
 		return User{}, err
 	}
@@ -120,14 +138,14 @@ func (c *Client) Myself(ctx context.Context) (User, error) {
 	if err := json.Unmarshal(raw, &user); err != nil {
 		return User{}, boundedError("decode current Jira user", err)
 	}
-	if user.AccountID == "" {
-		return User{}, errors.New("decode current Jira user: accountId missing")
+	if user.AccountID == "" || user.DisplayName == "" {
+		return User{}, errors.New("decode current Jira user: accountId or displayName missing")
 	}
 	return user, nil
 }
 
 func (c *Client) Transitions(ctx context.Context, key string) ([]Transition, error) {
-	raw, err := c.request(ctx, http.MethodGet, "/rest/api/3/issue/"+url.PathEscape(key)+"/transitions", url.Values{"expand": {"transitions.fields"}}, nil)
+	raw, err := c.request(ctx, http.MethodGet, "/rest/api/3/issue/"+url.PathEscape(key)+"/transitions", url.Values{"expand": {"transitions.fields"}}, nil, http.StatusOK)
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +157,14 @@ func (c *Client) Transitions(ctx context.Context, key string) ([]Transition, err
 	}
 	if response.Transitions == nil {
 		return nil, errors.New("decode Jira transitions: transitions missing")
+	}
+	for index, transition := range response.Transitions {
+		if transition.ID == "" {
+			return nil, fmt.Errorf("decode Jira transition %d: id missing", index)
+		}
+		if err := validateStatus(transition.To, fmt.Sprintf("transition %d destination", index)); err != nil {
+			return nil, err
+		}
 	}
 	return response.Transitions, nil
 }
@@ -153,7 +179,7 @@ func (c *Client) UpdateFields(ctx context.Context, key string, fields map[string
 	if err != nil {
 		return boundedError("encode Jira field update", err)
 	}
-	_, err = c.request(ctx, http.MethodPut, "/rest/api/3/issue/"+url.PathEscape(key), nil, body)
+	_, err = c.request(ctx, http.MethodPut, "/rest/api/3/issue/"+url.PathEscape(key), nil, body, http.StatusNoContent)
 	return err
 }
 
@@ -171,11 +197,11 @@ func (c *Client) ApplyTransition(ctx context.Context, key, transitionID string) 
 	if err != nil {
 		return boundedError("encode Jira transition", err)
 	}
-	_, err = c.request(ctx, http.MethodPost, "/rest/api/3/issue/"+url.PathEscape(key)+"/transitions", nil, body)
+	_, err = c.request(ctx, http.MethodPost, "/rest/api/3/issue/"+url.PathEscape(key)+"/transitions", nil, body, http.StatusNoContent)
 	return err
 }
 
-func (c *Client) request(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, error) {
+func (c *Client) request(ctx context.Context, method, path string, query url.Values, body []byte, expectedStatus int) ([]byte, error) {
 	requestURL := c.baseURL + path
 	if len(query) > 0 {
 		requestURL += "?" + query.Encode()
@@ -204,10 +230,18 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	if len(raw) > maxResponseBytes {
 		return nil, errors.New("jira response exceeded the size limit")
 	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("jira request returned HTTP %d", response.StatusCode)
+	if response.StatusCode != expectedStatus {
+		return nil, fmt.Errorf("jira request returned HTTP %d, expected HTTP %d", response.StatusCode, expectedStatus)
 	}
 	return raw, nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	address := net.ParseIP(host)
+	return address != nil && address.IsLoopback()
 }
 
 func decodeField(fields map[string]json.RawMessage, name string, destination any) error {
@@ -217,6 +251,13 @@ func decodeField(fields map[string]json.RawMessage, name string, destination any
 	}
 	if err := json.Unmarshal(raw, destination); err != nil {
 		return boundedError("decode Jira field "+name, err)
+	}
+	return nil
+}
+
+func validateStatus(status Status, context string) error {
+	if status.ID == "" || status.Name == "" || status.CategoryKey == "" {
+		return fmt.Errorf("decode Jira %s: id, name, or status category missing", context)
 	}
 	return nil
 }

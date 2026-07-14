@@ -10,6 +10,9 @@ const maxTransitionCount = 3
 func SelectTransition(current Status, available []Transition, requestedID string) (TransitionDecision, error) {
 	switch current.CategoryKey {
 	case "indeterminate":
+		if requestedID != "" {
+			return TransitionDecision{}, errors.New("jira issue is already in progress; explicit transition is not allowed")
+		}
 		return TransitionDecision{Complete: true}, nil
 	case "done":
 		return TransitionDecision{}, errors.New("jira issue is in the done category and cannot be started")

@@ -60,3 +60,30 @@ func TestSelectTransition(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectTransitionRejectsExplicitIDForTerminalCurrentStatus(t *testing.T) {
+	available := []Transition{
+		{ID: "21", Name: "Start", To: Status{Name: "In Progress", CategoryKey: "indeterminate"}},
+		{ID: "31", Name: "Close", To: Status{Name: "Done", CategoryKey: "done"}},
+	}
+	for _, test := range []struct {
+		name      string
+		current   Status
+		requested string
+	}{
+		{name: "in progress valid ID", current: Status{CategoryKey: "indeterminate"}, requested: "21"},
+		{name: "in progress invalid ID", current: Status{CategoryKey: "indeterminate"}, requested: "99"},
+		{name: "done cannot bypass with start ID", current: Status{CategoryKey: "done"}, requested: "21"},
+		{name: "done cannot bypass with done ID", current: Status{CategoryKey: "done"}, requested: "31"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			decision, err := SelectTransition(test.current, available, test.requested)
+			if err == nil {
+				t.Fatalf("explicit transition was silently accepted: %#v", decision)
+			}
+			if decision.Complete || decision.Transition != nil {
+				t.Fatalf("terminal state returned an actionable decision: %#v", decision)
+			}
+		})
+	}
+}

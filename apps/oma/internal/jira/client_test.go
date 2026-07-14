@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -170,6 +173,259 @@ func TestCredentialsFromNetrc(t *testing.T) {
 	_, err = CredentialsFromNetrc(path, "missing.example.test")
 	if err == nil {
 		t.Fatal("missing machine returned no error")
+	}
+}
+
+func TestClientRejectsRedirectsWithoutMutatingCallerClient(t *testing.T) {
+	var finalRequests atomic.Int32
+	var sourceRequests atomic.Int32
+	redirectStatuses := []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/final" {
+			finalRequests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"key":"OMA-42","fields":{}}`)
+			return
+		}
+		index := int(sourceRequests.Add(1)) - 1
+		status := http.StatusFound
+		if index < len(redirectStatuses) {
+			status = redirectStatuses[index]
+		}
+		http.Redirect(w, r, "/final", status)
+	}))
+	defer server.Close()
+
+	callerClient := server.Client()
+	client := newTestClient(t, server.URL, callerClient)
+	for _, status := range redirectStatuses {
+		_, _, err := client.FetchIssue(context.Background(), "OMA-42")
+		assertSafeError(t, err, "/final")
+		if !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", status)) {
+			t.Errorf("redirect error = %q, want HTTP %d", err, status)
+		}
+	}
+	if got := finalRequests.Load(); got != 0 {
+		t.Fatalf("Jira client followed redirect %d time(s)", got)
+	}
+
+	response, err := callerClient.Get(server.URL + "/source")
+	if err != nil {
+		t.Fatalf("caller client no longer follows redirects: %v", err)
+	}
+	_ = response.Body.Close()
+	if got := finalRequests.Load(); got != 1 {
+		t.Fatalf("caller client was mutated; final requests = %d", got)
+	}
+}
+
+func TestClientDoesNotMutateCallerCookieJar(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "jira-session", Value: "server-value", Path: "/"})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"key":"OMA-42","fields":{"summary":"Prepare CLI","status":{"id":"3","name":"In Progress","statusCategory":{"key":"indeterminate"}}}}`)
+	}))
+	defer server.Close()
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callerClient := server.Client()
+	callerClient.Jar = jar
+	client := newTestClient(t, server.URL, callerClient)
+	if _, _, err := client.FetchIssue(context.Background(), "OMA-42"); err != nil {
+		t.Fatalf("FetchIssue: %v", err)
+	}
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cookies := jar.Cookies(serverURL); len(cookies) != 0 {
+		t.Fatalf("Jira client mutated caller cookie jar: %#v", cookies)
+	}
+}
+
+func TestClientValidatesWriteSuccessStatus(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		method string
+		call   func(*Client) error
+	}{
+		{
+			name:   "update fields",
+			method: http.MethodPut,
+			call: func(client *Client) error {
+				return client.UpdateFields(context.Background(), "OMA-42", map[string]any{"summary": "changed"})
+			},
+		},
+		{
+			name:   "apply transition",
+			method: http.MethodPost,
+			call: func(client *Client) error {
+				return client.ApplyTransition(context.Background(), "OMA-42", "21")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var finalRequests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != test.method {
+					t.Errorf("method = %s, want %s", r.Method, test.method)
+				}
+				if r.URL.Path == "/final" {
+					finalRequests.Add(1)
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				http.Redirect(w, r, "/final", http.StatusSeeOther)
+			}))
+			defer server.Close()
+
+			client := newTestClient(t, server.URL, server.Client())
+			err := test.call(client)
+			assertSafeError(t, err, "/final")
+			if got := finalRequests.Load(); got != 0 {
+				t.Fatalf("write followed redirect %d time(s)", got)
+			}
+
+			htmlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, "<html>not Jira JSON</html>")
+			}))
+			defer htmlServer.Close()
+			htmlClient := newTestClient(t, htmlServer.URL, htmlServer.Client())
+			err = test.call(htmlClient)
+			if err == nil {
+				t.Fatal("HTTP 200 text/html was accepted as a Jira write success")
+			}
+		})
+	}
+}
+
+func TestNewClientRejectsRemoteHTTPAndAllowsLoopback(t *testing.T) {
+	for _, test := range []struct {
+		baseURL string
+		wantErr bool
+	}{
+		{baseURL: "https://jira.example.test"},
+		{baseURL: "http://localhost:8080"},
+		{baseURL: "http://127.0.0.1:8080"},
+		{baseURL: "http://[::1]:8080"},
+		{baseURL: "http://jira.example.test", wantErr: true},
+		{baseURL: "http://192.0.2.10", wantErr: true},
+		{baseURL: "http://localhost.example.test", wantErr: true},
+	} {
+		t.Run(test.baseURL, func(t *testing.T) {
+			_, err := NewClient(test.baseURL, http.DefaultClient, Credentials{Username: testUsername, Password: testPassword})
+			if test.wantErr && err == nil {
+				t.Fatal("remote HTTP Jira URL was accepted")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("loopback/HTTPS URL rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestClientRejectsSemanticallyInvalidJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+		call func(*Client) error
+	}{
+		{
+			name: "issue null status",
+			path: "/rest/api/3/issue/OMA-42",
+			body: `{"key":"OMA-42","fields":{"summary":"summary","status":null}}`,
+			call: func(client *Client) error {
+				_, _, err := client.FetchIssue(context.Background(), "OMA-42")
+				return err
+			},
+		},
+		{
+			name: "issue missing status category",
+			path: "/rest/api/3/issue/OMA-42",
+			body: `{"key":"OMA-42","fields":{"summary":"summary","status":{"id":"1","name":"Open"}}}`,
+			call: func(client *Client) error {
+				_, _, err := client.FetchIssue(context.Background(), "OMA-42")
+				return err
+			},
+		},
+		{
+			name: "transition empty object",
+			path: "/rest/api/3/issue/OMA-42/transitions",
+			body: `{"transitions":[{}]}`,
+			call: func(client *Client) error {
+				_, err := client.Transitions(context.Background(), "OMA-42")
+				return err
+			},
+		},
+		{
+			name: "transition missing destination category",
+			path: "/rest/api/3/issue/OMA-42/transitions",
+			body: `{"transitions":[{"id":"21","name":"Start","to":{"id":"3","name":"In Progress"}}]}`,
+			call: func(client *Client) error {
+				_, err := client.Transitions(context.Background(), "OMA-42")
+				return err
+			},
+		},
+		{
+			name: "myself missing display name",
+			path: "/rest/api/3/myself",
+			body: `{"accountId":"acct-me"}`,
+			call: func(client *Client) error {
+				_, err := client.Myself(context.Background())
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != test.path {
+					t.Errorf("path = %s, want %s", r.URL.Path, test.path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+			client := newTestClient(t, server.URL, server.Client())
+			err := test.call(client)
+			assertSafeError(t, err, test.body)
+		})
+	}
+}
+
+func TestCredentialsFromNetrcRejectsMalformedWithoutPanic(t *testing.T) {
+	for _, content := range []string{
+		"machine",
+		"machine ",
+		"machine jira.example.test login",
+	} {
+		t.Run(strings.ReplaceAll(content, " ", "_"), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "netrc")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var credentials Credentials
+			var err error
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						t.Fatalf("CredentialsFromNetrc panicked: %v", recovered)
+					}
+				}()
+				credentials, err = CredentialsFromNetrc(path, "jira.example.test")
+			}()
+			if err == nil {
+				t.Fatalf("malformed netrc returned credentials: %#v", credentials)
+			}
+			assertSafeError(t, err, content)
+		})
 	}
 }
 
