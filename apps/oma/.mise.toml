@@ -22,6 +22,188 @@ run = "gofmt -w ."
 description = "Check formatting (CI)"
 run = "test -z \"$(gofmt -l .)\""
 
+[tasks.completion-check]
+description = "Check shell completion contracts"
+run = """
+set -eu
+zsh -n completions/_oma
+bash -n completions/oma.bash
+
+require_token() {
+  file="$1"
+  token="$2"
+  if ! grep -Fq -- "$token" "$file"; then
+    echo "completion assertion failed: $file must contain $token" >&2
+    exit 1
+  fi
+}
+
+for file in completions/_oma completions/oma.bash; do
+  for token in prep --description --empty --repo --type --base --worktree --submodule --setup-arg --product-type --transition-id --no-push --dry-run --plan --yes --json; do
+    require_token "$file" "$token"
+  done
+  require_token "$file" "_oma_candidates"
+done
+require_token completions/oma.bash 'prep -h --help -v --version'
+if [ "$(grep -Fc "'{-h,--help}'" completions/_oma)" -lt 2 ] || [ "$(grep -Fc "'{-v,--version}'" completions/_oma)" -lt 2 ]; then
+  echo "completion assertion failed: zsh must offer short help and version flags for root and prep" >&2
+  exit 1
+fi
+
+if grep -En '(^|[^[:alnum:]_])(curl|wget)([^[:alnum:]_]|$)|https?://|oma[[:space:]]+prep' completions/_oma completions/oma.bash; then
+  echo "completion safety assertion failed: completion must not call Jira or another network client" >&2
+  exit 1
+fi
+
+temp_root="${TMPDIR:-/tmp}"
+work="$(mktemp -d "$temp_root/oma-completion.XXXXXX")"
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+repo="$work/repo with space"
+git init -q --initial-branch=main "$repo"
+git -C "$repo" config user.name "Completion Test"
+git -C "$repo" config user.email "completion@example.com"
+git -C "$repo" commit --allow-empty -qm initial
+git -C "$repo" branch hotfix/urgent
+git -C "$repo" branch 'change/$(touch-pwned)'
+git -C "$repo" worktree add -qb feature/space "$work/tree with space"
+newline_worktree="$work/tree
+newline"
+git -C "$repo" worktree add -qb feature/newline "$newline_worktree"
+space_worktree="$(cd "$work/tree with space" && pwd -P)"
+newline_worktree="$(cd "$newline_worktree" && pwd -P)"
+cat >"$repo/.gitmodules" <<'EOF'
+[submodule "alpha"]
+	path = modules/alpha
+	url = ../alpha.git
+[submodule "space"]
+	path = modules/with space
+	url = ../space.git
+[submodule "literal"]
+	path = modules/$(touch-pwned)
+	url = ../literal.git
+EOF
+config_home="$work/config"
+mkdir -p "$config_home/oma"
+cat >"$config_home/oma/config.toml" <<'EOF'
+jira_base_url = "https://jira.example.com"
+[product_type_options]
+zeta = "Zeta"
+alpha = "Alpha"
+EOF
+
+run_candidates() {
+  shell_name="$1"
+  kind="$2"
+  output="$3"
+  target_repo="$4"
+  case "$shell_name" in
+    bash)
+      XDG_CONFIG_HOME="$config_home" bash -c '. "$1"; _oma_candidates "$2" "$3"' _ completions/oma.bash "$kind" "$target_repo" >"$output"
+      ;;
+    zsh)
+      XDG_CONFIG_HOME="$config_home" zsh -fc 'compdef() { :; }; _arguments() { return 0; }; source "$1"; _oma_candidates "$2" "$3"' _ completions/_oma "$kind" "$target_repo" >"$output"
+      ;;
+  esac
+}
+
+assert_candidate() {
+  file="$1"
+  expected="$2"
+  bash -c '
+    found=0
+    while IFS= read -r -d "" candidate; do
+      if [[ "$candidate" == "$2" ]]; then found=1; fi
+    done <"$1"
+    [[ "$found" -eq 1 ]] || { printf "missing completion candidate: %q\n" "$2" >&2; exit 1; }
+  ' _ "$file" "$expected"
+}
+
+assert_sorted_unique() {
+  file="$1"
+  bash -c '
+    first=1
+    previous=
+    while IFS= read -r -d "" candidate; do
+      if [[ "$first" -eq 0 && ! "$previous" < "$candidate" ]]; then
+        printf "completion candidates are not strictly sorted: %q then %q\n" "$previous" "$candidate" >&2
+        exit 1
+      fi
+      first=0
+      previous="$candidate"
+    done <"$1"
+  ' _ "$file"
+}
+
+for shell_name in bash zsh; do
+  for kind in base worktree submodule branch-type product-type; do
+    output="$work/$shell_name-$kind"
+    if ! run_candidates "$shell_name" "$kind" "$output" "$repo"; then
+      echo "completion assertion failed: $shell_name $kind candidate lookup returned failure" >&2
+      exit 1
+    fi
+    assert_sorted_unique "$output"
+  done
+  assert_candidate "$work/$shell_name-base" main
+  assert_candidate "$work/$shell_name-base" hotfix/urgent
+  assert_candidate "$work/$shell_name-base" 'change/$(touch-pwned)'
+  assert_candidate "$work/$shell_name-worktree" new
+  assert_candidate "$work/$shell_name-worktree" current
+  assert_candidate "$work/$shell_name-worktree" "$space_worktree"
+  assert_candidate "$work/$shell_name-worktree" "$newline_worktree"
+  assert_candidate "$work/$shell_name-submodule" "modules/with space"
+  assert_candidate "$work/$shell_name-submodule" 'modules/$(touch-pwned)'
+  assert_candidate "$work/$shell_name-branch-type" feature
+  assert_candidate "$work/$shell_name-product-type" alpha
+done
+
+if XDG_CONFIG_HOME="$work/missing-config" bash -c '. "$1"; _oma_candidates product-type "$2"' _ completions/oma.bash "$repo" >"$work/missing-product"; then
+  test ! -s "$work/missing-product"
+else
+  echo "completion assertion failed: a missing optional config must be an empty successful result" >&2
+  exit 1
+fi
+
+set +e
+bash -c '. "$1"; _oma_candidates base "$2"' _ completions/oma.bash "$work/not-a-repo" >"$work/non-repo" 2>/dev/null
+candidate_status=$?
+set -e
+if [ "$candidate_status" -ne 2 ]; then
+  echo "completion assertion failed: lookup failure must return status 2, got $candidate_status" >&2
+  exit 1
+fi
+
+if ! LC_ALL=en_US.UTF-8 bash -c '. "$1"; _oma_candidates branch-type . >/dev/null; [[ "$LC_ALL" == en_US.UTF-8 ]]' _ completions/oma.bash; then
+  echo "completion assertion failed: candidate lookup must preserve the caller locale" >&2
+  exit 1
+fi
+
+if ! bash -uc '. "$1"; _oma_candidates base "$2" >/dev/null; COMP_WORDS=(oma prep --base ""); COMP_CWORD=3; _oma' _ completions/oma.bash "$repo"; then
+  echo "completion assertion failed: Bash candidate lookup must tolerate nounset" >&2
+  exit 1
+fi
+
+if ! bash -c '. "$1"; COMP_WORDS=(oma prep --repo "$2" --base ""); COMP_CWORD=5; [[ "$(_oma_repo_from_words)" == "$2" ]]; _oma' _ completions/oma.bash "$repo"; then
+  echo "completion assertion failed: Bash completion must tolerate repository paths with spaces" >&2
+  exit 1
+fi
+
+if ! bash -c '. "$1"; COMP_WORDS=(oma prep --repo "$2"); COMP_CWORD=3; _oma; [[ "${COMPREPLY[0]-}" == "$2" && -z "${COMPREPLY[1]-}" ]]' _ completions/oma.bash "$repo"; then
+  echo "completion assertion failed: Bash directory completion must preserve spaces" >&2
+  exit 1
+fi
+
+if [ -e "$repo/touch-pwned" ] || [ -e "$work/touch-pwned" ]; then
+  echo "completion safety assertion failed: a candidate was evaluated as shell code" >&2
+  exit 1
+fi
+
+for token in 'oma prep <JIRA-KEY>' 'oma prep --description' 'oma prep --empty' '--dry-run' '--plan' '--yes' 'XDG_CONFIG_HOME' 'XDG_CACHE_HOME' 'XDG_STATE_HOME' 'partial' 'setup receipt'; do
+  require_token README.md "$token"
+done
+require_token ../../README.md '[oma](apps/oma/)'
+require_token ../../docs/README_ko.md '[oma](../apps/oma/)'
+"""
+
 [tasks.install]
 description = "Build and install to ~/.local/bin"
 run = """

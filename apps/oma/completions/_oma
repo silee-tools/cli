@@ -1,0 +1,161 @@
+#compdef oma
+
+_oma_raw_candidates() {
+  local kind="${1-}" repo="${2-}" output="${3-}"
+  local records="${output}.records" line value config_path config_root
+
+  case "$kind" in
+    branch-type)
+      printf '%s\0' change chore feature fix hotfix release >"$output"
+      ;;
+    product-type)
+      config_root="${XDG_CONFIG_HOME:-${HOME:-}/.config}"
+      config_path="$config_root/oma/config.toml"
+      [[ -e "$config_path" ]] || config_path="$config_root/prep-task/config.toml"
+      if [[ ! -e "$config_path" ]]; then
+        : >"$output"
+        return 0
+      fi
+      [[ -r "$config_path" ]] || return 2
+      awk '
+        /^\[product_type_options\][[:space:]]*$/ { inside = 1; next }
+        /^\[/ { inside = 0 }
+        inside && match($0, /^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=/) {
+          key = substr($0, RSTART, RLENGTH)
+          sub(/^[[:space:]]*/, "", key)
+          sub(/[[:space:]]*=.*/, "", key)
+          printf "%s%c", key, 0
+        }
+      ' "$config_path" >"$output" || return 2
+      ;;
+    base)
+      git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 2
+      git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads refs/remotes/origin >"$records" 2>/dev/null || return 2
+      : >"$output"
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "$line" ]] && printf '%s\0' "$line" >>"$output"
+      done <"$records"
+      rm -f "$records"
+      ;;
+    worktree)
+      git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 2
+      git -C "$repo" worktree list --porcelain -z >"$records" 2>/dev/null || return 2
+      printf '%s\0' current new >"$output"
+      while IFS= read -r -d $'\0' value; do
+        case "$value" in
+          'worktree '*) printf '%s\0' "${value#worktree }" >>"$output" ;;
+        esac
+      done <"$records"
+      rm -f "$records"
+      ;;
+    submodule)
+      git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 2
+      if [[ ! -e "$repo/.gitmodules" ]]; then
+        : >"$output"
+        return 0
+      fi
+      git -C "$repo" config -z --file .gitmodules --get-regexp '^submodule\..*\.path$' >"$records" 2>/dev/null
+      case "$?" in
+        0) ;;
+        1) : >"$output"; rm -f "$records"; return 0 ;;
+        *) rm -f "$records"; return 2 ;;
+      esac
+      : >"$output"
+      while IFS= read -r -d $'\0' value; do
+        value="${value#*$'\n'}"
+        [[ -n "$value" ]] && printf '%s\0' "$value" >>"$output"
+      done <"$records"
+      rm -f "$records"
+      ;;
+    *) return 2 ;;
+  esac
+}
+
+# Keep a valid empty result distinct from lookup failure: callers rely on
+# status 0 versus 2, and NUL delimiters preserve spaces and newlines.
+_oma_candidates() {
+  local kind="${1-}" repo="${2:-.}" temporary candidate
+  local -a values sorted
+  temporary="$(mktemp "${TMPDIR:-/tmp}/oma-completion.XXXXXX")" || return 2
+  if ! _oma_raw_candidates "$kind" "$repo" "$temporary"; then
+    rm -f "$temporary" "${temporary}.records"
+    return 2
+  fi
+  values=()
+  while IFS= read -r -d $'\0' candidate; do
+    [[ -n "$candidate" ]] && values+=("$candidate")
+  done <"$temporary"
+  rm -f "$temporary" "${temporary}.records"
+  sorted=("${(@on)values}")
+  values=()
+  for candidate in "${sorted[@]}"; do
+    [[ -n "$candidate" ]] || continue
+    (( ${values[(Ie)$candidate]} )) || values+=("$candidate")
+  done
+  for candidate in "${values[@]}"; do
+    printf '%s\0' "$candidate"
+  done
+}
+
+_oma_repo_from_words() {
+  local index word
+  for ((index = 3; index < CURRENT; index++)); do
+    word="${words[index]}"
+    case "$word" in
+      --repo=*) print -rn -- "${word#--repo=}"; return 0 ;;
+      --repo)
+        if ((index + 1 < CURRENT)); then
+          print -rn -- "${words[index + 1]}"
+          return 0
+        fi
+        ;;
+    esac
+  done
+  print -rn -- .
+}
+
+_oma_values() {
+  local kind="$1" repo candidate
+  local -a candidates
+  repo="$(_oma_repo_from_words)"
+  candidates=("${(@0)$(_oma_candidates "$kind" "$repo" 2>/dev/null)}")
+  for candidate in "${candidates[@]}"; do
+    [[ -n "$candidate" ]] && compadd -Q -- "$candidate"
+  done
+  return 0
+}
+
+_oma_prep() {
+  _arguments \
+    '--description=[Jira 없이 작업 설명 사용]:작업 설명:' \
+    '--empty[날짜 기반 빈 작업 준비]' \
+    '--repo=[대상 Git 저장소]:저장소:_directories' \
+    '--type=[브랜치 type]:브랜치 type:_oma_values branch-type' \
+    '--base=[기준 브랜치]:기준 브랜치:_oma_values base' \
+    '--worktree=[worktree 모드 또는 경로]:worktree:_oma_values worktree' \
+    '*--submodule=[같은 브랜치를 만들 submodule]:submodule:_oma_values submodule' \
+    '*--setup-arg=[setup-worktree.sh 인자]:인자:' \
+    '--product-type=[Product type 설정 키]:설정 키:_oma_values product-type' \
+    '--transition-id=[Jira 전환 id]:전환 id:' \
+    '--no-push[원격 브랜치 생성을 생략]' \
+    '--dry-run[외부 쓰기 없이 계획 생성]' \
+    '--plan=[승인한 계획 token 적용]:token:' \
+    '--yes[비대화형 적용 승인]' \
+    '--json[결과를 JSON 문서로 출력]' \
+    '(-h --help)'{-h,--help}'[prep 도움말 출력]' \
+    '(-v --version)'{-v,--version}'[버전 출력]' \
+    '1:Jira 키:'
+}
+
+_oma() {
+  if (( CURRENT > 2 )) && [[ "${words[2]}" == prep ]]; then
+    _oma_prep
+    return
+  fi
+  _arguments \
+    '(-h --help)'{-h,--help}'[도움말 출력]' \
+    '(-v --version)'{-v,--version}'[버전 출력]' \
+    '1:명령:(prep)'
+}
+
+_oma "$@"
