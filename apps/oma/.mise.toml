@@ -41,11 +41,17 @@ binary_backup=""
 binary_installed=0
 cleanup() {
   if [ "$binary_installed" -eq 1 ]; then
-    if [ -n "$binary_backup" ]; then
-      mv "$binary_backup" "$target"
-      binary_backup=""
-    else
-      rm -f "$target"
+    state_committed=0
+    if [ -n "$state_path" ] && { [ -z "$state_tmp" ] || [ ! -e "$state_tmp" ]; }; then
+      state_committed=1
+    fi
+    if [ "$state_committed" -eq 0 ]; then
+      if [ -n "$binary_backup" ]; then
+        mv "$binary_backup" "$target"
+        binary_backup=""
+      else
+        rm -f "$target"
+      fi
     fi
     binary_installed=0
   fi
