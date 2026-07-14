@@ -21,6 +21,9 @@ func (p *Planner) Apply(ctx context.Context, token string) (result Result, resul
 	var approved planPayload
 	record, err := p.store.Claim(token, &approved)
 	if err != nil {
+		if errors.Is(err, state.ErrExpired) {
+			return p.refreshExpired(ctx, token, approved)
+		}
 		var committed *state.CommittedError
 		if !errors.As(err, &committed) || committed.State != state.Claimed {
 			return Result{}, fmt.Errorf("claim approved plan: %w", err)
@@ -181,6 +184,32 @@ func (p *Planner) Apply(ctx context.Context, token string) (result Result, resul
 	}
 	result.NextAction = "생성된 worktree로 이동해 작업을 시작하세요"
 	return result, nil
+}
+
+func (p *Planner) refreshExpired(ctx context.Context, expiredToken string, approved planPayload) (Result, error) {
+	current, err := p.build(ctx, approved.Input)
+	if err != nil {
+		return Result{}, fmt.Errorf("refresh expired plan: %w", err)
+	}
+	if len(current.result.RequiredInputs) != 0 {
+		current.result.NextAction = "승인 계획이 만료되었습니다. 필수 입력을 지정해 새 계획을 만드세요"
+		return current.result, nil
+	}
+	fresh, err := p.store.Create(current.payload, current.fingerprint)
+	if err != nil {
+		var committed *state.CommittedError
+		if !errors.As(err, &committed) {
+			return Result{}, fmt.Errorf("persist refreshed expired plan: %w", err)
+		}
+	}
+	if fresh.Token == "" || fresh.Token == expiredToken {
+		return Result{}, errors.New("refreshed expired plan did not receive a new token")
+	}
+	current.result.PlanToken = fresh.Token
+	current.result.ExpiresAt = fresh.ExpiresAt
+	current.result.Steps = append(current.result.Steps, Step{Name: "plan-state", Status: "completed", Detail: "만료된 승인 계획을 현재 상태로 다시 저장했습니다"})
+	current.result.NextAction = "승인 계획이 만료되었습니다. 새 계획을 확인하고 다시 승인하세요"
+	return current.result, nil
 }
 
 func (p *Planner) setupReceiptKey(payload planPayload) (string, error) {

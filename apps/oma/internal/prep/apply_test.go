@@ -111,6 +111,88 @@ func TestApplyDriftConsumesOldTokenAndReturnsNewPlan(t *testing.T) {
 	}
 }
 
+func TestApplyExpiredPlanReturnsFreshPlanBeforeExternalWrites(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		input Input
+		jira  bool
+	}{
+		{name: "description", input: Input{Kind: InputDescription, Description: "작업", Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"}},
+		{name: "empty", input: Input{Kind: InputEmpty, Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"}},
+		{name: "jira", input: Input{Kind: InputJira, IssueKey: "ABC-123", ProductType: "feature", Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"}, jira: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			git := &fakeGitGateway{snapshot: testGitSnapshot()}
+			store := &fakePlanStore{}
+			var migrationPlans int
+			configs := configGateway(panicConfigGateway{})
+			provider := jiraProvider(panicJiraProvider{})
+			var jiraFake *fakeJiraGateway
+			if test.jira {
+				jiraFake = &fakeJiraGateway{issue: jiraIssueInProgress()}
+				configs = fakeConfigGateway{config: testConfig(), planMigrationCalls: &migrationPlans}
+				provider = fakeJiraProvider{gateway: jiraFake}
+			}
+			planner := testPlanner(store, git, configs, provider)
+			planned, err := planner.build(context.Background(), test.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store.claimed = planned.payload
+			store.claimRecord = state.Record{Token: "old-expired-token", Fingerprint: planned.fingerprint, CreatedAt: time.Now().Add(-time.Hour), ExpiresAt: time.Now().Add(-30 * time.Minute), State: state.Pending}
+			store.claimErr = state.ErrExpired
+			git.events = nil
+			if jiraFake != nil {
+				jiraFake.events = nil
+			}
+
+			result, err := planner.Apply(context.Background(), "old-expired-token")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != "planned" || result.PlanToken == "" || result.PlanToken == "old-expired-token" || result.ExpiresAt.IsZero() || !strings.Contains(result.NextAction, "만료") {
+				t.Fatalf("result = %+v", result)
+			}
+			if store.creates != 1 || store.consumes != 0 || git.writes != 0 || migrationPlans != 0 {
+				t.Fatalf("creates=%d consumes=%d gitWrites=%d migrationPlans=%d", store.creates, store.consumes, git.writes, migrationPlans)
+			}
+			if jiraFake != nil && (slices.Contains(jiraFake.events, "fields") || slices.Contains(jiraFake.events, "transition")) {
+				t.Fatalf("expired refresh wrote Jira: %v", jiraFake.events)
+			}
+		})
+	}
+}
+
+func TestApplyExpiredPlanReturnsRequiredInputsWithoutFreshToken(t *testing.T) {
+	git := &fakeGitGateway{snapshot: testGitSnapshot()}
+	store := &fakePlanStore{}
+	issue := jiraIssueInProgress()
+	issue.CustomFields["custom_product"] = json.RawMessage("null")
+	jiraFake := &fakeJiraGateway{issue: issue}
+	var migrationPlans int
+	planner := testPlanner(store, git, fakeConfigGateway{config: testConfig(), planMigrationCalls: &migrationPlans}, fakeJiraProvider{gateway: jiraFake})
+	input := Input{Kind: InputJira, IssueKey: "ABC-123", Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"}
+	planned, err := planner.build(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.claimed = planned.payload
+	store.claimRecord = state.Record{Token: "old-expired-token", Fingerprint: planned.fingerprint, State: state.Pending}
+	store.claimErr = state.ErrExpired
+	git.events, jiraFake.events = nil, nil
+
+	result, err := planner.Apply(context.Background(), "old-expired-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "planned" || result.PlanToken != "" || len(result.RequiredInputs) != 1 || result.RequiredInputs[0].Kind != "product_type" {
+		t.Fatalf("result = %+v", result)
+	}
+	if store.creates != 0 || store.consumes != 0 || git.writes != 0 || migrationPlans != 0 {
+		t.Fatalf("creates=%d consumes=%d gitWrites=%d migrationPlans=%d", store.creates, store.consumes, git.writes, migrationPlans)
+	}
+}
+
 func TestApplyJiraMigrationPrecedesGitAndJiraWritesFollowPush(t *testing.T) {
 	migration := &fakeMigration{}
 	git := &fakeGitGateway{snapshot: testGitSnapshot()}

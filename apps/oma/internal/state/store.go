@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -532,7 +533,7 @@ func (s *Store) Claim(token string, payload any) (Record, error) {
 	if err := s.nonPendingState(token); err != nil {
 		return Record{}, err
 	}
-	disk, err := s.read(token, pendingSuffix, Pending, payload)
+	disk, err := s.readForClaim(token, pendingSuffix, Pending, payload)
 	if err != nil {
 		var committed *CommittedError
 		if errors.As(err, &committed) {
@@ -540,6 +541,9 @@ func (s *Store) Claim(token string, payload any) (Record, error) {
 		}
 		if errors.Is(err, ErrMissing) {
 			return Record{}, s.absentState(token)
+		}
+		if errors.Is(err, ErrExpired) {
+			return metadata(disk), err
 		}
 		return Record{}, err
 	}
@@ -793,6 +797,14 @@ func isTokenCharacter(char byte) bool {
 }
 
 func (s *Store) read(token, suffix string, wantState State, payload any) (diskRecord, error) {
+	return s.readValidated(token, suffix, wantState, payload, false)
+}
+
+func (s *Store) readForClaim(token, suffix string, wantState State, payload any) (diskRecord, error) {
+	return s.readValidated(token, suffix, wantState, payload, true)
+}
+
+func (s *Store) readValidated(token, suffix string, wantState State, payload any, exposeExpired bool) (diskRecord, error) {
 	disk, err := s.decodeRecord(token, suffix, wantState)
 	if err != nil {
 		var committed *CommittedError
@@ -801,15 +813,33 @@ func (s *Store) read(token, suffix string, wantState State, payload any) (diskRe
 		}
 		return diskRecord{}, err
 	}
+	assignPayload, err := validatedPayloadAssignment(disk.Payload, payload)
+	if err != nil {
+		return diskRecord{}, err
+	}
 	if !s.now().Before(disk.ExpiresAt) {
-		return diskRecord{}, ErrExpired
-	}
-	if payload != nil {
-		if err := json.Unmarshal(disk.Payload, payload); err != nil {
-			return diskRecord{}, fmt.Errorf("%w: decode payload: %v", ErrCorrupt, err)
+		if exposeExpired {
+			assignPayload()
 		}
+		return disk, ErrExpired
 	}
+	assignPayload()
 	return disk, nil
+}
+
+func validatedPayloadAssignment(raw json.RawMessage, payload any) (func(), error) {
+	if payload == nil {
+		return func() {}, nil
+	}
+	destination := reflect.ValueOf(payload)
+	if destination.Kind() != reflect.Ptr || destination.IsNil() {
+		return nil, fmt.Errorf("%w: decode payload: destination must be a non-nil pointer", ErrCorrupt)
+	}
+	temporary := reflect.New(destination.Elem().Type())
+	if err := json.Unmarshal(raw, temporary.Interface()); err != nil {
+		return nil, fmt.Errorf("%w: decode payload: %v", ErrCorrupt, err)
+	}
+	return func() { destination.Elem().Set(temporary.Elem()) }, nil
 }
 
 func (s *Store) decodeRecord(token, suffix string, wantState State) (diskRecord, error) {

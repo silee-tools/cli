@@ -133,6 +133,74 @@ func TestStoreExpiresAtExactBoundary(t *testing.T) {
 	}
 }
 
+func TestClaimExpiredReturnsValidatedMetadataAndPayload(t *testing.T) {
+	now := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+	store := newTestStore(t, now, bytes.Repeat([]byte{0x0d}, tokenBytes))
+	wantPayload := testPayload{Title: "expired claim", ID: 42}
+	created, err := store.Create(wantPayload, "expired-fingerprint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return created.ExpiresAt }
+	gotPayload := testPayload{Title: "sentinel", ID: -1}
+	gotRecord, err := store.Claim(created.Token, &gotPayload)
+	if !errors.Is(err, ErrExpired) {
+		t.Fatalf("Claim() error = %v, want ErrExpired", err)
+	}
+	if gotRecord != created || gotPayload != wantPayload {
+		t.Fatalf("Claim() = (%+v, %+v), want (%+v, %+v)", gotRecord, gotPayload, created, wantPayload)
+	}
+}
+
+func TestClaimDoesNotExposePayloadFromInvalidRecords(t *testing.T) {
+	t.Run("corrupt payload type", func(t *testing.T) {
+		now := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+		store := newTestStore(t, now, bytes.Repeat([]byte{0x0e}, tokenBytes))
+		created, err := store.Create(map[string]any{"title": 99, "id": 42}, "corrupt-payload")
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.now = func() time.Time { return created.ExpiresAt }
+		payload := testPayload{Title: "sentinel", ID: -1}
+		if _, err := store.Claim(created.Token, &payload); !errors.Is(err, ErrCorrupt) {
+			t.Fatalf("Claim() error = %v, want ErrCorrupt", err)
+		}
+		if payload != (testPayload{Title: "sentinel", ID: -1}) {
+			t.Fatalf("corrupt payload leaked as %+v", payload)
+		}
+	})
+
+	t.Run("unsafe mode", func(t *testing.T) {
+		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x0f}, tokenBytes))
+		created, err := store.Create(testPayload{Title: "unsafe", ID: 1}, "unsafe-mode")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(store.dir, created.Token+pendingSuffix), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		payload := testPayload{Title: "sentinel", ID: -1}
+		if _, err := store.Claim(created.Token, &payload); !errors.Is(err, ErrUnsafeRecord) {
+			t.Fatalf("Claim() error = %v, want ErrUnsafeRecord", err)
+		}
+		if payload != (testPayload{Title: "sentinel", ID: -1}) {
+			t.Fatalf("unsafe payload leaked as %+v", payload)
+		}
+	})
+
+	t.Run("missing", func(t *testing.T) {
+		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x10}, tokenBytes))
+		missing := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x11}, tokenBytes))
+		payload := testPayload{Title: "sentinel", ID: -1}
+		if _, err := store.Claim(missing, &payload); !errors.Is(err, ErrMissing) {
+			t.Fatalf("Claim() error = %v, want ErrMissing", err)
+		}
+		if payload != (testPayload{Title: "sentinel", ID: -1}) {
+			t.Fatalf("missing payload leaked as %+v", payload)
+		}
+	})
+}
+
 func TestStoreRejectsEmptyFingerprint(t *testing.T) {
 	store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x12}, tokenBytes))
 	if _, err := store.Create(testPayload{Title: "fingerprint"}, " \t\n"); !errors.Is(err, ErrInvalidFingerprint) {

@@ -169,6 +169,7 @@ type fakePlanStore struct {
 	creates          int
 	claimed          planPayload
 	claimRecord      state.Record
+	claimErr         error
 	consumes         int
 	receipts         map[string]bool
 	receiptCreates   int
@@ -193,7 +194,7 @@ func (f *fakePlanStore) Claim(_ string, payload any) (state.Record, error) {
 	defer f.mu.Unlock()
 	value := payload.(*planPayload)
 	*value = f.claimed
-	return f.claimRecord, nil
+	return f.claimRecord, f.claimErr
 }
 func (f *fakePlanStore) Consume(string) error {
 	f.mu.Lock()
@@ -298,14 +299,18 @@ func (panicConfigGateway) PlanMigration(config.Paths) (configMigration, error) {
 }
 
 type fakeConfigGateway struct {
-	config    config.Config
-	migration configMigration
+	config             config.Config
+	migration          configMigration
+	planMigrationCalls *int
 }
 
 func (f fakeConfigGateway) Load(config.Paths) (config.Config, config.Source, error) {
 	return f.config, config.SourceCanonical, nil
 }
 func (f fakeConfigGateway) PlanMigration(config.Paths) (configMigration, error) {
+	if f.planMigrationCalls != nil {
+		*f.planMigrationCalls = *f.planMigrationCalls + 1
+	}
 	return f.migration, nil
 }
 

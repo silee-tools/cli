@@ -18,11 +18,13 @@ import (
 )
 
 type cliResult struct {
-	Status           string `json:"status"`
-	PlanToken        string `json:"plan_token"`
-	Branch           string `json:"branch"`
-	WorktreePath     string `json:"worktree_path"`
-	JiraSnapshotPath string `json:"jira_snapshot_path"`
+	Status           string     `json:"status"`
+	PlanToken        string     `json:"plan_token"`
+	ExpiresAt        *time.Time `json:"expires_at"`
+	Branch           string     `json:"branch"`
+	WorktreePath     string     `json:"worktree_path"`
+	JiraSnapshotPath string     `json:"jira_snapshot_path"`
+	NextAction       string     `json:"next_action"`
 	Base             struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
@@ -206,16 +208,43 @@ func TestPrepEndToEnd(t *testing.T) {
 		)
 	})
 
-	t.Run("expired token is rejected before external writes", func(t *testing.T) {
-		h := newHarness(t, harnessOptions{})
-		planned := h.descriptionPlan(t, "만료 확인")
-		expirePlan(t, filepath.Join(h.state, "oma", "plans", planned.PlanToken+".json"))
-		result := h.apply(t, planned.PlanToken)
-		if result.err == nil || result.document.Status != "" || result.stdout != "" {
-			t.Fatalf("expired apply exit/status/stdout = %v/%q/%q, want nonzero/empty/empty", result.err, result.document.Status, result.stdout)
-		}
-		assertNoAppliedState(t, h, planned)
-	})
+	for _, input := range []struct {
+		name string
+		jira bool
+		plan func(*testing.T, *testHarness) cliResult
+	}{
+		{name: "description", plan: func(t *testing.T, h *testHarness) cliResult { return h.descriptionPlan(t, "만료 확인") }},
+		{name: "empty", plan: func(t *testing.T, h *testHarness) cliResult {
+			return h.run(t, "prep", "--empty", "--repo", h.repo, "--base", "main", "--dry-run", "--json").success(t).document
+		}},
+		{name: "jira", jira: true, plan: func(t *testing.T, h *testHarness) cliResult {
+			return h.run(t, h.jiraPlanArgs()...).success(t).document
+		}},
+	} {
+		t.Run("expired "+input.name+" plan refreshes before external writes", func(t *testing.T) {
+			h := newHarness(t, harnessOptions{jira: input.jira})
+			planned := input.plan(t, h)
+			expirePlan(t, filepath.Join(h.state, "oma", "plans", planned.PlanToken+".json"))
+			requestStart := 0
+			if h.jira != nil {
+				requestStart = h.jira.attemptCount()
+			}
+			refreshed := h.apply(t, planned.PlanToken).success(t).document
+			if refreshed.Status != "planned" || refreshed.PlanToken == "" || refreshed.PlanToken == planned.PlanToken || refreshed.ExpiresAt == nil || !strings.Contains(refreshed.NextAction, "만료") {
+				t.Fatalf("expired refresh = %+v", refreshed)
+			}
+			assertNoAppliedState(t, h, planned)
+			if h.jira != nil {
+				if fields, transitions := h.jira.writeCounts(); fields != 0 || transitions != 0 {
+					t.Fatalf("expired refresh Jira writes fields=%d transitions=%d", fields, transitions)
+				}
+				assertRequestSequence(t, h.jira.attemptsFrom(requestStart),
+					"GET /rest/api/3/issue/OMA-42",
+					"GET /rest/api/3/issue/OMA-42/transitions",
+				)
+			}
+		})
+	}
 
 	t.Run("base drift returns a fresh plan before writes", func(t *testing.T) {
 		h := newHarness(t, harnessOptions{})
@@ -860,7 +889,9 @@ func expirePlan(t *testing.T, path string) {
 	if err := json.Unmarshal(data, &record); err != nil {
 		t.Fatal(err)
 	}
-	record["expires_at"] = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	createdAt := time.Now().Add(-2 * time.Hour).UTC()
+	record["created_at"] = createdAt.Format(time.RFC3339Nano)
+	record["expires_at"] = createdAt.Add(30 * time.Minute).Format(time.RFC3339Nano)
 	data, err = json.Marshal(record)
 	if err != nil {
 		t.Fatal(err)
