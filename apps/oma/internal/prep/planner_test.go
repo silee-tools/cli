@@ -187,6 +187,7 @@ type fakePlanStore struct {
 	claimed          planPayload
 	claimRecord      state.Record
 	claimErr         error
+	expiredConsumes  int
 	consumes         int
 	receipts         map[string]bool
 	receiptCreates   int
@@ -218,6 +219,13 @@ func (f *fakePlanStore) Consume(string) error {
 	defer f.mu.Unlock()
 	f.consumes++
 	return f.consumeErr
+}
+func (f *fakePlanStore) ConsumeExpired(_ string, payload any) (state.Record, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.expiredConsumes++
+	*(payload.(*planPayload)) = f.claimed
+	return f.claimRecord, nil
 }
 func (f *fakePlanStore) EnsureSetupReceipt(key string, setup func() error) (bool, error) {
 	f.mu.Lock()

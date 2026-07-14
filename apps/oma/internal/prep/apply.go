@@ -22,6 +22,13 @@ func (p *Planner) Apply(ctx context.Context, token string) (result Result, resul
 	record, err := p.store.Claim(token, &approved)
 	if err != nil {
 		if errors.Is(err, state.ErrExpired) {
+			record, err = p.store.ConsumeExpired(token, &approved)
+			if err != nil {
+				var committed *state.CommittedError
+				if !errors.As(err, &committed) || committed.State != state.Consumed {
+					return Result{}, fmt.Errorf("consume expired approved plan: %w", err)
+				}
+			}
 			return p.refreshExpired(ctx, token, approved)
 		}
 		var committed *state.CommittedError

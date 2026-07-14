@@ -152,6 +152,111 @@ func TestClaimExpiredReturnsValidatedMetadataAndPayload(t *testing.T) {
 	}
 }
 
+func TestConsumeExpiredAtomicallyTombstonesPendingPlan(t *testing.T) {
+	now := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
+	store := newTestStore(t, now, bytes.Repeat([]byte{0x5a}, tokenBytes))
+	want := testPayload{Title: "expired", ID: 77}
+	created, err := store.Create(want, "expired-fingerprint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return created.ExpiresAt }
+
+	var got testPayload
+	record, err := store.ConsumeExpired(created.Token, &got)
+	if err != nil {
+		t.Fatalf("ConsumeExpired() error = %v", err)
+	}
+	if record.State != Consumed || got != want {
+		t.Fatalf("ConsumeExpired() = (%+v, %+v), want consumed record and %+v", record, got, want)
+	}
+	if _, err := os.Lstat(filepath.Join(store.dir, created.Token+pendingSuffix)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending record remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.dir, created.Token+consumedSuffix)); err != nil {
+		t.Fatalf("consumed tombstone missing: %v", err)
+	}
+	if _, err := store.ConsumeExpired(created.Token, &got); !errors.Is(err, ErrConsumed) {
+		t.Fatalf("second ConsumeExpired() error = %v, want ErrConsumed", err)
+	}
+}
+
+func TestConsumeExpiredAllowsExactlyOneConcurrentRefresher(t *testing.T) {
+	now := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
+	store := newTestStore(t, now, bytes.Repeat([]byte{0x5b}, tokenBytes))
+	created, err := store.Create(testPayload{Title: "expired race", ID: 78}, "expired-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return created.ExpiresAt }
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wait sync.WaitGroup
+	for range 2 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			var payload testPayload
+			_, consumeErr := store.ConsumeExpired(created.Token, &payload)
+			errs <- consumeErr
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errs)
+	successes, consumed := 0, 0
+	for consumeErr := range errs {
+		switch {
+		case consumeErr == nil:
+			successes++
+		case errors.Is(consumeErr, ErrConsumed):
+			consumed++
+		default:
+			t.Fatalf("ConsumeExpired() error = %v", consumeErr)
+		}
+	}
+	if successes != 1 || consumed != 1 {
+		t.Fatalf("successes=%d consumed=%d", successes, consumed)
+	}
+}
+
+func TestConsumeExpiredRejectsLiveAndCorruptPendingRecords(t *testing.T) {
+	t.Run("live", func(t *testing.T) {
+		store := newTestStore(t, time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC), bytes.Repeat([]byte{0x5c}, tokenBytes))
+		created, err := store.Create(testPayload{Title: "live", ID: 79}, "live")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload testPayload
+		if _, err := store.ConsumeExpired(created.Token, &payload); !errors.Is(err, ErrNotClaimed) {
+			t.Fatalf("ConsumeExpired() error = %v, want ErrNotClaimed", err)
+		}
+		if _, err := os.Lstat(filepath.Join(store.dir, created.Token+consumedSuffix)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("live token was consumed: %v", err)
+		}
+	})
+
+	t.Run("corrupt", func(t *testing.T) {
+		store := newTestStore(t, time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC), bytes.Repeat([]byte{0x5d}, tokenBytes))
+		created, err := store.Create(testPayload{Title: "corrupt", ID: 80}, "corrupt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.now = func() time.Time { return created.ExpiresAt }
+		if err := os.WriteFile(filepath.Join(store.dir, created.Token+pendingSuffix), []byte("not-json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var payload testPayload
+		if _, err := store.ConsumeExpired(created.Token, &payload); !errors.Is(err, ErrCorrupt) {
+			t.Fatalf("ConsumeExpired() error = %v, want ErrCorrupt", err)
+		}
+		if _, err := os.Lstat(filepath.Join(store.dir, created.Token+consumedSuffix)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("corrupt token was consumed: %v", err)
+		}
+	})
+}
+
 func TestClaimDoesNotExposePayloadFromInvalidRecords(t *testing.T) {
 	t.Run("corrupt payload type", func(t *testing.T) {
 		now := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)

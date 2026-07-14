@@ -210,8 +210,8 @@ func TestApplyExpiredPlanReturnsFreshPlanBeforeExternalWrites(t *testing.T) {
 			if result.Status != "planned" || result.PlanToken == "" || result.PlanToken == "old-expired-token" || result.ExpiresAt.IsZero() || !strings.Contains(result.NextAction, "만료") {
 				t.Fatalf("result = %+v", result)
 			}
-			if store.creates != 1 || store.consumes != 0 || git.writes != 0 || migrationPlans != 0 {
-				t.Fatalf("creates=%d consumes=%d gitWrites=%d migrationPlans=%d", store.creates, store.consumes, git.writes, migrationPlans)
+			if store.creates != 1 || store.expiredConsumes != 1 || store.consumes != 0 || git.writes != 0 || migrationPlans != 0 {
+				t.Fatalf("creates=%d expiredConsumes=%d consumes=%d gitWrites=%d migrationPlans=%d", store.creates, store.expiredConsumes, store.consumes, git.writes, migrationPlans)
 			}
 			if jiraFake != nil && (slices.Contains(jiraFake.events, "fields") || slices.Contains(jiraFake.events, "transition")) {
 				t.Fatalf("expired refresh wrote Jira: %v", jiraFake.events)
@@ -245,8 +245,8 @@ func TestApplyExpiredPlanReturnsRequiredInputsWithoutFreshToken(t *testing.T) {
 	if result.Status != "planned" || result.PlanToken != "" || len(result.RequiredInputs) != 1 || result.RequiredInputs[0].Kind != "product_type" {
 		t.Fatalf("result = %+v", result)
 	}
-	if store.creates != 0 || store.consumes != 0 || git.writes != 0 || migrationPlans != 0 {
-		t.Fatalf("creates=%d consumes=%d gitWrites=%d migrationPlans=%d", store.creates, store.consumes, git.writes, migrationPlans)
+	if store.creates != 0 || store.expiredConsumes != 1 || store.consumes != 0 || git.writes != 0 || migrationPlans != 0 {
+		t.Fatalf("creates=%d expiredConsumes=%d consumes=%d gitWrites=%d migrationPlans=%d", store.creates, store.expiredConsumes, store.consumes, git.writes, migrationPlans)
 	}
 }
 

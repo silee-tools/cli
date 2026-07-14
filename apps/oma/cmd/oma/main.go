@@ -186,6 +186,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, deps dependen
 		_, err := fmt.Fprint(stdout, rootHelp)
 		return err
 	}
+	if len(args) == 0 || (len(args) == 1 && args[0] == "help") {
+		_, err := fmt.Fprint(stdout, rootHelp)
+		return err
+	}
+	if len(args) == 1 && args[0] == "version" {
+		_, err := fmt.Fprintln(stdout, versionLine("oma", version))
+		return err
+	}
 	if len(args) == 2 && args[0] == "prep" && (args[1] == "-h" || args[1] == "--help") {
 		_, err := fmt.Fprint(stdout, prepHelp)
 		return err
@@ -466,6 +474,8 @@ const rootHelp = `Usage: oma <command>
 
 Commands:
   prep    Prepare an agent workflow
+  help    Show this help
+  version Show version information
 `
 
 const prepHelp = `Usage: oma prep <JIRA-KEY>

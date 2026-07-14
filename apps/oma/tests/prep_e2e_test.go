@@ -246,6 +246,27 @@ func TestPrepEndToEnd(t *testing.T) {
 		})
 	}
 
+	t.Run("expired token refreshes once and cannot mint another plan", func(t *testing.T) {
+		h := newHarness(t, harnessOptions{})
+		planned := h.descriptionPlan(t, "만료 토큰 재사용")
+		expirePlan(t, filepath.Join(h.state, "oma", "plans", planned.PlanToken+".json"))
+		refreshed := h.apply(t, planned.PlanToken).success(t).document
+		if refreshed.PlanToken == "" || refreshed.PlanToken == planned.PlanToken {
+			t.Fatalf("refreshed = %+v", refreshed)
+		}
+		replayed := h.apply(t, planned.PlanToken)
+		if replayed.err == nil || replayed.document.PlanToken != "" {
+			t.Fatalf("expired token replay = %+v", replayed)
+		}
+		if pathExists(filepath.Join(h.state, "oma", "plans", planned.PlanToken+".json")) {
+			t.Fatal("expired pending plan remains after refresh")
+		}
+		if !pathExists(filepath.Join(h.state, "oma", "plans", planned.PlanToken+".consumed")) {
+			t.Fatal("expired token has no consumed tombstone")
+		}
+		assertNoAppliedState(t, h, planned)
+	})
+
 	t.Run("base drift returns a fresh plan before writes", func(t *testing.T) {
 		h := newHarness(t, harnessOptions{})
 		planned := h.descriptionPlan(t, "상태 변경")

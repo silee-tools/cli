@@ -24,6 +24,7 @@ import (
 type planStore interface {
 	Create(any, string) (state.Record, error)
 	Claim(string, any) (state.Record, error)
+	ConsumeExpired(string, any) (state.Record, error)
 	Consume(string) error
 	EnsureSetupReceipt(string, func() error) (bool, error)
 }

@@ -44,6 +44,56 @@ func TestVersionLine(t *testing.T) {
 	}
 }
 
+func TestRunRootCommandsFollowCommandTree(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "bare command", want: rootHelp},
+		{name: "help command", args: []string{"help"}, want: rootHelp},
+		{name: "version command", args: []string{"version"}, want: versionLine("oma", version) + "\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			if err := run(test.args, strings.NewReader(""), &stdout, &bytes.Buffer{}, dependencies{}); err != nil {
+				t.Fatalf("run(%v) error = %v", test.args, err)
+			}
+			if got := stdout.String(); got != test.want {
+				t.Fatalf("stdout = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestBinaryRootCommandsFollowCommandTree(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "oma")
+	build := exec.Command("go", "build", "-o", binary, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build oma: %v\\n%s", err, output)
+	}
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "bare command", want: rootHelp},
+		{name: "help command", args: []string{"help"}, want: rootHelp},
+		{name: "version command", args: []string{"version"}, want: versionLine("oma", version) + "\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			command := exec.Command(binary, test.args...)
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("oma %v error = %v, output=%q", test.args, err, output)
+			}
+			if got := string(output); got != test.want {
+				t.Fatalf("oma %v output = %q, want %q", test.args, got, test.want)
+			}
+		})
+	}
+}
+
 func TestParseOptions(t *testing.T) {
 	tests := []struct {
 		name    string

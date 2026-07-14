@@ -530,6 +530,11 @@ func (s *Store) Claim(token string, payload any) (Record, error) {
 	if err := s.ensureReservation(token); err != nil {
 		return Record{}, err
 	}
+	unlock, err := s.lockReservation(token)
+	if err != nil {
+		return Record{}, err
+	}
+	defer unlock()
 	if err := s.nonPendingState(token); err != nil {
 		return Record{}, err
 	}
@@ -578,6 +583,100 @@ func (s *Store) Claim(token string, payload any) (Record, error) {
 		return metadata(disk), committedError(token, Claimed, outcome)
 	}
 	return metadata(disk), nil
+}
+
+// ConsumeExpired atomically replaces an expired pending record with its
+// consumed tombstone. It is deliberately not idempotent: a caller that sees
+// ErrConsumed must not mint another replacement approval plan for the token.
+func (s *Store) ConsumeExpired(token string, payload any) (Record, error) {
+	if err := s.resource.begin(); err != nil {
+		return Record{}, err
+	}
+	defer s.resource.end()
+	if err := validateToken(token); err != nil {
+		return Record{}, err
+	}
+	if err := s.ensureReservation(token); err != nil {
+		return Record{}, err
+	}
+	unlock, err := s.lockReservation(token)
+	if err != nil {
+		return Record{}, err
+	}
+	defer unlock()
+	if err := s.nonPendingState(token); err != nil {
+		return Record{}, err
+	}
+	disk, err := s.readForClaim(token, pendingSuffix, Pending, payload)
+	if err != nil {
+		var committed *CommittedError
+		if errors.As(err, &committed) {
+			return metadata(disk), err
+		}
+		if errors.Is(err, ErrMissing) {
+			return Record{}, s.absentState(token)
+		}
+		if !errors.Is(err, ErrExpired) {
+			return Record{}, err
+		}
+	} else {
+		return Record{}, fmt.Errorf("consume expired plan: %w", ErrNotClaimed)
+	}
+	disk.State = Consumed
+	data, err := json.Marshal(disk)
+	if err != nil {
+		return Record{}, fmt.Errorf("encode consumed expired plan: %w", err)
+	}
+	outcome := s.publish(token, s.path(token, consumedSuffix), data)
+	if outcome.err != nil && !outcome.committed {
+		if outcome.collision {
+			ok, matchErr := s.recordMatches(token, consumedSuffix, Consumed)
+			if matchErr != nil {
+				return Record{}, stateConflict(matchErr)
+			}
+			if ok {
+				return Record{}, ErrConsumed
+			}
+			return Record{}, ErrStateConflict
+		}
+		return Record{}, fmt.Errorf("consume expired plan: %w", outcome.err)
+	}
+	transitionErr := outcome.err
+	if err := s.remove(s.path(token, pendingSuffix)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		transitionErr = errors.Join(transitionErr, fmt.Errorf("remove pending plan after expiry: %w", err))
+	}
+	if err := s.syncDir(s.dir); err != nil {
+		outcome.ambiguous = true
+		transitionErr = errors.Join(transitionErr, fmt.Errorf("sync expired consumed plan: %w", err))
+	}
+	if transitionErr != nil {
+		outcome.err = transitionErr
+		return metadata(disk), committedError(token, Consumed, outcome)
+	}
+	return metadata(disk), nil
+}
+
+// lockReservation serializes the pending-to-terminal transitions across Store
+// instances and processes. The reservation is retained for a token's entire
+// lifecycle, so its file descriptor is a stable, per-token lock object.
+func (s *Store) lockReservation(token string) (func(), error) {
+	file, err := s.openRead(s.path(token, reservationSuffix))
+	if err != nil {
+		return nil, fmt.Errorf("open plan reservation lock: %w", err)
+	}
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
+		closeErr := s.closeRead(file)
+		return nil, errors.Join(fmt.Errorf("lock plan reservation: %w", err), closeErr)
+	}
+	if err := s.validateReservation(token); err != nil {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+		closeErr := s.closeRead(file)
+		return nil, errors.Join(err, closeErr)
+	}
+	return func() {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+		_ = s.closeRead(file)
+	}, nil
 }
 
 // Consume is idempotent for an already-consumed token so callers can safely
