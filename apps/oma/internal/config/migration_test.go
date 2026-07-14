@@ -1198,28 +1198,57 @@ func TestPlanMigrationRecoversConflictIntentPersistenceStates(t *testing.T) {
 
 func TestPlanMigrationRecoversConflictIntentDraftPersistenceStates(t *testing.T) {
 	tests := []struct {
-		name     string
-		setCrash func(*migrationFileOps)
-		complete bool
+		name           string
+		setCrash       func(*migrationFileOps, string)
+		createSentinel func(*testing.T, string)
+		assertSentinel func(*testing.T, string)
 	}{
 		{
+			name: "after durable draft anchor before open",
+			setCrash: func(ops *migrationFileOps, _ string) {
+				ops.afterConflictIntentDraftAnchorSync = func() { panic(simulatedCrash{}) }
+			},
+		},
+		{
+			name: "draft entry loss leaves anchor only",
+			setCrash: func(ops *migrationFileOps, marker string) {
+				ops.afterConflictIntentOpen = func() {
+					matches, err := filepath.Glob(marker + ".staged-conflict-intent-*.oma-staged-*")
+					if err != nil || len(matches) != 1 {
+						panic("intent draft not found")
+					}
+					if err := os.Remove(matches[0]); err != nil {
+						panic(err)
+					}
+					panic(simulatedCrash{})
+				}
+			},
+		},
+		{
 			name: "after intent draft open",
-			setCrash: func(ops *migrationFileOps) {
+			setCrash: func(ops *migrationFileOps, _ string) {
 				ops.afterConflictIntentOpen = func() { panic(simulatedCrash{}) }
 			},
 		},
 		{
 			name: "after intent draft partial write",
-			setCrash: func(ops *migrationFileOps) {
+			setCrash: func(ops *migrationFileOps, _ string) {
 				ops.afterConflictIntentPart = func() { panic(simulatedCrash{}) }
 			},
 		},
 		{
 			name: "after intent draft file sync",
-			setCrash: func(ops *migrationFileOps) {
+			setCrash: func(ops *migrationFileOps, _ string) {
 				ops.afterConflictIntentFileSync = func() { panic(simulatedCrash{}) }
 			},
-			complete: true,
+		},
+		{
+			name: "after fixed intent commit with dangling anchor",
+			setCrash: func(ops *migrationFileOps, _ string) {
+				ops.afterConflictIntentSync = func() { panic(simulatedCrash{}) }
+			},
+			createSentinel: createSymlinkStagedSentinel,
+			assertSentinel: assertSymlinkStagedSentinel,
 		},
 	}
 	for _, tt := range tests {
@@ -1227,6 +1256,73 @@ func TestPlanMigrationRecoversConflictIntentDraftPersistenceStates(t *testing.T)
 			paths := testPaths(t)
 			marker, target := createCompletedAnchoredMarker(t, paths)
 			promotion := stagedPromotionPathForTest(marker, target)
+			createSentinel := tt.createSentinel
+			assertSentinel := tt.assertSentinel
+			if createSentinel == nil {
+				createSentinel = createRegularStagedSentinel
+				assertSentinel = assertRegularStagedSentinel
+			}
+			originalOps := migrationOS
+			migrationOS.afterStagedMarkerRead = func(path string) {
+				if path != target {
+					return
+				}
+				if err := os.Remove(path); err != nil {
+					panic(err)
+				}
+				createSentinel(t, path)
+			}
+			tt.setCrash(&migrationOS, marker)
+			t.Cleanup(func() { migrationOS = originalOps })
+
+			assertSimulatedCrash(t, func() { _, _ = PlanMigration(paths) })
+			migrationOS = originalOps
+			if _, err := PlanMigration(paths); err == nil {
+				t.Fatal("reentered PlanMigration() error = nil, want preserved replacement conflict")
+			}
+			assertRegularFile(t, paths.Legacy, validTOML, 0o640)
+			assertSentinel(t, target)
+			assertAbsent(t, promotion)
+			assertAbsent(t, marker+".staged-anchor")
+			assertNoMatches(t, marker+".staged-conflict-*")
+		})
+	}
+}
+
+func TestPlanMigrationPreservesUnknownConflictIntentDraftAnchors(t *testing.T) {
+	tests := []struct {
+		name         string
+		createAnchor func(*testing.T, string)
+		assertAnchor func(*testing.T, string)
+	}{
+		{
+			name: "regular file",
+			createAnchor: func(t *testing.T, path string) {
+				writeFile(t, path, "external draft anchor", 0o640)
+			},
+			assertAnchor: func(t *testing.T, path string) {
+				assertRegularFile(t, path, "external draft anchor", 0o640)
+			},
+		},
+		{
+			name: "mismatched symlink",
+			createAnchor: func(t *testing.T, path string) {
+				if err := os.Symlink("external-draft-target", path); err != nil {
+					t.Fatal(err)
+				}
+			},
+			assertAnchor: func(t *testing.T, path string) {
+				assertSymlink(t, path, "external-draft-target")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testPaths(t)
+			marker, target := createCompletedAnchoredMarker(t, paths)
+			promotion := stagedPromotionPathForTest(marker, target)
+			intent := stagedConflictIntentPathForTest(marker, target)
+			draftAnchor := intent + ".oma-draft-anchor"
 			originalOps := migrationOS
 			migrationOS.afterStagedMarkerRead = func(path string) {
 				if path != target {
@@ -1236,28 +1332,26 @@ func TestPlanMigrationRecoversConflictIntentDraftPersistenceStates(t *testing.T)
 					panic(err)
 				}
 				createRegularStagedSentinel(t, path)
+				tt.createAnchor(t, draftAnchor)
 			}
-			tt.setCrash(&migrationOS)
 			t.Cleanup(func() { migrationOS = originalOps })
 
-			assertSimulatedCrash(t, func() { _, _ = PlanMigration(paths) })
-			assertMatches(t, marker+".staged-conflict-intent-*.oma-staged-*")
-			migrationOS = originalOps
-			if _, err := PlanMigration(paths); err == nil {
-				t.Fatal("reentered PlanMigration() error = nil, want preserved replacement conflict")
-			}
-			assertRegularFile(t, paths.Legacy, validTOML, 0o640)
-			if tt.complete {
-				assertRegularStagedSentinel(t, target)
-				assertAbsent(t, promotion)
-				assertAbsent(t, marker+".staged-anchor")
-				assertNoMatches(t, marker+".staged-conflict-*")
-				return
+			if _, err := PlanMigration(paths); !errors.Is(err, fs.ErrExist) {
+				t.Fatalf("PlanMigration() error = %v, want draft anchor destination exists", err)
 			}
 			assertAbsent(t, target)
 			assertRegularStagedSentinel(t, promotion)
 			assertSymlink(t, marker+".staged-anchor", target)
-			assertMatches(t, marker+".staged-conflict-intent-*.oma-staged-*")
+			tt.assertAnchor(t, draftAnchor)
+
+			migrationOS = originalOps
+			if _, err := PlanMigration(paths); err == nil {
+				t.Fatal("reentered PlanMigration() error = nil, want preserved draft anchor conflict")
+			}
+			assertAbsent(t, target)
+			assertRegularStagedSentinel(t, promotion)
+			assertSymlink(t, marker+".staged-anchor", target)
+			tt.assertAnchor(t, draftAnchor)
 		})
 	}
 }

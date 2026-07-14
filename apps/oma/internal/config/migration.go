@@ -31,35 +31,36 @@ type Migration struct {
 }
 
 type migrationFileOps struct {
-	symlink                     func(string, string) error
-	remove                      func(string) error
-	beforeCanonicalCommit       func(string) error
-	afterCanonicalCommit        func()
-	afterLegacyBackup           func()
-	afterSymlink                func()
-	afterOwnershipCheck         func(string)
-	beforeMarker                func()
-	afterMarkerEstablished      func()
-	afterCanonicalLink          func()
-	beforeQuarantineMove        func(string, string)
-	afterQuarantineMove         func(string, string) error
-	afterMarkerOpen             func()
-	afterMarkerPartialWrite     func()
-	afterMarkerFileSync         func()
-	markerDirectorySync         func(string) error
-	afterRecoveryCheck          func()
-	afterMarkerMagicWrite       func(int)
-	afterMarkerAnchorSync       func()
-	afterMarkerCommit           func()
-	afterStagedMarkerRead       func(string)
-	afterConflictAnchorMove     func()
-	afterConflictRestore        func()
-	conflictDirectorySync       func(string) error
-	afterConflictIntentSync     func()
-	afterConflictActiveMove     func(string, string)
-	afterConflictIntentOpen     func()
-	afterConflictIntentPart     func()
-	afterConflictIntentFileSync func()
+	symlink                            func(string, string) error
+	remove                             func(string) error
+	beforeCanonicalCommit              func(string) error
+	afterCanonicalCommit               func()
+	afterLegacyBackup                  func()
+	afterSymlink                       func()
+	afterOwnershipCheck                func(string)
+	beforeMarker                       func()
+	afterMarkerEstablished             func()
+	afterCanonicalLink                 func()
+	beforeQuarantineMove               func(string, string)
+	afterQuarantineMove                func(string, string) error
+	afterMarkerOpen                    func()
+	afterMarkerPartialWrite            func()
+	afterMarkerFileSync                func()
+	markerDirectorySync                func(string) error
+	afterRecoveryCheck                 func()
+	afterMarkerMagicWrite              func(int)
+	afterMarkerAnchorSync              func()
+	afterMarkerCommit                  func()
+	afterStagedMarkerRead              func(string)
+	afterConflictAnchorMove            func()
+	afterConflictRestore               func()
+	conflictDirectorySync              func(string) error
+	afterConflictIntentSync            func()
+	afterConflictActiveMove            func(string, string)
+	afterConflictIntentOpen            func()
+	afterConflictIntentPart            func()
+	afterConflictIntentFileSync        func()
+	afterConflictIntentDraftAnchorSync func()
 }
 
 var migrationOS = migrationFileOps{
@@ -1290,12 +1291,6 @@ func promoteCompletedStagedMarker(marker, anchor, target, token string, targetID
 		if err != nil {
 			return errors.Join(conflict, fmt.Errorf("establish staged marker conflict intent without replacement: %w", err))
 		}
-		if err := syncDirectory(filepath.Dir(intent)); err != nil {
-			return errors.Join(conflict, fmt.Errorf("sync staged marker conflict intent: %w", err))
-		}
-		if migrationOS.afterConflictIntentSync != nil {
-			migrationOS.afterConflictIntentSync()
-		}
 		if err := transitionActiveAnchorToConflict(anchor, conflictAnchor, target, token); err != nil {
 			return errors.Join(conflict, err)
 		}
@@ -1353,6 +1348,16 @@ func createStagedMarkerConflictIntent(path, anchor, target, token string) (fileI
 		return fileIdentity{}, err
 	}
 	staged := stagedMarkerConflictIntentDraftPath(path, nonce)
+	draftAnchor := stagedMarkerConflictIntentDraftAnchorPath(path)
+	if err := os.Symlink(staged, draftAnchor); err != nil {
+		return fileIdentity{}, err
+	}
+	if err := syncDirectory(filepath.Dir(draftAnchor)); err != nil {
+		return fileIdentity{}, err
+	}
+	if migrationOS.afterConflictIntentDraftAnchorSync != nil {
+		migrationOS.afterConflictIntentDraftAnchorSync()
+	}
 	file, err := os.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fileIdentity{}, err
@@ -1383,15 +1388,150 @@ func createStagedMarkerConflictIntent(path, anchor, target, token string) (fileI
 	if err := renameNoReplace(staged, path); err != nil {
 		return fileIdentity{}, err
 	}
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return fileIdentity{}, err
+	}
+	if migrationOS.afterConflictIntentSync != nil {
+		migrationOS.afterConflictIntentSync()
+	}
 	info, err := os.Lstat(path)
 	if err != nil {
 		return fileIdentity{}, err
 	}
-	return identityOf(info)
+	intentID, err := identityOf(info)
+	if err != nil {
+		return fileIdentity{}, err
+	}
+	if err := removeOwnedSymlink(draftAnchor, staged, token); err != nil {
+		return fileIdentity{}, err
+	}
+	return intentID, nil
 }
 
 func stagedMarkerConflictIntentDraftPath(intent, nonce string) string {
 	return intent + ".oma-staged-" + nonce
+}
+
+func stagedMarkerConflictIntentDraftAnchorPath(intent string) string {
+	return intent + ".oma-draft-anchor"
+}
+
+func recoverStagedMarkerConflictIntentDraftAnchor(marker string) (bool, error) {
+	matches, err := filepath.Glob(marker + ".staged-conflict-intent-*.oma-draft-anchor")
+	if err != nil || len(matches) == 0 {
+		return false, err
+	}
+	if len(matches) != 1 {
+		return true, fmt.Errorf("multiple staged marker conflict intent draft anchors are present")
+	}
+	draftAnchor := matches[0]
+	info, err := os.Lstat(draftAnchor)
+	if err != nil {
+		return true, err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return true, fmt.Errorf("staged marker conflict intent draft anchor is not a symlink")
+	}
+	draft, err := os.Readlink(draftAnchor)
+	if err != nil {
+		return true, err
+	}
+	intent := strings.TrimSuffix(draftAnchor, ".oma-draft-anchor")
+	prefix := marker + ".staged-conflict-intent-"
+	token := strings.TrimPrefix(intent, prefix)
+	draftPrefix := intent + ".oma-staged-"
+	nonce := strings.TrimPrefix(draft, draftPrefix)
+	decodedToken, tokenErr := hex.DecodeString(token)
+	decodedNonce, nonceErr := hex.DecodeString(nonce)
+	if !strings.HasPrefix(intent, prefix) || !strings.HasPrefix(draft, draftPrefix) || tokenErr != nil || len(decodedToken) != 16 || nonceErr != nil || len(decodedNonce) != 16 {
+		return true, fmt.Errorf("staged marker conflict intent draft anchor target is invalid")
+	}
+	target := marker + ".staged-" + token
+	active := stagedMarkerAnchorPath(marker)
+	activeQuarantine := active + ".oma-quarantine-" + token
+	conflict := stagedMarkerConflictPath(marker, token)
+	conflictQuarantine := conflict + ".oma-quarantine-" + token
+	anchorID, err := identityAtAny(active, activeQuarantine, conflict, conflictQuarantine)
+	if err != nil {
+		return true, err
+	}
+	if fixedInfo, err := os.Lstat(intent); err == nil {
+		if _, draftErr := os.Lstat(draft); draftErr == nil {
+			return true, fmt.Errorf("fixed conflict intent and its draft both exist: %w", fs.ErrExist)
+		} else if !errors.Is(draftErr, fs.ErrNotExist) {
+			return true, draftErr
+		}
+		if !fixedInfo.Mode().IsRegular() || fixedInfo.Mode().Perm() != 0o600 {
+			return true, fmt.Errorf("fixed conflict intent has unexpected type or mode")
+		}
+		data, err := os.ReadFile(intent)
+		if err != nil {
+			return true, err
+		}
+		var record stagedMarkerConflictIntent
+		if err := json.Unmarshal(data, &record); err != nil || record.Version != 1 || record.Token != token || record.Nonce != nonce || record.Target != target || record.AnchorID != anchorID {
+			return true, fmt.Errorf("fixed conflict intent does not match its draft anchor")
+		}
+	} else if errors.Is(err, fs.ErrNotExist) {
+		if draftInfo, draftErr := os.Lstat(draft); draftErr == nil {
+			if !draftInfo.Mode().IsRegular() || draftInfo.Mode().Perm() != 0o600 {
+				return true, fmt.Errorf("staged conflict intent draft has unexpected type or mode")
+			}
+			if err := os.Remove(draft); err != nil {
+				return true, err
+			}
+			if err := syncDirectory(filepath.Dir(draft)); err != nil {
+				return true, err
+			}
+		} else if !errors.Is(draftErr, fs.ErrNotExist) {
+			return true, draftErr
+		}
+		record := stagedMarkerConflictIntent{Version: 1, Token: token, Target: target, AnchorID: anchorID, Nonce: nonce}
+		data, err := json.Marshal(record)
+		if err != nil {
+			return true, err
+		}
+		file, err := os.OpenFile(draft, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return true, err
+		}
+		if _, err := file.Write(data); err != nil {
+			_ = file.Close()
+			return true, err
+		}
+		if err := file.Sync(); err != nil {
+			_ = file.Close()
+			return true, err
+		}
+		if err := file.Close(); err != nil {
+			return true, err
+		}
+		if err := renameNoReplace(draft, intent); err != nil {
+			return true, err
+		}
+		if err := syncDirectory(filepath.Dir(intent)); err != nil {
+			return true, err
+		}
+	} else {
+		return true, err
+	}
+	if err := removeOwnedSymlink(draftAnchor, draft, token); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func identityAtAny(paths ...string) (fileIdentity, error) {
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if err == nil {
+			return identityOf(info)
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return fileIdentity{}, err
+		}
+	}
+	return fileIdentity{}, fmt.Errorf("staged marker conflict intent draft anchor has no active anchor")
 }
 
 func recoverStagedMarkerConflictIntentDraft(marker string) (bool, error) {
@@ -1451,6 +1591,11 @@ func recoverStagedMarkerConflictIntentDraft(marker string) (bool, error) {
 }
 
 func recoverStagedMarkerConflictIntent(marker string) (bool, error) {
+	if handled, err := recoverStagedMarkerConflictIntentDraftAnchor(marker); handled || err != nil {
+		if err != nil {
+			return true, err
+		}
+	}
 	if handled, err := recoverStagedMarkerConflictIntentDraft(marker); handled || err != nil {
 		if err != nil {
 			return true, err
