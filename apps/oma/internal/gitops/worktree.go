@@ -116,7 +116,7 @@ func Inspect(ctx context.Context, runner Runner, request InspectRequest) (Snapsh
 		}
 	}
 
-	submodules, err := inspectSubmodules(ctx, runner, repoRoot, request.Submodules)
+	submodules, err := inspectSubmodules(ctx, runner, repoRoot, baseSHA, request.Submodules)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -148,8 +148,8 @@ func CreateWorktree(ctx context.Context, runner Runner, operation Operation) err
 	for _, record := range records {
 		worktree := record.Worktree
 		if record.Prunable {
-			if worktree.Path == target {
-				return fmt.Errorf("worktree conflict: target %q has a prunable registration; refusing to prune it automatically", target)
+			if worktree.Path == target || worktree.Branch == operation.Branch {
+				return fmt.Errorf("worktree conflict: path %q or branch %q has a prunable registration; refusing to prune it automatically", target, operation.Branch)
 			}
 			continue
 		}
@@ -249,7 +249,7 @@ func RunSetup(ctx context.Context, worktree string, args []string) error {
 		return fmt.Errorf("normalize setup worktree: %w", err)
 	}
 	script := filepath.Join(root, "scripts", "setup-worktree.sh")
-	info, err := os.Stat(script)
+	info, err := os.Lstat(script)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -373,8 +373,8 @@ func inspectWorktreeTarget(ctx context.Context, runner Runner, repo, target, bra
 	for _, record := range records {
 		worktree := record.Worktree
 		if record.Prunable {
-			if worktree.Path == target {
-				return fmt.Errorf("worktree conflict: target %q has a prunable registration; refusing to prune it automatically", target)
+			if worktree.Path == target || worktree.Branch == branch {
+				return fmt.Errorf("worktree conflict: path %q or branch %q has a prunable registration; refusing to prune it automatically", target, branch)
 			}
 			continue
 		}
@@ -411,11 +411,36 @@ func readSubmoduleConfig(ctx context.Context, runner Runner, repo string) (map[s
 	} else if err != nil {
 		return nil, fmt.Errorf("inspect .gitmodules: %w", err)
 	}
-	output, err := git(ctx, runner, repo, "config", "-z", "--file", ".gitmodules", "--get-regexp", `^submodule\..*\.path$`)
+	output, err := git(ctx, runner, repo, "config", "-z", "--file", ".gitmodules", "--list")
 	if err != nil {
-		return nil, fmt.Errorf("parse .gitmodules paths: %w", err)
+		return nil, fmt.Errorf("parse .gitmodules: %w", err)
 	}
-	result := map[string]submoduleConfig{}
+	return parseSubmoduleConfig(output)
+}
+
+func readBaseSubmoduleConfig(ctx context.Context, runner Runner, repo, baseSHA string) (map[string]submoduleConfig, error) {
+	objectSHA, _, exists, err := baseTreeBlob(ctx, runner, repo, baseSHA, ".gitmodules")
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return map[string]submoduleConfig{}, nil
+	}
+	output, err := git(ctx, runner, repo, "config", "-z", "--blob", objectSHA, "--list")
+	if err != nil {
+		return nil, fmt.Errorf("parse .gitmodules at base %s: %w", baseSHA, err)
+	}
+	return parseSubmoduleConfig(output)
+}
+
+func parseSubmoduleConfig(output []byte) (map[string]submoduleConfig, error) {
+	type partialConfig struct {
+		path    string
+		url     string
+		hasPath bool
+		hasURL  bool
+	}
+	byName := map[string]partialConfig{}
 	for _, raw := range bytes.Split(output, []byte{0}) {
 		entry := string(raw)
 		if entry == "" {
@@ -425,21 +450,37 @@ func readSubmoduleConfig(ctx context.Context, runner Runner, repo string) (map[s
 		if !ok {
 			return nil, fmt.Errorf("parse .gitmodules path entry %q", entry)
 		}
-		name := strings.TrimSuffix(strings.TrimPrefix(key, "submodule."), ".path")
-		urlOutput, urlErr := git(ctx, runner, repo, "config", "--file", ".gitmodules", "--get", "submodule."+name+".url")
-		if urlErr != nil {
-			return nil, fmt.Errorf("read .gitmodules URL for %q: %w", value, urlErr)
+		if !strings.HasPrefix(key, "submodule.") {
+			continue
 		}
-		result[value] = submoduleConfig{Name: name, URL: strings.TrimSpace(string(urlOutput))}
+		switch {
+		case strings.HasSuffix(key, ".path"):
+			name := strings.TrimSuffix(strings.TrimPrefix(key, "submodule."), ".path")
+			config := byName[name]
+			config.path, config.hasPath = value, true
+			byName[name] = config
+		case strings.HasSuffix(key, ".url"):
+			name := strings.TrimSuffix(strings.TrimPrefix(key, "submodule."), ".url")
+			config := byName[name]
+			config.url, config.hasURL = value, true
+			byName[name] = config
+		}
+	}
+	result := map[string]submoduleConfig{}
+	for name, config := range byName {
+		if !config.hasPath || !config.hasURL {
+			return nil, fmt.Errorf("submodule %q must declare both path and URL", name)
+		}
+		result[config.path] = submoduleConfig{Name: name, URL: config.url}
 	}
 	return result, nil
 }
 
-func inspectSubmodules(ctx context.Context, runner Runner, repo string, selected []string) ([]Submodule, error) {
+func inspectSubmodules(ctx context.Context, runner Runner, repo, baseSHA string, selected []string) ([]Submodule, error) {
 	if len(selected) == 0 {
 		return nil, nil
 	}
-	configured, err := readSubmoduleConfig(ctx, runner, repo)
+	configured, err := readBaseSubmoduleConfig(ctx, runner, repo, baseSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -506,11 +547,10 @@ func validateRemoteURL(value string) error {
 	if strings.HasPrefix(value, "-") {
 		return fmt.Errorf("must not begin with '-'")
 	}
-	if strings.ContainsAny(value, "\x00\r\n") {
-		return fmt.Errorf("contains a control character")
-	}
-	if strings.ContainsAny(value, "?#%\\") {
-		return fmt.Errorf("contains a query, fragment, escape, or backslash")
+	for _, char := range value {
+		if char < ' ' || char == 0x7f {
+			return fmt.Errorf("contains a control character")
+		}
 	}
 	return nil
 }
@@ -567,9 +607,24 @@ func resolveRelativeRemoteURL(repo, base, relative string) (string, error) {
 		if parsed.Opaque != "" {
 			return "", fmt.Errorf("base URL %q uses an unsupported opaque form", base)
 		}
-		parsed.Path = pathpkg.Clean(pathpkg.Join(parsed.Path, relative))
-		parsed.RawPath = ""
-		return parsed.String(), nil
+		reference, err := url.Parse(relative)
+		if err != nil {
+			return "", fmt.Errorf("parse relative URL %q: %w", relative, err)
+		}
+		parsed.Path = strings.TrimSuffix(parsed.Path, "/") + "/"
+		if parsed.RawPath != "" {
+			parsed.RawPath = strings.TrimSuffix(parsed.RawPath, "/") + "/"
+		}
+		parsed.RawQuery = ""
+		parsed.ForceQuery = false
+		parsed.Fragment = ""
+		parsed.RawFragment = ""
+		resolved := parsed.ResolveReference(reference)
+		resolved.Path = pathpkg.Clean(resolved.Path)
+		if resolved.RawPath != "" {
+			resolved.RawPath = pathpkg.Clean(resolved.RawPath)
+		}
+		return resolved.String(), nil
 	}
 	basePath := filepath.FromSlash(base)
 	if !filepath.IsAbs(basePath) {
@@ -580,17 +635,38 @@ func resolveRelativeRemoteURL(repo, base, relative string) (string, error) {
 
 func hashSetupScript(ctx context.Context, runner Runner, repo, baseSHA string) (string, error) {
 	const setupPath = "scripts/setup-worktree.sh"
-	entry, err := git(ctx, runner, repo, "ls-tree", "-z", "--name-only", baseSHA, "--", setupPath)
+	objectSHA, _, exists, err := baseTreeBlob(ctx, runner, repo, baseSHA, setupPath)
 	if err != nil {
 		return "", fmt.Errorf("inspect setup script at base %s: %w", baseSHA, err)
 	}
-	if len(entry) == 0 {
+	if !exists {
 		return "", nil
 	}
-	contents, err := git(ctx, runner, repo, "cat-file", "blob", baseSHA+":"+setupPath)
+	contents, err := git(ctx, runner, repo, "cat-file", "blob", objectSHA)
 	if err != nil {
 		return "", fmt.Errorf("read setup script at base %s: %w", baseSHA, err)
 	}
 	hash := sha256.Sum256(contents)
 	return fmt.Sprintf("%x", hash), nil
+}
+
+func baseTreeBlob(ctx context.Context, runner Runner, repo, baseSHA, treePath string) (string, string, bool, error) {
+	entry, err := git(ctx, runner, repo, "ls-tree", "-z", baseSHA, "--", treePath)
+	if err != nil {
+		return "", "", false, fmt.Errorf("read base tree path %q: %w", treePath, err)
+	}
+	if len(entry) == 0 {
+		return "", "", false, nil
+	}
+	record := strings.TrimSuffix(string(entry), "\x00")
+	metadata, name, ok := strings.Cut(record, "\t")
+	fields := strings.Fields(metadata)
+	if !ok || len(fields) != 3 || name != treePath {
+		return "", "", false, fmt.Errorf("unexpected base tree record for %q", treePath)
+	}
+	mode, objectType, objectSHA := fields[0], fields[1], fields[2]
+	if objectType != "blob" || (mode != "100644" && mode != "100755") {
+		return "", "", false, fmt.Errorf("base tree path %q must be a regular blob, got mode %s type %s", treePath, mode, objectType)
+	}
+	return objectSHA, mode, true, nil
 }

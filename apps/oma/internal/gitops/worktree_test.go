@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,6 +74,32 @@ func TestInspectSetupHashIsEmptyWhenScriptIsMissingFromBase(t *testing.T) {
 	}
 	if snapshot.SetupHash != "" {
 		t.Fatalf("SetupHash = %q, want empty for script missing from selected base", snapshot.SetupHash)
+	}
+}
+
+func TestInspectRejectsSetupSymlinkInSelectedBase(t *testing.T) {
+	repo, _ := newRemoteRepo(t)
+	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "external-setup.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../external-setup.sh", filepath.Join(repo, "scripts", "setup-worktree.sh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".worktrees/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".gitignore", "external-setup.sh", "scripts/setup-worktree.sh")
+	runGit(t, repo, "commit", "-m", "add setup symlink")
+	runGit(t, repo, "push", "origin", "main")
+
+	_, err := Inspect(context.Background(), testRunner(t), InspectRequest{
+		Repo: repo, Base: "origin/main", Branch: "feature/task", Worktree: filepath.Join(repo, ".worktrees", "task"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "regular blob") {
+		t.Fatalf("Inspect() error = %v, want setup symlink rejection", err)
 	}
 }
 
@@ -178,6 +205,12 @@ func TestInspectHandlesPrunableWorktreeRecordsWithoutPruning(t *testing.T) {
 		t.Fatalf("unrelated prunable worktree blocked inspection: %v", err)
 	}
 	_, err := Inspect(context.Background(), testRunner(t), InspectRequest{
+		Repo: repo, Base: "origin/main", Branch: "feature/stale", Worktree: filepath.Join(repo, ".worktrees", "replacement"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "prunable") {
+		t.Fatalf("Inspect() error = %v, want same-branch prunable conflict", err)
+	}
+	_, err = Inspect(context.Background(), testRunner(t), InspectRequest{
 		Repo: repo, Base: "origin/main", Branch: "feature/stale", Worktree: stalePath,
 	})
 	if err == nil || !strings.Contains(err.Error(), "prunable") {
@@ -305,21 +338,90 @@ func TestInspectResolvesRelativeSubmoduleURLFromSuperprojectOrigin(t *testing.T)
 	}
 }
 
+func TestInspectReadsSubmodulesFromSelectedBase(t *testing.T) {
+	parent, _ := newRemoteRepo(t)
+	_, baseOrigin := newRemoteRepo(t)
+	baseSHA := runGit(t, baseOrigin, "rev-parse", "HEAD")
+	_, currentOrigin := newRemoteRepo(t)
+	baseModules := "[submodule \"base\"]\n\tpath = modules/base\n\turl = " + baseOrigin + "\n"
+	if err := os.WriteFile(filepath.Join(parent, ".gitmodules"), []byte(baseModules), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, ".gitignore"), []byte(".worktrees/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, parent, "add", ".gitmodules", ".gitignore")
+	runGit(t, parent, "commit", "-m", "add base submodule declaration")
+	runGit(t, parent, "push", "origin", "main")
+	currentModules := "[submodule \"current\"]\n\tpath = modules/current\n\turl = " + currentOrigin + "\n"
+	if err := os.WriteFile(filepath.Join(parent, ".gitmodules"), []byte(currentModules), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &recordingRunner{inner: testRunner(t)}
+	snapshot, err := Inspect(context.Background(), runner, InspectRequest{
+		Repo: parent, Base: "origin/main", Branch: "feature/task",
+		Worktree: filepath.Join(parent, ".worktrees", "task"), Submodules: []string{"modules/base"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Submodules) != 1 || snapshot.Submodules[0].Path != "modules/base" || snapshot.Submodules[0].URL != baseOrigin || snapshot.Submodules[0].BaseSHA != baseSHA {
+		t.Fatalf("Inspect used current .gitmodules instead of selected base: %+v", snapshot.Submodules)
+	}
+	if runner.containsSequence("ls-remote", "--symref", "--", currentOrigin, "HEAD") {
+		t.Fatalf("Inspect contacted current-checkout submodule remote:\n%s", commandDump(runner.log))
+	}
+}
+
+func TestInspectIgnoresCurrentGitmodulesWhenMissingFromBase(t *testing.T) {
+	parent, _ := newRemoteRepo(t)
+	if err := os.WriteFile(filepath.Join(parent, ".gitignore"), []byte(".worktrees/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, parent, "add", ".gitignore")
+	runGit(t, parent, "commit", "-m", "base without submodules")
+	runGit(t, parent, "push", "origin", "main")
+	_, currentOrigin := newRemoteRepo(t)
+	currentModules := "[submodule \"current\"]\n\tpath = modules/current\n\turl = " + currentOrigin + "\n"
+	if err := os.WriteFile(filepath.Join(parent, ".gitmodules"), []byte(currentModules), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &recordingRunner{inner: testRunner(t)}
+	_, err := Inspect(context.Background(), runner, InspectRequest{
+		Repo: parent, Base: "origin/main", Branch: "feature/task",
+		Worktree: filepath.Join(parent, ".worktrees", "task"), Submodules: []string{"modules/current"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not declared") {
+		t.Fatalf("Inspect() error = %v, want selected-base declaration error", err)
+	}
+	if runner.containsSequence("ls-remote", "--symref", "--", currentOrigin, "HEAD") {
+		t.Fatalf("Inspect contacted remote absent from selected base:\n%s", commandDump(runner.log))
+	}
+}
+
 func TestResolveRelativeRemoteURLKinds(t *testing.T) {
 	tests := []struct {
-		name string
-		base string
-		want string
+		name     string
+		base     string
+		relative string
+		want     string
 	}{
 		{name: "https", base: "https://example.com/group/parent.git", want: "https://example.com/group/child.git"},
 		{name: "ssh", base: "ssh://git@example.com/group/parent.git", want: "ssh://git@example.com/group/child.git"},
 		{name: "scp", base: "git@example.com:group/parent.git", want: "git@example.com:group/child.git"},
 		{name: "file URL", base: "file:///srv/group/parent.git", want: "file:///srv/group/child.git"},
 		{name: "local path", base: "/srv/group/parent.git", want: "/srv/group/child.git"},
+		{name: "URL semantics", base: "https://example.com/group/parent.git?old=1#old", relative: "../child%20repo.git?new=1#new", want: "https://example.com/group/child%20repo.git?new=1#new"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := resolveRelativeRemoteURL("/checkout/super", test.base, "../child.git")
+			relative := test.relative
+			if relative == "" {
+				relative = "../child.git"
+			}
+			got, err := resolveRelativeRemoteURL("/checkout/super", test.base, relative)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -387,10 +489,52 @@ func TestInspectRejectsSubmoduleURLGitOptionInjection(t *testing.T) {
 	}
 }
 
-func TestValidateRemoteURLRejectsOptionAndURLControlForms(t *testing.T) {
-	for _, value := range []string{"-repository", "--upload-pack=evil", "https://example.com/repo.git?x=1", "ssh://example.com/repo.git#fragment", "file:///tmp/%2e%2e/repo.git", "..\\repo.git", "repo.git\nnext"} {
+func TestInspectAllowsGitSupportedURLCharacters(t *testing.T) {
+	parent, _ := newRemoteRepo(t)
+	_, firstOrigin := newRemoteRepo(t)
+	localOrigin := filepath.Join(filepath.Dir(firstOrigin), "child%#?.git")
+	if err := os.Rename(firstOrigin, localOrigin); err != nil {
+		t.Fatal(err)
+	}
+	_, secondOrigin := newRemoteRepo(t)
+	fileOrigin := filepath.Join(filepath.Dir(secondOrigin), "child space.git")
+	if err := os.Rename(secondOrigin, fileOrigin); err != nil {
+		t.Fatal(err)
+	}
+	fileURL := (&url.URL{Scheme: "file", Path: fileOrigin}).String()
+	modules := "[submodule \"local\"]\n\tpath = modules/local\n\turl = \"" + localOrigin + "\"\n" +
+		"[submodule \"file\"]\n\tpath = modules/file\n\turl = \"" + fileURL + "\"\n"
+	if err := os.WriteFile(filepath.Join(parent, ".gitmodules"), []byte(modules), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, ".gitignore"), []byte(".worktrees/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, parent, "add", ".gitmodules", ".gitignore")
+	runGit(t, parent, "commit", "-m", "add Git-supported URLs")
+	runGit(t, parent, "push", "origin", "main")
+
+	snapshot, err := Inspect(context.Background(), testRunner(t), InspectRequest{
+		Repo: parent, Base: "origin/main", Branch: "feature/task", Worktree: filepath.Join(parent, ".worktrees", "task"),
+		Submodules: []string{"modules/local", "modules/file"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Submodules) != 2 || snapshot.Submodules[0].URL != localOrigin || snapshot.Submodules[1].URL != fileURL {
+		t.Fatalf("Git-supported URLs changed in plan: %+v", snapshot.Submodules)
+	}
+}
+
+func TestValidateRemoteURLRejectsOnlyArgvBoundaryRisks(t *testing.T) {
+	for _, value := range []string{"-repository", "--upload-pack=evil", "repo.git\nnext", "repo.git\x00next", "repo.git\tnext"} {
 		if err := validateRemoteURL(value); err == nil {
 			t.Errorf("validateRemoteURL(%q) succeeded, want rejection", value)
+		}
+	}
+	for _, value := range []string{"https://example.com/repo.git?x=1", "ssh://example.com/repo.git#fragment", "file:///tmp/child%20repo.git", "/tmp/child%#?.git", `..\repo.git`} {
+		if err := validateRemoteURL(value); err != nil {
+			t.Errorf("validateRemoteURL(%q) = %v, want Git-supported value", value, err)
 		}
 	}
 }
@@ -480,6 +624,29 @@ func TestRunSetup(t *testing.T) {
 		}
 		if info, err := os.Stat(worktree); err != nil || !info.IsDir() {
 			t.Fatalf("worktree was removed after setup failure: %v", err)
+		}
+	})
+
+	t.Run("symlink target is never executed", func(t *testing.T) {
+		worktree := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(worktree, "scripts"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		sentinel := filepath.Join(t.TempDir(), "external-ran")
+		external := filepath.Join(t.TempDir(), "external-setup.sh")
+		script := "#!/bin/sh\n: > \"" + sentinel + "\"\n"
+		if err := os.WriteFile(external, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(external, filepath.Join(worktree, "scripts", "setup-worktree.sh")); err != nil {
+			t.Fatal(err)
+		}
+		err := RunSetup(context.Background(), worktree, nil)
+		if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
+			t.Fatalf("RunSetup executed external symlink target: %v", statErr)
+		}
+		if err == nil || !strings.Contains(err.Error(), "regular") {
+			t.Fatalf("RunSetup() error = %v, want symlink rejection", err)
 		}
 	})
 }
