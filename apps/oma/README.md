@@ -118,7 +118,7 @@ password API_TOKEN
 | Jira 스냅샷 | `$XDG_CACHE_HOME/oma/jira/<host>/<KEY>.json` | `$HOME/.cache/oma/jira/<host>/<KEY>.json` |
 | 계획과 setup receipt | `$XDG_STATE_HOME/oma/` | `$HOME/.local/state/oma/` |
 
-정본 설정이 없고 호환 경로에 일반 파일이 있으면 Jira 계획은 기존 파일을 읽고 설정 migration을 계획에 포함한다. 승인된 Jira 적용의 첫 단계에서 내용을 검증해 정본을 원자적으로 만들고, 호환 경로를 정본의 심볼릭 링크로 바꾼다. migration이 실패하면 Git과 Jira 변경을 시작하지 않으며 기존 파일을 복구한다. 작업 설명과 빈 작업은 Jira 설정을 읽거나 migration하지 않는다.
+정본 설정이 없고 호환 경로에 일반 파일이 있으면 Jira 계획은 기존 파일을 읽고 설정 migration과 설정 파일 상태 지문을 계획에 포함한다. 계획과 적용 사이에 설정이나 중단된 migration 상태가 달라지면 외부 변경을 시작하지 않고 새 계획과 token을 반환한다. 승인된 Jira 적용의 첫 단계에서 내용을 검증해 정본을 원자적으로 만들고, 호환 경로를 정본의 심볼릭 링크로 바꾼다. migration이 실패하면 Git과 Jira 변경을 시작하지 않으며 기존 파일을 복구한다. 작업 설명과 빈 작업은 Jira 설정을 읽거나 migration하지 않는다.
 
 Jira 스냅샷은 TTL 캐시가 아니다. Jira 작업을 계획할 때 최신 이슈를 다시 조회해 원자적으로 교체하고, Jira 변경 뒤 최종 상태를 다시 저장한다. 새 worktree와 에이전트는 이 파일에서 작업 문맥을 이어받을 수 있다.
 

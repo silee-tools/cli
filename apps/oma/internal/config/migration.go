@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -24,10 +25,31 @@ const (
 	migrationAnchorSuffix = ".staged-anchor"
 )
 
-var errMigrationBusy = errors.New("configuration migration is busy")
+var (
+	errMigrationBusy         = errors.New("configuration migration is busy")
+	ErrMigrationStateChanged = errors.New("configuration migration state changed after inspection")
+)
 
 type Migration struct {
-	paths Paths
+	paths      Paths
+	inspection migrationInspection
+}
+
+type migrationInspection struct {
+	fingerprint string
+	sourcePath  string
+	sourceID    fileIdentity
+	sourceHash  [32]byte
+	recovery    bool
+}
+
+type migrationArtifact struct {
+	path       string
+	mode       os.FileMode
+	identity   fileIdentity
+	digest     [32]byte
+	data       []byte
+	linkTarget string
 }
 
 type migrationFileOps struct {
@@ -107,27 +129,284 @@ func PlanMigration(paths Paths) (*Migration, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !needed {
-		if migrationOS.afterRecoveryCheck != nil {
-			migrationOS.afterRecoveryCheck()
-		}
-		return planMigrationReadOnly(paths)
-	}
-	lock, err := acquireMigrationLock(paths)
-	if err != nil {
-		return nil, err
-	}
-	defer lock.release()
-	needed, err = recoveryNeeded(paths)
-	if err != nil {
-		return nil, err
-	}
 	if needed {
-		if err := recoverInterruptedMigration(paths); err != nil {
+		lock, err := acquireMigrationLock(paths)
+		if err != nil {
 			return nil, err
 		}
+		defer lock.release()
+		needed, err = recoveryNeeded(paths)
+		if err != nil {
+			return nil, err
+		}
+		if needed {
+			if err := recoverInterruptedMigration(paths); err != nil {
+				return nil, err
+			}
+		}
+	} else if migrationOS.afterRecoveryCheck != nil {
+		migrationOS.afterRecoveryCheck()
 	}
-	return planMigrationReadOnly(paths)
+	return InspectMigration(paths)
+}
+
+// InspectMigration reports the logical migration plan without recovering or
+// mutating any configuration artifact.
+func InspectMigration(paths Paths) (*Migration, error) {
+	inspection, needed, err := inspectMigration(paths)
+	if err != nil {
+		return nil, err
+	}
+	if !needed {
+		return nil, nil
+	}
+	return &Migration{paths: paths, inspection: inspection}, nil
+}
+
+// Fingerprint binds an approval to the complete migration artifact topology.
+func (m Migration) Fingerprint() string { return m.inspection.fingerprint }
+
+// Load reads the logical configuration selected during read-only inspection.
+// Identity and content are rechecked so callers never consume a substituted file.
+func (m Migration) Load() (Config, error) {
+	data, err := readInspectedConfig(m.inspection)
+	if err != nil {
+		return Config{}, err
+	}
+	config, err := decodeConfig(data)
+	if err != nil {
+		return Config{}, fmt.Errorf("decode inspected migration configuration: %w", err)
+	}
+	return config, nil
+}
+
+func inspectMigration(paths Paths) (migrationInspection, bool, error) {
+	first, firstFingerprint, err := snapshotMigrationArtifacts(paths)
+	if err != nil {
+		return migrationInspection{}, false, err
+	}
+	second, secondFingerprint, err := snapshotMigrationArtifacts(paths)
+	if err != nil {
+		return migrationInspection{}, false, err
+	}
+	if firstFingerprint != secondFingerprint {
+		return migrationInspection{}, false, errors.New("migration artifacts changed during inspection")
+	}
+	_ = first
+
+	recovery, err := recoveryNeeded(paths)
+	if err != nil {
+		return migrationInspection{}, false, err
+	}
+	if !recovery {
+		planned, err := planMigrationReadOnly(paths)
+		if err != nil {
+			return migrationInspection{}, false, err
+		}
+		if planned == nil {
+			return migrationInspection{}, false, nil
+		}
+		source, ok := second[paths.Legacy]
+		if !ok || !source.mode.IsRegular() {
+			return migrationInspection{}, false, fmt.Errorf("legacy configuration is unavailable during inspection: %s", paths.Legacy)
+		}
+		return migrationInspection{fingerprint: secondFingerprint, sourcePath: source.path, sourceID: source.identity, sourceHash: source.digest}, true, nil
+	}
+
+	inspection, err := inspectInterruptedMigration(paths, second, secondFingerprint)
+	if err != nil {
+		return migrationInspection{}, false, err
+	}
+	return inspection, true, nil
+}
+
+func snapshotMigrationArtifacts(paths Paths) (map[string]migrationArtifact, string, error) {
+	roots := []string{filepath.Dir(paths.Canonical), filepath.Dir(paths.Legacy)}
+	seenRoots := make(map[string]bool)
+	artifacts := make(map[string]migrationArtifact)
+	for _, root := range roots {
+		if seenRoots[root] {
+			continue
+		}
+		seenRoots[root] = true
+		if _, err := os.Lstat(root); errors.Is(err, fs.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return nil, "", fmt.Errorf("inspect migration directory: %w", err)
+		}
+		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if path == paths.Legacy+".oma-migration.lock" {
+				return nil
+			}
+			artifact, err := readMigrationArtifact(path)
+			if err != nil {
+				return err
+			}
+			artifacts[path] = artifact
+			return nil
+		})
+		if err != nil {
+			return nil, "", fmt.Errorf("snapshot migration directory: %w", err)
+		}
+	}
+	pathsSorted := make([]string, 0, len(artifacts))
+	for path := range artifacts {
+		pathsSorted = append(pathsSorted, path)
+	}
+	sort.Strings(pathsSorted)
+	hash := sha256.New()
+	for _, path := range pathsSorted {
+		artifact := artifacts[path]
+		_, _ = fmt.Fprintf(hash, "%s\x00%d\x00%d\x00%d\x00%d\x00%x\x00%s\x00", path, artifact.mode, artifact.identity.Device, artifact.identity.Inode, len(artifact.data), artifact.digest, artifact.linkTarget)
+	}
+	return artifacts, hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func readMigrationArtifact(path string) (migrationArtifact, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return migrationArtifact{}, err
+	}
+	identity, err := identityOf(info)
+	if err != nil {
+		return migrationArtifact{}, err
+	}
+	artifact := migrationArtifact{path: path, mode: info.Mode(), identity: identity}
+	switch {
+	case info.Mode().IsRegular():
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return migrationArtifact{}, err
+		}
+		after, err := os.Lstat(path)
+		if err != nil {
+			return migrationArtifact{}, err
+		}
+		owned, err := hasIdentity(after, identity)
+		if err != nil || !owned {
+			return migrationArtifact{}, errors.New("migration artifact changed while it was read")
+		}
+		artifact.data = data
+		artifact.digest = sha256.Sum256(data)
+	case info.Mode()&os.ModeSymlink != 0:
+		target, err := os.Readlink(path)
+		if err != nil {
+			return migrationArtifact{}, err
+		}
+		artifact.linkTarget = target
+	}
+	return artifact, nil
+}
+
+func inspectInterruptedMigration(paths Paths, artifacts map[string]migrationArtifact, fingerprint string) (migrationInspection, error) {
+	marker := migrationMarkerPath(paths)
+	if fixed, ok := artifacts[marker]; ok && fixed.mode.IsRegular() && !bytes.HasPrefix(fixed.data, []byte(migrationMarkerMagic)) {
+		return migrationInspection{}, errors.New("corrupt migration marker: ownership prefix is missing")
+	}
+
+	var records []transactionRecord
+	for path, artifact := range artifacts {
+		if !artifact.mode.IsRegular() || !bytes.HasPrefix(artifact.data, []byte(migrationMarkerMagic)) {
+			continue
+		}
+		var record transactionRecord
+		if err := json.Unmarshal(artifact.data[len(migrationMarkerMagic):], &record); err != nil {
+			if path == marker || !strings.Contains(path, ".staged-") {
+				return migrationInspection{}, fmt.Errorf("corrupt migration marker %s: %w", path, err)
+			}
+			continue
+		}
+		if err := validateInspectedRecord(paths, record); err != nil {
+			return migrationInspection{}, err
+		}
+		records = append(records, record)
+	}
+
+	for path, artifact := range artifacts {
+		if strings.Contains(path, ".oma-quarantine-") {
+			token := path[strings.LastIndex(path, ".oma-quarantine-")+len(".oma-quarantine-"):]
+			decoded, err := hex.DecodeString(token)
+			if err != nil || len(decoded) != 16 {
+				return migrationInspection{}, fmt.Errorf("migration quarantine has invalid token: %s", path)
+			}
+		}
+		if path == stagedMarkerAnchorPath(marker) && artifact.mode&os.ModeSymlink != 0 {
+			if _, err := stagedMarkerToken(marker, artifact.linkTarget); err != nil {
+				return migrationInspection{}, err
+			}
+		}
+	}
+
+	if len(records) == 0 {
+		legacy, ok := artifacts[paths.Legacy]
+		if !ok || !legacy.mode.IsRegular() {
+			return migrationInspection{}, errors.New("migration recovery has no verified logical configuration")
+		}
+		return migrationInspection{fingerprint: fingerprint, sourcePath: legacy.path, sourceID: legacy.identity, sourceHash: legacy.digest, recovery: true}, nil
+	}
+	token := records[0].Token
+	for _, record := range records[1:] {
+		if record.Token != token || record.Digest != records[0].Digest {
+			return migrationInspection{}, errors.New("conflicting migration markers describe different transactions")
+		}
+	}
+	record := records[0]
+	digestBytes, _ := hex.DecodeString(record.Digest)
+	var expected [32]byte
+	copy(expected[:], digestBytes)
+
+	preferred := []string{paths.Legacy, migrationBackupPath(paths), paths.Canonical, canonicalStagedPath(paths, record.Token)}
+	for _, path := range preferred {
+		artifact, ok := artifacts[path]
+		if !ok || !artifact.mode.IsRegular() || artifact.digest != expected {
+			continue
+		}
+		if path == paths.Legacy || path == migrationBackupPath(paths) {
+			if artifact.identity != record.LegacyID {
+				continue
+			}
+		}
+		return migrationInspection{fingerprint: fingerprint, sourcePath: path, sourceID: artifact.identity, sourceHash: artifact.digest, recovery: true}, nil
+	}
+	for path, artifact := range artifacts {
+		if artifact.mode.IsRegular() && artifact.digest == expected && strings.Contains(path, ".oma-quarantine-") {
+			return migrationInspection{fingerprint: fingerprint, sourcePath: path, sourceID: artifact.identity, sourceHash: artifact.digest, recovery: true}, nil
+		}
+	}
+	return migrationInspection{}, errors.New("migration recovery has no artifact matching the recorded configuration digest")
+}
+
+func validateInspectedRecord(paths Paths, record transactionRecord) error {
+	decoded, err := hex.DecodeString(record.Token)
+	if record.Version != 2 || err != nil || len(decoded) != 16 || record.Canonical != paths.Canonical || record.Legacy != paths.Legacy || record.LegacyID == (fileIdentity{}) {
+		return errors.New("migration marker schema or path ownership is invalid")
+	}
+	digest, err := hex.DecodeString(record.Digest)
+	if err != nil || len(digest) != sha256.Size {
+		return errors.New("migration marker configuration digest is invalid")
+	}
+	expected := []string{canonicalStagedPath(paths, record.Token), paths.Legacy, migrationBackupPath(paths), migrationMarkerPath(paths), paths.Canonical}
+	actual := append([]string(nil), record.Quarantines...)
+	sort.Strings(expected)
+	sort.Strings(actual)
+	if strings.Join(expected, "\x00") != strings.Join(actual, "\x00") {
+		return errors.New("migration marker quarantine topology is invalid")
+	}
+	return nil
+}
+
+func readInspectedConfig(inspection migrationInspection) ([]byte, error) {
+	artifact, err := readMigrationArtifact(inspection.sourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("read inspected migration configuration: %w", err)
+	}
+	if artifact.identity != inspection.sourceID || artifact.digest != inspection.sourceHash || !artifact.mode.IsRegular() {
+		return nil, errors.New("inspected migration configuration changed before it was read")
+	}
+	return append([]byte(nil), artifact.data...), nil
 }
 
 func planMigrationReadOnly(paths Paths) (*Migration, error) {
@@ -159,26 +438,56 @@ func planMigrationReadOnly(paths Paths) (*Migration, error) {
 }
 
 func (m Migration) Apply(validate func(Config) error) error {
-	data, legacyID, err := validateLegacyBeforeMutation(m.paths, validate)
+	data, err := readInspectedConfig(m.inspection)
 	if err != nil {
 		return err
+	}
+	cfg, err := decodeConfig(data)
+	if err != nil {
+		return fmt.Errorf("decode inspected migration configuration: %w", err)
+	}
+	if validate != nil {
+		if err := validate(cfg); err != nil {
+			return fmt.Errorf("validate inspected migration configuration: %w", err)
+		}
 	}
 	lock, err := acquireMigrationLock(m.paths)
 	if err != nil {
 		return err
 	}
 	defer lock.release()
+	current, needed, err := inspectMigration(m.paths)
+	if err != nil {
+		return err
+	}
+	if !needed || current.fingerprint != m.inspection.fingerprint {
+		return ErrMigrationStateChanged
+	}
+	data, err = readInspectedConfig(current)
+	if err != nil {
+		return err
+	}
+	if sha256.Sum256(data) != m.inspection.sourceHash {
+		return errors.New("migration configuration changed after validation")
+	}
 	if err := recoverInterruptedMigration(m.paths); err != nil {
 		return err
+	}
+	planned, err := planMigrationReadOnly(m.paths)
+	if err != nil {
+		return err
+	}
+	if planned == nil {
+		return nil
 	}
 	currentData, currentID, err := readLegacyIdentity(m.paths.Legacy)
 	if err != nil {
 		return err
 	}
-	if currentID != legacyID || sha256.Sum256(currentData) != sha256.Sum256(data) {
-		return errors.New("legacy configuration changed after validation")
+	if sha256.Sum256(currentData) != current.sourceHash {
+		return errors.New("legacy configuration changed after recovery")
 	}
-	return m.applyLocked(data, legacyID)
+	return m.applyLocked(currentData, currentID)
 }
 
 func (m Migration) applyLocked(data []byte, legacyID fileIdentity) error {
@@ -356,23 +665,6 @@ func recoveryNeeded(paths Paths) (bool, error) {
 		return true, nil
 	}
 	return false, nil
-}
-
-func validateLegacyBeforeMutation(paths Paths, validate func(Config) error) ([]byte, fileIdentity, error) {
-	data, id, err := readLegacyIdentity(paths.Legacy)
-	if err != nil {
-		return nil, fileIdentity{}, err
-	}
-	config, err := decodeConfig(data)
-	if err != nil {
-		return nil, fileIdentity{}, fmt.Errorf("decode legacy configuration: %w", err)
-	}
-	if validate != nil {
-		if err := validate(config); err != nil {
-			return nil, fileIdentity{}, fmt.Errorf("validate legacy configuration: %w", err)
-		}
-	}
-	return data, id, nil
 }
 
 func readLegacyIdentity(path string) ([]byte, fileIdentity, error) {

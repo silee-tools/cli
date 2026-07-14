@@ -51,9 +51,14 @@ type jiraGateway interface {
 type configMigration interface {
 	Apply(func(config.Config) error) error
 }
+type configMigrationInspection interface {
+	configMigration
+	Fingerprint() string
+	Load() (config.Config, error)
+}
 type configGateway interface {
 	Load(config.Paths) (config.Config, config.Source, error)
-	PlanMigration(config.Paths) (configMigration, error)
+	InspectMigration(config.Paths) (configMigrationInspection, error)
 }
 type jiraProvider interface {
 	Open(config.Config, config.Paths) (jiraGateway, error)
@@ -84,27 +89,29 @@ type plannedTransitionDecision struct {
 }
 
 type planPayload struct {
-	Input                  Input                      `json:"input"`
-	RepoRoot               string                     `json:"repo_root"`
-	CommonDir              string                     `json:"common_dir"`
-	Base                   Base                       `json:"base"`
-	Branch                 string                     `json:"branch"`
-	WorktreePath           string                     `json:"worktree_path"`
-	Git                    gitops.Snapshot            `json:"git"`
-	Issue                  *plannedIssue              `json:"issue,omitempty"`
-	JiraConfig             *config.Config             `json:"jira_config,omitempty"`
-	JiraSnapshotPath       string                     `json:"jira_snapshot_path,omitempty"`
-	RequiredInputs         []RequiredInput            `json:"required_inputs,omitempty"`
-	OriginAvailable        bool                       `json:"origin_available"`
-	RemoteBranchSHA        string                     `json:"remote_branch_sha,omitempty"`
-	JiraTransitions        []plannedTransition        `json:"jira_transitions,omitempty"`
-	JiraTransitionDecision *plannedTransitionDecision `json:"jira_transition_decision,omitempty"`
+	Input                          Input                      `json:"input"`
+	RepoRoot                       string                     `json:"repo_root"`
+	CommonDir                      string                     `json:"common_dir"`
+	Base                           Base                       `json:"base"`
+	Branch                         string                     `json:"branch"`
+	WorktreePath                   string                     `json:"worktree_path"`
+	Git                            gitops.Snapshot            `json:"git"`
+	Issue                          *plannedIssue              `json:"issue,omitempty"`
+	JiraConfig                     *config.Config             `json:"jira_config,omitempty"`
+	JiraSnapshotPath               string                     `json:"jira_snapshot_path,omitempty"`
+	RequiredInputs                 []RequiredInput            `json:"required_inputs,omitempty"`
+	OriginAvailable                bool                       `json:"origin_available"`
+	RemoteBranchSHA                string                     `json:"remote_branch_sha,omitempty"`
+	JiraTransitions                []plannedTransition        `json:"jira_transitions,omitempty"`
+	JiraTransitionDecision         *plannedTransitionDecision `json:"jira_transition_decision,omitempty"`
+	JiraConfigMigrationFingerprint string                     `json:"jira_config_migration_fingerprint,omitempty"`
 }
 
 type plannedBuild struct {
 	payload     planPayload
 	fingerprint string
 	result      Result
+	migration   configMigrationInspection
 }
 
 type Planner struct {
@@ -172,10 +179,20 @@ func (p *Planner) build(ctx context.Context, input Input) (plannedBuild, error) 
 	var required []RequiredInput
 	var plannedTransitions []plannedTransition
 	var transitionDecision *plannedTransitionDecision
+	var migration configMigrationInspection
 	if input.Kind == InputJira {
-		cfg, _, loadErr := p.configs.Load(p.paths)
-		if loadErr != nil {
-			return plannedBuild{}, fmt.Errorf("load Jira configuration: %w", loadErr)
+		migration, err = p.configs.InspectMigration(p.paths)
+		if err != nil {
+			return plannedBuild{}, fmt.Errorf("inspect Jira configuration migration: %w", err)
+		}
+		var cfg config.Config
+		if migration != nil {
+			cfg, err = migration.Load()
+		} else {
+			cfg, _, err = p.configs.Load(p.paths)
+		}
+		if err != nil {
+			return plannedBuild{}, fmt.Errorf("load Jira configuration: %w", err)
 		}
 		gateway, openErr := p.jiraProvider.Open(cfg, p.paths)
 		if openErr != nil {
@@ -243,6 +260,9 @@ func (p *Planner) build(ctx context.Context, input Input) (plannedBuild, error) 
 		OriginAvailable: originAvailable, RemoteBranchSHA: remoteBranchSHA,
 		JiraTransitions: plannedTransitions, JiraTransitionDecision: transitionDecision,
 	}
+	if migration != nil {
+		payload.JiraConfigMigrationFingerprint = migration.Fingerprint()
+	}
 	if issue != nil {
 		payload.Issue = &plannedIssue{
 			Key: issue.Key, Summary: issue.Summary, DescriptionText: issue.DescriptionText,
@@ -262,11 +282,14 @@ func (p *Planner) build(ctx context.Context, input Input) (plannedBuild, error) 
 	result.Steps = append(result.Steps, Step{Name: "git-fetch", Status: "completed", Detail: "origin 상태를 조회했습니다"})
 	if payload.Issue != nil {
 		result.Steps = append(result.Steps, Step{Name: "jira-snapshot", Status: "completed", Detail: payload.JiraSnapshotPath})
+		if payload.JiraConfigMigrationFingerprint != "" {
+			result.Steps = append(result.Steps, Step{Name: "config-migration", Status: "planned", Detail: "호환 설정을 XDG 정본으로 전환합니다"})
+		}
 	}
 	if len(required) != 0 {
 		result.NextAction = "필수 입력을 지정해 계획을 다시 만드세요"
 	}
-	return plannedBuild{payload: payload, fingerprint: fingerprint, result: result}, nil
+	return plannedBuild{payload: payload, fingerprint: fingerprint, result: result, migration: migration}, nil
 }
 
 func requiredJiraInputs(ctx context.Context, gateway jiraGateway, cfg config.Config, issue jira.Issue, input Input) ([]RequiredInput, []plannedTransition, *plannedTransitionDecision, error) {
@@ -374,6 +397,13 @@ func (productionConfig) Load(paths config.Paths) (config.Config, config.Source, 
 }
 func (productionConfig) PlanMigration(paths config.Paths) (configMigration, error) {
 	migration, err := config.PlanMigration(paths)
+	if migration == nil || err != nil {
+		return nil, err
+	}
+	return migration, nil
+}
+func (productionConfig) InspectMigration(paths config.Paths) (configMigrationInspection, error) {
+	migration, err := config.InspectMigration(paths)
 	if migration == nil || err != nil {
 		return nil, err
 	}

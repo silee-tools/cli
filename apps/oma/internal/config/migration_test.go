@@ -1,12 +1,15 @@
 package config
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -298,6 +301,158 @@ func TestPlanMigrationRecoversInterruptedTransaction(t *testing.T) {
 			assertRegularFile(t, paths.Legacy, validTOML, 0o640)
 			assertAbsent(t, paths.Canonical)
 		})
+	}
+}
+
+func TestPlanMigrationInspectionDoesNotRecoverInterruptedTransaction(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	migration, err := PlanMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalOps := migrationOS
+	migrationOS.afterCanonicalCommit = func() { panic(simulatedCrash{}) }
+	assertSimulatedCrash(t, func() { _ = migration.Apply(func(Config) error { return nil }) })
+	migrationOS = originalOps
+	t.Cleanup(func() { migrationOS = originalOps })
+
+	before := snapshotMigrationTree(t, paths)
+	next, err := InspectMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next == nil {
+		t.Fatal("InspectMigration() = nil, want read-only recovery plan")
+	}
+	after := snapshotMigrationTree(t, paths)
+	if before != after {
+		t.Fatalf("InspectMigration changed interrupted migration tree\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
+func TestInspectMigrationLoadsLogicalConfigAcrossCrashCheckpoints(t *testing.T) {
+	tests := []struct {
+		name     string
+		setCrash func(*migrationFileOps)
+	}{
+		{name: "marker established", setCrash: func(ops *migrationFileOps) { ops.afterMarkerEstablished = func() { panic(simulatedCrash{}) } }},
+		{name: "canonical committed", setCrash: func(ops *migrationFileOps) { ops.afterCanonicalCommit = func() { panic(simulatedCrash{}) } }},
+		{name: "legacy backed up", setCrash: func(ops *migrationFileOps) { ops.afterLegacyBackup = func() { panic(simulatedCrash{}) } }},
+		{name: "compatibility link created", setCrash: func(ops *migrationFileOps) { ops.afterSymlink = func() { panic(simulatedCrash{}) } }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testPaths(t)
+			writeFile(t, paths.Legacy, validTOML, 0o640)
+			migration, err := PlanMigration(paths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalOps := migrationOS
+			tt.setCrash(&migrationOS)
+			assertSimulatedCrash(t, func() { _ = migration.Apply(func(Config) error { return nil }) })
+			migrationOS = originalOps
+			t.Cleanup(func() { migrationOS = originalOps })
+
+			before := snapshotMigrationTree(t, paths)
+			inspected, err := InspectMigration(paths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if inspected == nil || inspected.Fingerprint() == "" {
+				t.Fatalf("inspection = %#v, want fingerprinted recovery plan", inspected)
+			}
+			got, err := inspected.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.JiraBaseURL != "https://jira.example.com" || got.ProductTypeOptions["feature"] != "Feature" {
+				t.Fatalf("Load() = %+v", got)
+			}
+			if after := snapshotMigrationTree(t, paths); before != after {
+				t.Fatalf("InspectMigration or Load changed tree\nbefore: %s\nafter:  %s", before, after)
+			}
+		})
+	}
+}
+
+func TestInspectMigrationConcurrentReadersShareStableFingerprint(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	want, err := InspectMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want == nil {
+		t.Fatal("InspectMigration() = nil, want migration")
+	}
+	results := make(chan string, 16)
+	errs := make(chan error, 16)
+	var group sync.WaitGroup
+	for range 16 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			inspection, err := InspectMigration(paths)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if _, err := inspection.Load(); err != nil {
+				errs <- err
+				return
+			}
+			results <- inspection.Fingerprint()
+		}()
+	}
+	group.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	for got := range results {
+		if got != want.Fingerprint() {
+			t.Fatalf("fingerprint = %s, want %s", got, want.Fingerprint())
+		}
+	}
+}
+
+func TestInspectMigrationDistinguishesCorruptMarker(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	writeFile(t, migrationMarkerPath(paths), "not-owned", 0o600)
+	if _, err := InspectMigration(paths); err == nil || !strings.Contains(err.Error(), "corrupt migration marker") {
+		t.Fatalf("InspectMigration() error = %v, want corrupt marker", err)
+	}
+}
+
+func TestInspectMigrationRejectsConfigurationConflictWithoutMutation(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Canonical, validTOML, 0o600)
+	writeFile(t, paths.Legacy, validTOML, 0o600)
+	before := snapshotMigrationTree(t, paths)
+	if _, err := InspectMigration(paths); err == nil || !strings.Contains(err.Error(), "configuration conflict") {
+		t.Fatalf("InspectMigration() error = %v, want configuration conflict", err)
+	}
+	if after := snapshotMigrationTree(t, paths); before != after {
+		t.Fatalf("InspectMigration changed conflicting tree\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
+func TestMigrationInspectionLoadRejectsChangedSource(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	inspection, err := InspectMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Legacy, []byte(strings.Replace(validTOML, "Feature", "Changed", 1)), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspection.Load(); err == nil || !strings.Contains(err.Error(), "changed before it was read") {
+		t.Fatalf("Load() error = %v, want changed source rejection", err)
 	}
 }
 
@@ -1824,6 +1979,60 @@ func findStagedMarkerTarget(t *testing.T, marker string) string {
 type directorySnapshot struct {
 	mode    os.FileMode
 	entries []string
+}
+
+func snapshotMigrationTree(t *testing.T, paths Paths) string {
+	t.Helper()
+	roots := []string{filepath.Dir(paths.Canonical), filepath.Dir(paths.Legacy)}
+	seen := make(map[string]bool)
+	var entries []string
+	for _, root := range roots {
+		if seen[root] {
+			continue
+		}
+		seen[root] = true
+		if _, err := os.Lstat(root); errors.Is(err, fs.ErrNotExist) {
+			entries = append(entries, root+"|missing")
+			continue
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				return err
+			}
+			identity, err := identityOf(info)
+			if err != nil {
+				return err
+			}
+			value := fmt.Sprintf("%s|%s|%o|%d|%d", path, info.Mode().Type(), info.Mode().Perm(), identity.Device, identity.Inode)
+			switch {
+			case info.Mode().IsRegular():
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				value += fmt.Sprintf("|%x", sha256.Sum256(data))
+			case info.Mode()&os.ModeSymlink != 0:
+				target, err := os.Readlink(path)
+				if err != nil {
+					return err
+				}
+				value += "|" + target
+			}
+			entries = append(entries, value)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	sort.Strings(entries)
+	return strings.Join(entries, "\n")
 }
 
 func snapshotDirectory(t *testing.T, path string) directorySnapshot {

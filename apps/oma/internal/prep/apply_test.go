@@ -111,6 +111,35 @@ func TestApplyDriftConsumesOldTokenAndReturnsNewPlan(t *testing.T) {
 	}
 }
 
+func TestApplyConfigurationMigrationDriftReturnsFreshPlanBeforeWrites(t *testing.T) {
+	git := &fakeGitGateway{snapshot: testGitSnapshot()}
+	store := &fakePlanStore{}
+	j := &fakeJiraGateway{issue: jiraIssueInProgress()}
+	configs := &mutableConfigGateway{config: testConfig()}
+	planner := testPlanner(store, git, configs, fakeJiraProvider{gateway: j})
+	input := Input{Kind: InputJira, IssueKey: "ABC-123", ProductType: "feature", Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"}
+	planned, err := planner.build(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.claimed = planned.payload
+	store.claimRecord = state.Record{Fingerprint: planned.fingerprint}
+	migration := &fakeMigration{}
+	configs.migration = migration
+	git.events, j.events = nil, nil
+
+	result, err := planner.Apply(context.Background(), "old-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "planned" || result.PlanToken == "" || store.creates != 1 || store.consumes != 1 {
+		t.Fatalf("result=%+v creates=%d consumes=%d", result, store.creates, store.consumes)
+	}
+	if migration.applied != 0 || git.writes != 0 || slices.Contains(j.events, "fields") || slices.Contains(j.events, "transition") {
+		t.Fatalf("migration=%d gitWrites=%d jira=%v", migration.applied, git.writes, j.events)
+	}
+}
+
 func TestApplyExpiredPlanReturnsFreshPlanBeforeExternalWrites(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -689,6 +718,22 @@ func (*threeHopJira) WriteSnapshot(string, []byte) error { return nil }
 type fakeMigration struct {
 	applied int
 	events  *[]string
+}
+
+type mutableConfigGateway struct {
+	config    config.Config
+	migration configMigration
+}
+
+func (f *mutableConfigGateway) Load(config.Paths) (config.Config, config.Source, error) {
+	return f.config, config.SourceCanonical, nil
+}
+
+func (f *mutableConfigGateway) InspectMigration(config.Paths) (configMigrationInspection, error) {
+	if f.migration == nil {
+		return nil, nil
+	}
+	return fakeMigrationInspection{configMigration: f.migration, config: f.config, fingerprint: "mutable-migration"}, nil
 }
 
 func (f *fakeMigration) Apply(validate func(config.Config) error) error {

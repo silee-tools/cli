@@ -42,45 +42,12 @@ func (p *Planner) Apply(ctx context.Context, token string) (result Result, resul
 		}
 	}()
 
-	if approved.Input.Kind == InputJira {
-		migration, migrationErr := p.configs.PlanMigration(p.paths)
-		if migrationErr != nil {
-			return Result{}, fmt.Errorf("plan Jira configuration migration: %w", migrationErr)
-		}
-		if migration != nil {
-			if migrationErr := migration.Apply(func(cfg config.Config) error {
-				gateway, openErr := p.jiraProvider.Open(cfg, p.paths)
-				if openErr != nil {
-					return openErr
-				}
-				_, authErr := gateway.Myself(ctx)
-				return authErr
-			}); migrationErr != nil {
-				return Result{}, fmt.Errorf("migrate Jira configuration: %w", migrationErr)
-			}
-		}
-	}
-
 	current, err := p.build(ctx, approved.Input)
 	if err != nil {
 		return Result{}, fmt.Errorf("revalidate approved plan: %w", err)
 	}
 	if record.Fingerprint != current.fingerprint {
-		if len(current.result.RequiredInputs) != 0 {
-			return current.result, nil
-		}
-		fresh, createErr := p.store.Create(current.payload, current.fingerprint)
-		if createErr != nil {
-			var committed *state.CommittedError
-			if !errors.As(createErr, &committed) {
-				return Result{}, fmt.Errorf("persist refreshed plan: %w", createErr)
-			}
-		}
-		current.result.PlanToken = fresh.Token
-		current.result.ExpiresAt = fresh.ExpiresAt
-		current.result.Steps = append(current.result.Steps, Step{Name: "plan-state", Status: "completed", Detail: "변경된 상태의 새 승인 계획을 저장했습니다"})
-		current.result.NextAction = "상태가 바뀌었습니다. 새 계획을 확인하고 다시 승인하세요"
-		return current.result, nil
+		return p.refreshChanged(current)
 	}
 
 	result = resultFromPayload(current.payload)
@@ -98,6 +65,28 @@ func (p *Planner) Apply(ctx context.Context, token string) (result Result, resul
 		}
 		result.NextAction = "완료된 단계는 보존됩니다. 같은 입력으로 새 계획을 만들어 다시 실행하세요"
 		return result, nil
+	}
+	if current.migration != nil {
+		migrationErr := current.migration.Apply(func(cfg config.Config) error {
+			gateway, openErr := p.jiraProvider.Open(cfg, p.paths)
+			if openErr != nil {
+				return openErr
+			}
+			_, authErr := gateway.Myself(ctx)
+			return authErr
+		})
+		if errors.Is(migrationErr, config.ErrMigrationStateChanged) {
+			refreshed, refreshErr := p.build(ctx, approved.Input)
+			if refreshErr != nil {
+				return Result{}, fmt.Errorf("refresh plan after configuration migration drift: %w", refreshErr)
+			}
+			return p.refreshChanged(refreshed)
+		}
+		if migrationErr != nil {
+			return Result{}, fmt.Errorf("migrate Jira configuration: %w", migrationErr)
+		}
+		mutated = true
+		addStep("config-migration", "completed", "Jira 설정을 XDG 정본으로 전환했습니다")
 	}
 
 	operation := gitops.Operation{Repo: current.payload.RepoRoot, Path: current.payload.WorktreePath, Branch: current.payload.Branch, BaseSHA: current.payload.Base.SHA}
@@ -184,6 +173,24 @@ func (p *Planner) Apply(ctx context.Context, token string) (result Result, resul
 	}
 	result.NextAction = "생성된 worktree로 이동해 작업을 시작하세요"
 	return result, nil
+}
+
+func (p *Planner) refreshChanged(current plannedBuild) (Result, error) {
+	if len(current.result.RequiredInputs) != 0 {
+		return current.result, nil
+	}
+	fresh, err := p.store.Create(current.payload, current.fingerprint)
+	if err != nil {
+		var committed *state.CommittedError
+		if !errors.As(err, &committed) {
+			return Result{}, fmt.Errorf("persist refreshed plan: %w", err)
+		}
+	}
+	current.result.PlanToken = fresh.Token
+	current.result.ExpiresAt = fresh.ExpiresAt
+	current.result.Steps = append(current.result.Steps, Step{Name: "plan-state", Status: "completed", Detail: "변경된 상태의 새 승인 계획을 저장했습니다"})
+	current.result.NextAction = "상태가 바뀌었습니다. 새 계획을 확인하고 다시 승인하세요"
+	return current.result, nil
 }
 
 func (p *Planner) refreshExpired(ctx context.Context, expiredToken string, approved planPayload) (Result, error) {

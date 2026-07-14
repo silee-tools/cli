@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -72,6 +73,22 @@ func TestPlanJiraSnapshotsAndWithholdsTokenForRequiredInput(t *testing.T) {
 	}
 	if len(j.snapshots) != 1 || result.JiraSnapshotPath == "" {
 		t.Fatalf("snapshot calls = %v, result = %+v", j.snapshots, result)
+	}
+}
+
+func TestPlanJiraIncludesConfigurationMigrationInFingerprintAndPreview(t *testing.T) {
+	store := &fakePlanStore{}
+	git := &fakeGitGateway{snapshot: testGitSnapshot()}
+	migration := &fakeMigration{}
+	j := &fakeJiraGateway{issue: jiraIssueInProgress()}
+	planner := testPlanner(store, git, fakeConfigGateway{config: testConfig(), migration: migration}, fakeJiraProvider{gateway: j})
+
+	result, err := planner.Plan(context.Background(), Input{Kind: InputJira, IssueKey: "ABC-123", ProductType: "feature", Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(result.Steps, func(step Step) bool { return step.Name == "config-migration" && step.Status == "planned" }) {
+		t.Fatalf("steps = %+v, want planned config migration", result.Steps)
 	}
 }
 
@@ -294,7 +311,7 @@ type panicConfigGateway struct{}
 func (panicConfigGateway) Load(config.Paths) (config.Config, config.Source, error) {
 	panic("config accessed")
 }
-func (panicConfigGateway) PlanMigration(config.Paths) (configMigration, error) {
+func (panicConfigGateway) InspectMigration(config.Paths) (configMigrationInspection, error) {
 	panic("migration accessed")
 }
 
@@ -307,11 +324,22 @@ type fakeConfigGateway struct {
 func (f fakeConfigGateway) Load(config.Paths) (config.Config, config.Source, error) {
 	return f.config, config.SourceCanonical, nil
 }
-func (f fakeConfigGateway) PlanMigration(config.Paths) (configMigration, error) {
-	if f.planMigrationCalls != nil {
-		*f.planMigrationCalls = *f.planMigrationCalls + 1
+func (f fakeConfigGateway) InspectMigration(config.Paths) (configMigrationInspection, error) {
+	if f.migration == nil {
+		return nil, nil
 	}
-	return f.migration, nil
+	return fakeMigrationInspection{configMigration: f.migration, config: f.config, fingerprint: "fake-migration"}, nil
+}
+
+type fakeMigrationInspection struct {
+	configMigration
+	config      config.Config
+	fingerprint string
+}
+
+func (f fakeMigrationInspection) Fingerprint() string { return f.fingerprint }
+func (f fakeMigrationInspection) Load() (config.Config, error) {
+	return f.config, nil
 }
 
 type panicJiraProvider struct{}
