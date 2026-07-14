@@ -52,8 +52,8 @@ func TestParseOptions(t *testing.T) {
 	}{
 		{
 			name: "jira with every option",
-			args: []string{"ABC-123", "--repo", "/repo", "--type", "hotfix", "--base", "main", "--worktree", "current", "--submodule", "one", "--submodule", "two", "--setup-arg", "a", "--setup-arg", "b", "--product-type", "service", "--transition-id", "31", "--no-push", "--dry-run", "--plan", "token", "--yes", "--json"},
-			want: options{Input: prep.Input{Kind: prep.InputJira, IssueKey: "ABC-123", Repo: "/repo", BranchType: "hotfix", Base: "main", Worktree: "current", Submodules: []string{"one", "two"}, SetupArgs: []string{"a", "b"}, ProductType: "service", TransitionID: "31", NoPush: true}, DryRun: true, PlanToken: "token", Yes: true, JSON: true},
+			args: []string{"ABC-123", "--repo", "/repo", "--type", "hotfix", "--base", "main", "--worktree", "current", "--submodule", "one", "--submodule", "two", "--setup-arg", "a", "--setup-arg", "b", "--product-type", "service", "--transition-id", "31", "--no-push", "--dry-run", "--yes", "--json"},
+			want: options{Input: prep.Input{Kind: prep.InputJira, IssueKey: "ABC-123", Repo: "/repo", BranchType: "hotfix", Base: "main", Worktree: "current", Submodules: []string{"one", "two"}, SetupArgs: []string{"a", "b"}, ProductType: "service", TransitionID: "31", NoPush: true}, DryRun: true, Yes: true, JSON: true},
 		},
 		{name: "description defaults", args: []string{"--description", "작업 설명"}, want: options{Input: prep.Input{Kind: prep.InputDescription, Description: "작업 설명", BranchType: "feature", Worktree: "new"}}},
 		{name: "empty defaults", args: []string{"--empty"}, want: options{Input: prep.Input{Kind: prep.InputEmpty, BranchType: "feature", Worktree: "new"}}},
@@ -150,7 +150,7 @@ func TestRunJSONKeepsStdoutAsOneDocumentAndDoesNotApprove(t *testing.T) {
 func TestRunMapsPartialResultToNonzeroAfterRendering(t *testing.T) {
 	workflow := &fakeWorkflow{applyResult: prep.Result{Status: "partial", InputKind: prep.InputEmpty, NextAction: "retry"}}
 	var stdout bytes.Buffer
-	err := run([]string{"prep", "--empty", "--base", "main", "--plan", "opaque", "--yes", "--json"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, dependencies{
+	err := run([]string{"prep", "--plan", "opaque", "--yes", "--json"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, dependencies{
 		IsTerminal: func() bool { return false }, Workflow: workflow,
 	})
 	if err == nil || !strings.Contains(err.Error(), "partial") {
@@ -175,6 +175,66 @@ func TestRunNonInteractiveRequiredInputRendersAndFails(t *testing.T) {
 	}
 	if !json.Valid(stdout.Bytes()) {
 		t.Fatalf("stdout is not JSON: %q", stdout.String())
+	}
+}
+
+func TestRunRejectsDryRunWithPlanWithoutApplying(t *testing.T) {
+	workflow := &fakeWorkflow{}
+	err := run([]string{"prep", "--plan", "opaque", "--yes", "--dry-run", "--json"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, dependencies{
+		IsTerminal: func() bool { return false }, Workflow: workflow,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--dry-run") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(workflow.applyTokens) != 0 {
+		t.Fatalf("Apply calls = %v", workflow.applyTokens)
+	}
+}
+
+func TestRunPlanTokenOnlyAppliesWithoutInputOrBase(t *testing.T) {
+	workflow := &fakeWorkflow{applyResult: prep.Result{Status: "completed", InputKind: prep.InputEmpty}}
+	var stdout bytes.Buffer
+	err := run([]string{"prep", "--plan", "opaque", "--yes", "--json"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, dependencies{
+		IsTerminal: func() bool { return false }, Workflow: workflow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(workflow.applyTokens, []string{"opaque"}) {
+		t.Fatalf("Apply calls = %v", workflow.applyTokens)
+	}
+	if !json.Valid(stdout.Bytes()) {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestRunRejectsPlanTokenMixedWithNewPlanningInput(t *testing.T) {
+	for _, args := range [][]string{
+		{"prep", "ABC-123", "--plan", "opaque", "--yes"},
+		{"prep", "--plan", "opaque", "--yes", "--base", "main"},
+		{"prep", "--plan", "opaque", "--yes", "--description", "new work"},
+	} {
+		workflow := &fakeWorkflow{}
+		err := run(args, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, dependencies{IsTerminal: func() bool { return false }, Workflow: workflow})
+		if err == nil || !strings.Contains(err.Error(), "--plan") {
+			t.Fatalf("run(%v) error = %v", args, err)
+		}
+		if len(workflow.applyTokens) != 0 {
+			t.Fatalf("run(%v) Apply calls = %v", args, workflow.applyTokens)
+		}
+	}
+}
+
+func TestRunNonInteractivePlanAlwaysRequiresYes(t *testing.T) {
+	workflow := &fakeWorkflow{}
+	err := run([]string{"prep", "--plan", "opaque", "--json"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, dependencies{
+		IsTerminal: func() bool { return false }, Workflow: workflow,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(workflow.applyTokens) != 0 {
+		t.Fatalf("Apply calls = %v", workflow.applyTokens)
 	}
 }
 

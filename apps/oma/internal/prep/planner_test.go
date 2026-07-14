@@ -109,11 +109,41 @@ func TestPlanCurrentWorktreeKeepsInspectionModeAndReturnsRepositoryPath(t *testi
 	}
 }
 
+func TestPlanNormalizesJiraTransitionObservationOrder(t *testing.T) {
+	store := &fakePlanStore{}
+	git := &fakeGitGateway{snapshot: testGitSnapshot()}
+	j := &fakeJiraGateway{
+		issue: jira.Issue{Key: "ABC-123", Summary: "작업", Status: jira.Status{ID: "1", Name: "할 일", CategoryKey: "new"}, CustomFields: map[string]json.RawMessage{"custom_product": json.RawMessage(`{"value":"Feature"}`)}},
+		transitions: []jira.Transition{
+			{ID: "22", Name: "Start B", To: jira.Status{ID: "3", Name: "진행 B", CategoryKey: "indeterminate"}},
+			{ID: "21", Name: "Start A", To: jira.Status{ID: "2", Name: "진행 A", CategoryKey: "indeterminate"}},
+		},
+	}
+	planner := testPlanner(store, git, fakeConfigGateway{config: testConfig()}, fakeJiraProvider{gateway: j})
+	input := Input{Kind: InputJira, IssueKey: "ABC-123", ProductType: "feature", Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"}
+	first, err := planner.build(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.transitions[0], j.transitions[1] = j.transitions[1], j.transitions[0]
+	second, err := planner.build(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.fingerprint != second.fingerprint {
+		t.Fatalf("transition order changed fingerprint: %s != %s", first.fingerprint, second.fingerprint)
+	}
+	if got := first.result.RequiredInputs[0].Options; got[0].Value != "21" || got[1].Value != "22" {
+		t.Fatalf("required transition options = %+v", got)
+	}
+}
+
 func testPlanner(store planStore, git gitGateway, configs configGateway, provider jiraProvider) *Planner {
 	return &Planner{
 		paths: config.Paths{CacheRoot: "/cache/oma", StateRoot: "/state/oma"},
 		store: store, git: git, configs: configs, jiraProvider: provider,
-		now: func() time.Time { return time.Date(2026, 7, 14, 12, 0, 0, 0, time.Local) },
+		now:           func() time.Time { return time.Date(2026, 7, 14, 12, 0, 0, 0, time.Local) },
+		canonicalPath: func(path string) (string, error) { return filepath.Clean(path), nil },
 	}
 }
 
@@ -132,12 +162,17 @@ func testConfig() config.Config {
 }
 
 type fakePlanStore struct {
-	payloads     []planPayload
-	fingerprints []string
-	creates      int
-	claimed      planPayload
-	claimRecord  state.Record
-	consumes     int
+	payloads         []planPayload
+	fingerprints     []string
+	creates          int
+	claimed          planPayload
+	claimRecord      state.Record
+	consumes         int
+	receipts         map[string]bool
+	receiptCreates   int
+	receiptChecks    int
+	receiptCreateErr error
+	consumeErr       error
 }
 
 func (f *fakePlanStore) Create(payload any, fingerprint string) (state.Record, error) {
@@ -153,7 +188,22 @@ func (f *fakePlanStore) Claim(_ string, payload any) (state.Record, error) {
 	*value = f.claimed
 	return f.claimRecord, nil
 }
-func (f *fakePlanStore) Consume(string) error { f.consumes++; return nil }
+func (f *fakePlanStore) Consume(string) error { f.consumes++; return f.consumeErr }
+func (f *fakePlanStore) SetupReceiptExists(key string) (bool, error) {
+	f.receiptChecks++
+	return f.receipts != nil && f.receipts[key], nil
+}
+func (f *fakePlanStore) CreateSetupReceipt(key string) error {
+	f.receiptCreates++
+	if f.receiptCreateErr != nil {
+		return f.receiptCreateErr
+	}
+	if f.receipts == nil {
+		f.receipts = make(map[string]bool)
+	}
+	f.receipts[key] = true
+	return nil
+}
 
 type fakeGitGateway struct {
 	snapshot        gitops.Snapshot

@@ -3,6 +3,7 @@ package prep
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -33,7 +34,7 @@ func TestApplyDescriptionOrdersGitAndNeverTouchesJira(t *testing.T) {
 	if result.Status != "completed" {
 		t.Fatalf("result = %+v", result)
 	}
-	want := []string{"fetch", "inspect", "worktree", "submodules", "setup", "push"}
+	want := []string{"fetch", "inspect", "worktree", "submodules", "push"}
 	if !reflect.DeepEqual(git.events, want) {
 		t.Fatalf("events = %v, want %v", git.events, want)
 	}
@@ -188,6 +189,153 @@ func TestApplyWithoutOriginSkipsPushAndCompletes(t *testing.T) {
 	}
 }
 
+func TestApplyRetrySkipsSetupAfterDurableReceipt(t *testing.T) {
+	git := &fakeGitGateway{snapshot: testGitSnapshot(), failAt: "push"}
+	git.snapshot.SetupHash = "setup-hash"
+	store := &fakePlanStore{}
+	planner := testPlanner(store, git, panicConfigGateway{}, panicJiraProvider{})
+	input := Input{Kind: InputEmpty, Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new", SetupArgs: []string{"--mode", "agent"}}
+	planned, err := planner.build(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.claimed = planned.payload
+	store.claimRecord = state.Record{Fingerprint: planned.fingerprint}
+	first, err := planner.Apply(context.Background(), "first-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != "partial" || countEvent(git.events, "setup") != 1 || store.receiptCreates != 1 {
+		t.Fatalf("first=%+v events=%v receiptCreates=%d", first, git.events, store.receiptCreates)
+	}
+	git.failAt = ""
+	git.events = nil
+	second, err := planner.Apply(context.Background(), "second-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != "completed" || countEvent(git.events, "setup") != 0 || store.receiptCreates != 1 {
+		t.Fatalf("second=%+v events=%v receiptCreates=%d", second, git.events, store.receiptCreates)
+	}
+}
+
+func TestApplyStopsBeforePushWhenSetupReceiptIsNotDurable(t *testing.T) {
+	git := &fakeGitGateway{snapshot: testGitSnapshot()}
+	git.snapshot.SetupHash = "setup-hash"
+	store := &fakePlanStore{receiptCreateErr: errors.New("injected receipt durability failure")}
+	planner := testPlanner(store, git, panicConfigGateway{}, panicJiraProvider{})
+	planned, err := planner.build(context.Background(), Input{Kind: InputEmpty, Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.claimed = planned.payload
+	store.claimRecord = state.Record{Fingerprint: planned.fingerprint}
+	result, err := planner.Apply(context.Background(), "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "partial" || slices.Contains(git.events, "push") || store.receiptCreates != 1 {
+		t.Fatalf("result=%+v events=%v receiptCreates=%d", result, git.events, store.receiptCreates)
+	}
+}
+
+func TestApplyMissingSetupScriptDoesNotWriteReceipt(t *testing.T) {
+	git := &fakeGitGateway{snapshot: testGitSnapshot()}
+	store := &fakePlanStore{}
+	planner := testPlanner(store, git, panicConfigGateway{}, panicJiraProvider{})
+	planned, err := planner.build(context.Background(), Input{Kind: InputEmpty, Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.claimed = planned.payload
+	store.claimRecord = state.Record{Fingerprint: planned.fingerprint}
+	if _, err := planner.Apply(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	if store.receiptChecks != 0 || store.receiptCreates != 0 || countEvent(git.events, "setup") != 0 {
+		t.Fatalf("receiptChecks=%d creates=%d events=%v", store.receiptChecks, store.receiptCreates, git.events)
+	}
+}
+
+func TestApplyTreatsCommittedConsumeAsCompleted(t *testing.T) {
+	git := &fakeGitGateway{snapshot: testGitSnapshot()}
+	store := &fakePlanStore{consumeErr: &state.CommittedError{
+		Token: "token",
+		State: state.Consumed,
+		Err:   errors.New("injected post-publication failure"),
+	}}
+	planner := testPlanner(store, git, panicConfigGateway{}, panicJiraProvider{})
+	planned, err := planner.build(context.Background(), Input{Kind: InputEmpty, Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.claimed = planned.payload
+	store.claimRecord = state.Record{Fingerprint: planned.fingerprint}
+
+	result, err := planner.Apply(context.Background(), "token")
+	if err != nil {
+		t.Fatalf("Apply returned committed consume error: %v", err)
+	}
+	if result.Status != "completed" || len(result.Warnings) != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestApplyWarnsForAmbiguousCommittedConsume(t *testing.T) {
+	git := &fakeGitGateway{snapshot: testGitSnapshot()}
+	store := &fakePlanStore{consumeErr: &state.CommittedError{
+		Token:     "token",
+		State:     state.Consumed,
+		Ambiguous: true,
+		Err:       errors.New("injected ambiguous post-publication failure"),
+	}}
+	planner := testPlanner(store, git, panicConfigGateway{}, panicJiraProvider{})
+	planned, err := planner.build(context.Background(), Input{Kind: InputEmpty, Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.claimed = planned.payload
+	store.claimRecord = state.Record{Fingerprint: planned.fingerprint}
+
+	result, err := planner.Apply(context.Background(), "token")
+	if err != nil {
+		t.Fatalf("Apply returned ambiguous committed consume error: %v", err)
+	}
+	if result.Status != "completed" || len(result.Warnings) != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestApplyPropagatesUncommittedConsumeFailure(t *testing.T) {
+	git := &fakeGitGateway{snapshot: testGitSnapshot()}
+	store := &fakePlanStore{consumeErr: errors.New("injected consume failure")}
+	planner := testPlanner(store, git, panicConfigGateway{}, panicJiraProvider{})
+	planned, err := planner.build(context.Background(), Input{Kind: InputEmpty, Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.claimed = planned.payload
+	store.claimRecord = state.Record{Fingerprint: planned.fingerprint}
+
+	result, err := planner.Apply(context.Background(), "token")
+	if err == nil || !errors.Is(err, store.consumeErr) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func countEvent(events []string, target string) int {
+	count := 0
+	for _, event := range events {
+		if event == target {
+			count++
+		}
+	}
+	return count
+}
+
 func TestApplyJiraAllowsThirdTransitionToReachInProgress(t *testing.T) {
 	gateway := &threeHopJira{}
 	payload := planPayload{
@@ -200,6 +348,42 @@ func TestApplyJiraAllowsThirdTransitionToReachInProgress(t *testing.T) {
 	}
 	if gateway.applied != 3 {
 		t.Fatalf("applied transitions = %d, want 3", gateway.applied)
+	}
+}
+
+func TestApplyTransitionOnlyDriftConsumesOldTokenAndCreatesNewPlan(t *testing.T) {
+	git := &fakeGitGateway{snapshot: testGitSnapshot()}
+	store := &fakePlanStore{}
+	j := &fakeJiraGateway{
+		issue: jira.Issue{
+			Key: "ABC-123", Summary: "작업",
+			Status: jira.Status{ID: "1", Name: "할 일", CategoryKey: "new"},
+			CustomFields: map[string]json.RawMessage{
+				"custom_product": json.RawMessage(`{"value":"Feature"}`),
+				"custom_start":   json.RawMessage(`"2026-07-14"`),
+			},
+		},
+		transitions: []jira.Transition{{ID: "21", Name: "Start", To: jira.Status{ID: "2", Name: "진행 중", CategoryKey: "indeterminate"}}},
+	}
+	planner := testPlanner(store, git, fakeConfigGateway{config: testConfig()}, fakeJiraProvider{gateway: j})
+	input := Input{Kind: InputJira, IssueKey: "ABC-123", ProductType: "feature", Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"}
+	planned, err := planner.build(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.claimed = planned.payload
+	store.claimRecord = state.Record{Fingerprint: planned.fingerprint}
+	j.transitions = []jira.Transition{{ID: "31", Name: "Start changed", To: jira.Status{ID: "2", Name: "진행 중", CategoryKey: "indeterminate"}}}
+	git.writes = 0
+	result, err := planner.Apply(context.Background(), "old-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "planned" || result.PlanToken == "" {
+		t.Fatalf("result = %+v", result)
+	}
+	if git.writes != 0 || store.consumes != 1 || store.creates != 1 {
+		t.Fatalf("writes=%d consumes=%d creates=%d", git.writes, store.consumes, store.creates)
 	}
 }
 

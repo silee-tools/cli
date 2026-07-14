@@ -45,6 +45,7 @@ type options struct {
 	DryRun    bool
 	Yes       bool
 	JSON      bool
+	planMixed bool
 }
 
 func parseOptions(args []string) (options, error) {
@@ -78,6 +79,19 @@ func parseOptions(args []string) (options, error) {
 	positionals := flags.Args()
 	if len(positionals) > 1 {
 		return options{}, fmt.Errorf("oma prep: Jira 키는 하나만 지정할 수 있습니다")
+	}
+	visited := make(map[string]bool)
+	flags.Visit(func(current *flag.Flag) { visited[current.Name] = true })
+	if parsed.PlanToken != "" {
+		if parsed.DryRun {
+			return options{}, fmt.Errorf("oma prep: --dry-run과 --plan은 함께 사용할 수 없습니다")
+		}
+		planningFlags := []string{"description", "empty", "repo", "type", "base", "worktree", "submodule", "setup-arg", "product-type", "transition-id", "no-push"}
+		mixed := len(positionals) != 0
+		for _, name := range planningFlags {
+			mixed = mixed || visited[name]
+		}
+		parsed.planMixed = mixed
 	}
 
 	descriptionSet := false
@@ -239,6 +253,15 @@ func (g gitCandidates) candidateError() error {
 func completeOptions(parsed *options, deps dependencies) error {
 	interactive := deps.IsTerminal != nil && deps.IsTerminal()
 	if !interactive {
+		if parsed.PlanToken != "" {
+			if !parsed.Yes {
+				return fmt.Errorf("oma prep: 비대화형 적용에는 --yes가 필요합니다")
+			}
+			if parsed.planMixed {
+				return fmt.Errorf("oma prep: --plan은 새 작업 입력이나 계획 옵션과 함께 사용할 수 없습니다")
+			}
+			return nil
+		}
 		if parsed.Input.Kind == "" {
 			return fmt.Errorf("oma prep: 비대화형 실행에는 작업 입력이 필요합니다")
 		}
@@ -250,6 +273,12 @@ func completeOptions(parsed *options, deps dependencies) error {
 		}
 		if !parsed.DryRun && !parsed.Yes {
 			return fmt.Errorf("oma prep: 비대화형 적용에는 --yes가 필요합니다")
+		}
+		return nil
+	}
+	if parsed.PlanToken != "" {
+		if parsed.planMixed {
+			return fmt.Errorf("oma prep: --plan은 새 작업 입력이나 계획 옵션과 함께 사용할 수 없습니다")
 		}
 		return nil
 	}

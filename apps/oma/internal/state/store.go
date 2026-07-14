@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,7 @@ const (
 	consumedSuffix    = ".consumed"
 	reservationSuffix = ".reserved"
 	maxCollisions     = 16
+	receiptLockName   = ".setup-receipts.lock"
 )
 
 type State string
@@ -50,6 +52,8 @@ var (
 	ErrNotClaimed         = errors.New("plan has not been claimed")
 	ErrStateConflict      = errors.New("plan state conflicts with an existing record")
 	ErrInvalidFingerprint = errors.New("plan fingerprint is empty")
+	ErrInvalidReceiptKey  = errors.New("invalid setup receipt key")
+	ErrUnsafeReceipt      = errors.New("unsafe setup receipt")
 )
 
 // CommittedError reports that the named state is already visible. Callers must
@@ -1086,6 +1090,223 @@ func (s *Store) exists(path string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+func (s *Store) SetupReceiptExists(key string) (bool, error) {
+	if err := validateReceiptKey(key); err != nil {
+		return false, err
+	}
+	if err := s.resource.begin(); err != nil {
+		return false, err
+	}
+	defer s.resource.end()
+	unlock, err := s.lockReceipts()
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	return s.setupReceiptExistsLocked(key)
+}
+
+func (s *Store) CreateSetupReceipt(key string) error {
+	if err := validateReceiptKey(key); err != nil {
+		return err
+	}
+	if err := s.resource.begin(); err != nil {
+		return err
+	}
+	defer s.resource.end()
+	unlock, err := s.lockReceipts()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if exists, err := s.setupReceiptExistsLocked(key); err != nil || exists {
+		return err
+	}
+	random := make([]byte, 12)
+	if _, err := io.ReadFull(rand.Reader, random); err != nil {
+		return fmt.Errorf("create setup receipt nonce: %w", err)
+	}
+	temporary := fmt.Sprintf(".setup-%s-%x.tmp", key, random)
+	final := setupReceiptName(key)
+	fd, err := unix.Openat(s.resource.fd(), temporary, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return fmt.Errorf("create setup receipt temporary file: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), temporary)
+	if file == nil {
+		_ = unix.Close(fd)
+		return errors.New("create setup receipt file handle")
+	}
+	defer func() { _ = unix.Unlinkat(s.resource.fd(), temporary, 0) }()
+	if err := unix.Fchmod(fd, 0o600); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("secure setup receipt: %w", err)
+	}
+	content := setupReceiptContent(key)
+	if _, err := file.Write(content); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write setup receipt: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync setup receipt: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close setup receipt: %w", err)
+	}
+	if err := unix.Linkat(s.resource.fd(), temporary, s.resource.fd(), final, 0); err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			exists, inspectErr := s.setupReceiptExistsLocked(key)
+			if inspectErr != nil {
+				return inspectErr
+			}
+			if exists {
+				return nil
+			}
+		}
+		return fmt.Errorf("publish setup receipt: %w", err)
+	}
+	if err := unix.Unlinkat(s.resource.fd(), temporary, 0); err != nil {
+		return fmt.Errorf("remove setup receipt publication link: %w", err)
+	}
+	if err := s.resource.file.Sync(); err != nil {
+		return fmt.Errorf("sync setup receipt directory: %w", err)
+	}
+	return nil
+}
+
+func validateReceiptKey(key string) error {
+	if len(key) != sha256.Size*2 {
+		return ErrInvalidReceiptKey
+	}
+	for _, char := range key {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return ErrInvalidReceiptKey
+		}
+	}
+	return nil
+}
+
+func setupReceiptName(key string) string { return "setup-" + key + ".receipt" }
+
+func setupReceiptContent(key string) []byte { return []byte("OMA-SETUP-RECEIPT-V1\n" + key + "\n") }
+
+func (s *Store) setupReceiptExistsLocked(key string) (bool, error) {
+	name := setupReceiptName(key)
+	fd, err := unix.Openat(s.resource.fd(), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%w: open receipt: %v", ErrUnsafeReceipt, err)
+	}
+	file := os.NewFile(uintptr(fd), name)
+	if file == nil {
+		_ = unix.Close(fd)
+		return false, fmt.Errorf("%w: create receipt file handle", ErrUnsafeReceipt)
+	}
+	defer func() { _ = file.Close() }()
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return false, fmt.Errorf("%w: inspect receipt: %v", ErrUnsafeReceipt, err)
+	}
+	if err := validateReceiptStat(stat); err != nil {
+		return false, err
+	}
+	if err := s.validateReceiptLinks(key, name, stat); err != nil {
+		return false, err
+	}
+	content, err := io.ReadAll(io.LimitReader(file, int64(len(setupReceiptContent(key))+1)))
+	if err != nil {
+		return false, fmt.Errorf("%w: read receipt: %v", ErrUnsafeReceipt, err)
+	}
+	if !bytes.Equal(content, setupReceiptContent(key)) {
+		return false, fmt.Errorf("%w: receipt content mismatch", ErrUnsafeReceipt)
+	}
+	return true, nil
+}
+
+func validateReceiptStat(stat unix.Stat_t) error {
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o777 != 0o600 || stat.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("%w: receipt type, mode, or owner", ErrUnsafeReceipt)
+	}
+	return nil
+}
+
+func (s *Store) validateReceiptLinks(key, final string, target unix.Stat_t) error {
+	if target.Nlink == 1 {
+		return nil
+	}
+	directoryFD, err := unix.Openat(s.resource.fd(), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("%w: open receipt directory: %v", ErrUnsafeReceipt, err)
+	}
+	directory := os.NewFile(uintptr(directoryFD), s.dir)
+	if directory == nil {
+		_ = unix.Close(directoryFD)
+		return fmt.Errorf("%w: create receipt directory handle", ErrUnsafeReceipt)
+	}
+	entries, err := directory.ReadDir(-1)
+	closeErr := directory.Close()
+	if err != nil || closeErr != nil {
+		return fmt.Errorf("%w: list receipt links: %v", ErrUnsafeReceipt, errors.Join(err, closeErr))
+	}
+	observed := uint64(0)
+	prefix := ".setup-" + key + "-"
+	for _, entry := range entries {
+		name := entry.Name()
+		if name != final && (!strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".tmp")) {
+			continue
+		}
+		var stat unix.Stat_t
+		err := unix.Fstatat(s.resource.fd(), name, &stat, unix.AT_SYMLINK_NOFOLLOW)
+		if err != nil {
+			return fmt.Errorf("%w: inspect receipt link: %v", ErrUnsafeReceipt, err)
+		}
+		if uint64(stat.Dev) == uint64(target.Dev) && stat.Ino == target.Ino {
+			observed++
+		}
+	}
+	if observed != uint64(target.Nlink) {
+		return fmt.Errorf("%w: receipt has an external hardlink", ErrUnsafeReceipt)
+	}
+	return nil
+}
+
+func (s *Store) lockReceipts() (func(), error) {
+	fd, err := unix.Openat(s.resource.fd(), receiptLockName, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	created := err == nil
+	if errors.Is(err, unix.EEXIST) {
+		fd, err = unix.Openat(s.resource.fd(), receiptLockName, unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: open receipt lock: %v", ErrUnsafeReceipt, err)
+	}
+	if created {
+		if err := unix.Fchmod(fd, 0o600); err != nil {
+			_ = unix.Close(fd)
+			return nil, fmt.Errorf("%w: secure receipt lock: %v", ErrUnsafeReceipt, err)
+		}
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("%w: inspect receipt lock: %v", ErrUnsafeReceipt, err)
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o777 != 0o600 || stat.Uid != uint32(os.Geteuid()) || stat.Nlink != 1 {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("%w: receipt lock type, mode, owner, or links", ErrUnsafeReceipt)
+	}
+	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("lock setup receipts: %w", err)
+	}
+	return func() {
+		_ = unix.Flock(fd, unix.LOCK_UN)
+		_ = unix.Close(fd)
+	}, nil
 }
 
 // Close releases the stable plans directory descriptor. It is safe to call

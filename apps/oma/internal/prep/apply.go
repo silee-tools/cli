@@ -2,6 +2,9 @@ package prep
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -24,6 +27,13 @@ func (p *Planner) Apply(ctx context.Context, token string) (result Result, resul
 	}
 	defer func() {
 		if consumeErr := p.store.Consume(token); consumeErr != nil {
+			var committed *state.CommittedError
+			if errors.As(consumeErr, &committed) && committed.State == state.Consumed {
+				if committed.Ambiguous {
+					result.Warnings = append(result.Warnings, "승인 계획은 소비됐지만 영구 저장 확인이 불확실합니다")
+				}
+				return
+			}
 			resultErr = errors.Join(resultErr, fmt.Errorf("consume approved plan: %w", consumeErr))
 		}
 	}()
@@ -104,10 +114,29 @@ func (p *Planner) Apply(ctx context.Context, token string) (result Result, resul
 		return fail("submodules", err)
 	}
 	addStep("submodules", "completed", fmt.Sprintf("%d selected", len(submoduleOperations)))
-	if err := p.git.RunSetup(ctx, current.payload.WorktreePath, current.payload.Input.SetupArgs); err != nil {
-		return fail("setup", err)
+	if current.payload.Git.SetupHash == "" {
+		addStep("setup", "skipped", "setup script is absent")
+	} else {
+		receiptKey, err := p.setupReceiptKey(current.payload)
+		if err != nil {
+			return fail("setup-receipt", err)
+		}
+		exists, err := p.store.SetupReceiptExists(receiptKey)
+		if err != nil {
+			return fail("setup-receipt", err)
+		}
+		if exists {
+			addStep("setup", "reused", "durable setup receipt")
+		} else {
+			if err := p.git.RunSetup(ctx, current.payload.WorktreePath, current.payload.Input.SetupArgs); err != nil {
+				return fail("setup", err)
+			}
+			if err := p.store.CreateSetupReceipt(receiptKey); err != nil {
+				return fail("setup-receipt", err)
+			}
+			addStep("setup", "completed", "setup complete")
+		}
 	}
-	addStep("setup", "completed", "setup complete")
 
 	if current.payload.Input.NoPush || !current.payload.OriginAvailable {
 		addStep("push", "skipped", "--no-push")
@@ -151,6 +180,35 @@ func (p *Planner) Apply(ctx context.Context, token string) (result Result, resul
 	}
 	result.NextAction = "생성된 worktree로 이동해 작업을 시작하세요"
 	return result, nil
+}
+
+func (p *Planner) setupReceiptKey(payload planPayload) (string, error) {
+	canonicalize := p.canonicalPath
+	if canonicalize == nil {
+		canonicalize = filepath.EvalSymlinks
+	}
+	commonDir, err := canonicalize(payload.CommonDir)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize Git common directory for setup receipt: %w", err)
+	}
+	worktree, err := canonicalize(payload.WorktreePath)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize worktree for setup receipt: %w", err)
+	}
+	identity := struct {
+		CommonDir string   `json:"common_dir"`
+		Worktree  string   `json:"worktree"`
+		Branch    string   `json:"branch"`
+		BaseSHA   string   `json:"base_sha"`
+		SetupHash string   `json:"setup_hash"`
+		SetupArgs []string `json:"setup_args"`
+	}{commonDir, worktree, payload.Branch, payload.Base.SHA, payload.Git.SetupHash, payload.Input.SetupArgs}
+	encoded, err := json.Marshal(identity)
+	if err != nil {
+		return "", fmt.Errorf("encode setup receipt identity: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func applyJira(ctx context.Context, gateway jiraGateway, payload planPayload, today time.Time) error {

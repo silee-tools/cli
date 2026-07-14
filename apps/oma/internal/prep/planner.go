@@ -25,6 +25,8 @@ type planStore interface {
 	Create(any, string) (state.Record, error)
 	Claim(string, any) (state.Record, error)
 	Consume(string) error
+	SetupReceiptExists(string) (bool, error)
+	CreateSetupReceipt(string) error
 }
 
 type gitGateway interface {
@@ -68,20 +70,36 @@ type plannedIssue struct {
 	StartDate       json.RawMessage `json:"start_date,omitempty"`
 }
 
+type plannedTransition struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	ToID       string `json:"to_id"`
+	ToName     string `json:"to_name"`
+	ToCategory string `json:"to_category"`
+}
+
+type plannedTransitionDecision struct {
+	SelectedID     string          `json:"selected_id,omitempty"`
+	Complete       bool            `json:"complete"`
+	RequiredInputs []RequiredInput `json:"required_inputs,omitempty"`
+}
+
 type planPayload struct {
-	Input            Input           `json:"input"`
-	RepoRoot         string          `json:"repo_root"`
-	CommonDir        string          `json:"common_dir"`
-	Base             Base            `json:"base"`
-	Branch           string          `json:"branch"`
-	WorktreePath     string          `json:"worktree_path"`
-	Git              gitops.Snapshot `json:"git"`
-	Issue            *plannedIssue   `json:"issue,omitempty"`
-	JiraConfig       *config.Config  `json:"jira_config,omitempty"`
-	JiraSnapshotPath string          `json:"jira_snapshot_path,omitempty"`
-	RequiredInputs   []RequiredInput `json:"required_inputs,omitempty"`
-	OriginAvailable  bool            `json:"origin_available"`
-	RemoteBranchSHA  string          `json:"remote_branch_sha,omitempty"`
+	Input                  Input                      `json:"input"`
+	RepoRoot               string                     `json:"repo_root"`
+	CommonDir              string                     `json:"common_dir"`
+	Base                   Base                       `json:"base"`
+	Branch                 string                     `json:"branch"`
+	WorktreePath           string                     `json:"worktree_path"`
+	Git                    gitops.Snapshot            `json:"git"`
+	Issue                  *plannedIssue              `json:"issue,omitempty"`
+	JiraConfig             *config.Config             `json:"jira_config,omitempty"`
+	JiraSnapshotPath       string                     `json:"jira_snapshot_path,omitempty"`
+	RequiredInputs         []RequiredInput            `json:"required_inputs,omitempty"`
+	OriginAvailable        bool                       `json:"origin_available"`
+	RemoteBranchSHA        string                     `json:"remote_branch_sha,omitempty"`
+	JiraTransitions        []plannedTransition        `json:"jira_transitions,omitempty"`
+	JiraTransitionDecision *plannedTransitionDecision `json:"jira_transition_decision,omitempty"`
 }
 
 type plannedBuild struct {
@@ -91,21 +109,23 @@ type plannedBuild struct {
 }
 
 type Planner struct {
-	paths        config.Paths
-	store        planStore
-	git          gitGateway
-	configs      configGateway
-	jiraProvider jiraProvider
-	now          func() time.Time
+	paths         config.Paths
+	store         planStore
+	git           gitGateway
+	configs       configGateway
+	jiraProvider  jiraProvider
+	now           func() time.Time
+	canonicalPath func(string) (string, error)
 }
 
 func NewPlanner(paths config.Paths, store planStore, runner gitops.Runner, httpClient *http.Client) *Planner {
 	return &Planner{
 		paths: paths, store: store,
-		git:          productionGit{runner: runner},
-		configs:      productionConfig{},
-		jiraProvider: productionJiraProvider{httpClient: httpClient},
-		now:          time.Now,
+		git:           productionGit{runner: runner},
+		configs:       productionConfig{},
+		jiraProvider:  productionJiraProvider{httpClient: httpClient},
+		now:           time.Now,
+		canonicalPath: filepath.EvalSymlinks,
 	}
 }
 
@@ -151,6 +171,8 @@ func (p *Planner) build(ctx context.Context, input Input) (plannedBuild, error) 
 	var jiraConfig *config.Config
 	var snapshotPath string
 	var required []RequiredInput
+	var plannedTransitions []plannedTransition
+	var transitionDecision *plannedTransitionDecision
 	if input.Kind == InputJira {
 		cfg, _, loadErr := p.configs.Load(p.paths)
 		if loadErr != nil {
@@ -173,7 +195,7 @@ func (p *Planner) build(ctx context.Context, input Input) (plannedBuild, error) 
 		if err := gateway.WriteSnapshot(snapshotPath, raw); err != nil {
 			return plannedBuild{}, fmt.Errorf("write Jira snapshot: %w", err)
 		}
-		required, err = requiredJiraInputs(ctx, gateway, cfg, fetched, input)
+		required, plannedTransitions, transitionDecision, err = requiredJiraInputs(ctx, gateway, cfg, fetched, input)
 		if err != nil {
 			return plannedBuild{}, err
 		}
@@ -220,6 +242,7 @@ func (p *Planner) build(ctx context.Context, input Input) (plannedBuild, error) 
 		WorktreePath: worktree, Git: snapshot, JiraConfig: jiraConfig,
 		JiraSnapshotPath: snapshotPath, RequiredInputs: required,
 		OriginAvailable: originAvailable, RemoteBranchSHA: remoteBranchSHA,
+		JiraTransitions: plannedTransitions, JiraTransitionDecision: transitionDecision,
 	}
 	if issue != nil {
 		payload.Issue = &plannedIssue{
@@ -247,7 +270,7 @@ func (p *Planner) build(ctx context.Context, input Input) (plannedBuild, error) 
 	return plannedBuild{payload: payload, fingerprint: fingerprint, result: result}, nil
 }
 
-func requiredJiraInputs(ctx context.Context, gateway jiraGateway, cfg config.Config, issue jira.Issue, input Input) ([]RequiredInput, error) {
+func requiredJiraInputs(ctx context.Context, gateway jiraGateway, cfg config.Config, issue jira.Issue, input Input) ([]RequiredInput, []plannedTransition, *plannedTransitionDecision, error) {
 	var required []RequiredInput
 	if cfg.ProductTypeField != "" && fieldEmpty(issue.CustomFields[cfg.ProductTypeField]) {
 		if input.ProductType == "" {
@@ -262,27 +285,45 @@ func requiredJiraInputs(ctx context.Context, gateway jiraGateway, cfg config.Con
 			}
 			required = append(required, RequiredInput{Kind: "product_type", Message: "Product type을 선택하세요", Options: options})
 		} else if _, ok := cfg.ProductTypeOptions[input.ProductType]; !ok {
-			return nil, fmt.Errorf("oma prep: 알 수 없는 Product type 설정 키입니다: %q", input.ProductType)
+			return nil, nil, nil, fmt.Errorf("oma prep: 알 수 없는 Product type 설정 키입니다: %q", input.ProductType)
 		}
 	}
-	if issue.Status.CategoryKey != "indeterminate" {
-		available, err := gateway.Transitions(ctx, issue.Key)
-		if err != nil {
-			return nil, fmt.Errorf("fetch Jira transitions: %w", err)
-		}
-		decision, err := jira.SelectTransition(issue.Status, available, input.TransitionID)
-		if err != nil {
-			return nil, err
-		}
-		for _, item := range decision.RequiredInputs {
-			options := make([]InputOption, 0, len(item.Options))
-			for _, option := range item.Options {
-				options = append(options, InputOption{Value: option.ID, Label: option.Status})
-			}
-			required = append(required, RequiredInput{Kind: item.Kind, Message: item.Message, Options: options})
-		}
+	available, err := gateway.Transitions(ctx, issue.Key)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("fetch Jira transitions: %w", err)
 	}
-	return required, nil
+	sort.Slice(available, func(left, right int) bool {
+		if available[left].ID != available[right].ID {
+			return available[left].ID < available[right].ID
+		}
+		if available[left].To.ID != available[right].To.ID {
+			return available[left].To.ID < available[right].To.ID
+		}
+		return available[left].Name < available[right].Name
+	})
+	observed := make([]plannedTransition, 0, len(available))
+	for _, transition := range available {
+		observed = append(observed, plannedTransition{ID: transition.ID, Name: transition.Name, ToID: transition.To.ID, ToName: transition.To.Name, ToCategory: transition.To.CategoryKey})
+	}
+	decision, err := jira.SelectTransition(issue.Status, available, input.TransitionID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	plannedDecision := &plannedTransitionDecision{Complete: decision.Complete}
+	if decision.Transition != nil {
+		plannedDecision.SelectedID = decision.Transition.ID
+	}
+	for _, item := range decision.RequiredInputs {
+		options := make([]InputOption, 0, len(item.Options))
+		for _, option := range item.Options {
+			options = append(options, InputOption{Value: option.ID, Label: option.Status})
+		}
+		sort.Slice(options, func(left, right int) bool { return options[left].Value < options[right].Value })
+		normalized := RequiredInput{Kind: item.Kind, Message: item.Message, Options: options}
+		required = append(required, normalized)
+		plannedDecision.RequiredInputs = append(plannedDecision.RequiredInputs, normalized)
+	}
+	return required, observed, plannedDecision, nil
 }
 
 func fieldEmpty(raw json.RawMessage) bool {

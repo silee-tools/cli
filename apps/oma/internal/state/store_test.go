@@ -929,6 +929,104 @@ func TestStoreNeverMutatesLegacyLinksDuringRead(t *testing.T) {
 	})
 }
 
+func TestSetupReceiptCreatesAndSurvivesStoreReopen(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "oma")
+	store, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := strings.Repeat("a", 64)
+	if exists, err := store.SetupReceiptExists(key); err != nil || exists {
+		t.Fatalf("initial receipt exists=%t error=%v", exists, err)
+	}
+	if err := store.CreateSetupReceipt(key); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if exists, err := reopened.SetupReceiptExists(key); err != nil || !exists {
+		t.Fatalf("reopened receipt exists=%t error=%v", exists, err)
+	}
+	info, err := os.Stat(filepath.Join(root, "plans", "setup-"+key+".receipt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("receipt mode = %o", info.Mode().Perm())
+	}
+}
+
+func TestSetupReceiptRejectsInvalidKeySymlinkAndExternalHardlink(t *testing.T) {
+	store := newReceiptTestStore(t)
+	if _, err := store.SetupReceiptExists("not-a-key"); !errors.Is(err, ErrInvalidReceiptKey) {
+		t.Fatalf("invalid key error = %v", err)
+	}
+	key := strings.Repeat("b", 64)
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := store.path("setup-"+key, ".receipt")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetupReceiptExists(key); !errors.Is(err, ErrUnsafeReceipt) {
+		t.Fatalf("symlink error = %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateSetupReceipt(key); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside-link")
+	if err := os.Link(path, outside); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetupReceiptExists(key); !errors.Is(err, ErrUnsafeReceipt) {
+		t.Fatalf("external hardlink error = %v", err)
+	}
+}
+
+func TestSetupReceiptConcurrentCreateExistsAndClose(t *testing.T) {
+	store := newReceiptTestStore(t)
+	key := strings.Repeat("c", 64)
+	start := make(chan struct{})
+	errorsFound := make(chan error, 32)
+	var wg sync.WaitGroup
+	for index := 0; index < 16; index++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); <-start; errorsFound <- store.CreateSetupReceipt(key) }()
+		go func() { defer wg.Done(); <-start; _, err := store.SetupReceiptExists(key); errorsFound <- err }()
+	}
+	close(start)
+	wg.Wait()
+	close(errorsFound)
+	for err := range errorsFound {
+		if err != nil {
+			t.Fatalf("concurrent receipt operation: %v", err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetupReceiptExists(key); err == nil {
+		t.Fatal("receipt read succeeded after Close")
+	}
+}
+
+func newReceiptTestStore(t *testing.T) *Store {
+	t.Helper()
+	return newTestStore(t, time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC), bytes.Repeat([]byte{0x7a}, 512))
+}
+
 func TestStoreCanonicalizesIntermediateSymlinkOnce(t *testing.T) {
 	parent := t.TempDir()
 	firstTarget := filepath.Join(parent, "first")
@@ -1187,6 +1285,8 @@ func TestStoreRejectsOperationsAfterDirectoryDescriptorCloses(t *testing.T) {
 		{name: "Load", run: func() error { _, err := store.Load(created.Token, &payload); return err }},
 		{name: "Claim", run: func() error { _, err := store.Claim(created.Token, &payload); return err }},
 		{name: "Consume", run: func() error { return store.Consume(created.Token) }},
+		{name: "SetupReceiptExists", run: func() error { _, err := store.SetupReceiptExists(strings.Repeat("d", 64)); return err }},
+		{name: "CreateSetupReceipt", run: func() error { return store.CreateSetupReceipt(strings.Repeat("e", 64)) }},
 	}
 	for _, check := range checks {
 		if err := check.run(); !errors.Is(err, ErrUnsafeRoot) {
