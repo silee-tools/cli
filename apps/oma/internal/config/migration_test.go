@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -428,6 +430,34 @@ func TestInspectMigrationDistinguishesCorruptMarker(t *testing.T) {
 	}
 }
 
+func TestInspectMigrationRejectsMarkersThatDisagreeOnAuthoritativeIdentity(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	migration, err := PlanMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalOps := migrationOS
+	migrationOS.afterMarkerEstablished = func() { panic(simulatedCrash{}) }
+	assertSimulatedCrash(t, func() { _ = migration.Apply(func(Config) error { return nil }) })
+	migrationOS = originalOps
+	t.Cleanup(func() { migrationOS = originalOps })
+	marker := migrationMarkerPath(paths)
+	record, _, err := readTransactionMarker(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.CanonicalID.Inode++
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, marker+".staged-"+record.Token, migrationMarkerMagic+string(encoded), 0o600)
+	if _, err := InspectMigration(paths); err == nil || !strings.Contains(err.Error(), "conflicting migration markers") {
+		t.Fatalf("InspectMigration() error = %v, want authoritative marker conflict", err)
+	}
+}
+
 func TestInspectMigrationRejectsConfigurationConflictWithoutMutation(t *testing.T) {
 	paths := testPaths(t)
 	writeFile(t, paths.Canonical, validTOML, 0o600)
@@ -451,8 +481,81 @@ func TestMigrationInspectionLoadRejectsChangedSource(t *testing.T) {
 	if err := os.WriteFile(paths.Legacy, []byte(strings.Replace(validTOML, "Feature", "Changed", 1)), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := inspection.Load(); err == nil || !strings.Contains(err.Error(), "changed before it was read") {
-		t.Fatalf("Load() error = %v, want changed source rejection", err)
+	if _, err := inspection.Load(); !errors.Is(err, ErrMigrationStateChanged) {
+		t.Fatalf("Load() error = %v, want ErrMigrationStateChanged", err)
+	}
+}
+
+func TestMigrationApplyReturnsTypedDriftWhenSourceChangesAfterValidation(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	inspection, err := InspectMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = inspection.Apply(func(Config) error {
+		return os.WriteFile(paths.Legacy, []byte(strings.Replace(validTOML, "Feature", "Changed", 1)), 0o640)
+	})
+	if !errors.Is(err, ErrMigrationStateChanged) {
+		t.Fatalf("Apply() error = %v, want ErrMigrationStateChanged", err)
+	}
+	assertAbsent(t, paths.Canonical)
+}
+
+func TestInspectMigrationIgnoresUnrelatedConfigTreeEntries(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	before, err := InspectMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated := filepath.Join(filepath.Dir(paths.Legacy), "large-unrelated.bin")
+	if err := os.WriteFile(unrelated, bytes.Repeat([]byte("x"), 2<<20), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(paths.Legacy), "nested", "tree"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(filepath.Dir(paths.Legacy), "notes.oma-quarantine-0123456789abcdef0123456789abcdef"), "unrelated", 0)
+	unreadable := filepath.Join(filepath.Dir(paths.Legacy), "nested", "tree", "unreadable")
+	writeFile(t, unreadable, "unrelated", 0o600)
+	if err := os.Chmod(unreadable, 0); err != nil {
+		t.Fatal(err)
+	}
+	after, err := InspectMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Fingerprint() != after.Fingerprint() {
+		t.Fatalf("unrelated entries changed fingerprint: %s != %s", before.Fingerprint(), after.Fingerprint())
+	}
+}
+
+func TestInspectMigrationSupportsSymlinkedConfigParent(t *testing.T) {
+	root := t.TempDir()
+	realConfig := filepath.Join(root, "real-config")
+	linkedConfig := filepath.Join(root, "linked-config")
+	if err := os.MkdirAll(realConfig, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, linkedConfig); err != nil {
+		t.Fatal(err)
+	}
+	paths := Paths{
+		Canonical: filepath.Join(linkedConfig, "oma", "config.toml"),
+		Legacy:    filepath.Join(linkedConfig, "prep-task", "config.toml"),
+		CacheRoot: filepath.Join(root, "cache"), StateRoot: filepath.Join(root, "state"), Netrc: filepath.Join(root, ".netrc"),
+	}
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	inspection, err := InspectMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection == nil || inspection.Fingerprint() == "" {
+		t.Fatalf("inspection = %#v", inspection)
+	}
+	if _, err := inspection.Load(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1162,6 +1265,7 @@ func TestPlanMigrationPreservesReplacementAcrossConflictAnchorInterruptions(t *t
 
 			assertSimulatedCrash(t, func() { _, _ = PlanMigration(paths) })
 			migrationOS = originalOps
+			assertReadOnlyMigrationInspection(t, paths)
 			if _, err := PlanMigration(paths); err == nil {
 				t.Fatal("reentered PlanMigration() error = nil, want preserved replacement conflict")
 			}
@@ -1338,6 +1442,7 @@ func TestPlanMigrationRecoversConflictIntentPersistenceStates(t *testing.T) {
 			assertSimulatedCrash(t, func() { _, _ = PlanMigration(paths) })
 			assertMatches(t, marker+".staged-conflict-intent-*")
 			migrationOS = originalOps
+			assertReadOnlyMigrationInspection(t, paths)
 			if _, err := PlanMigration(paths); err == nil {
 				t.Fatal("reentered PlanMigration() error = nil, want preserved intent conflict")
 			}
@@ -1386,6 +1491,7 @@ func TestPlanMigrationFindsFixedConflictIntentUnderReservedParentNames(t *testin
 			assertSimulatedCrash(t, func() { _, _ = PlanMigration(paths) })
 
 			migrationOS = originalOps
+			assertReadOnlyMigrationInspection(t, paths)
 			if _, err := PlanMigration(paths); err == nil {
 				t.Fatal("reentered PlanMigration() error = nil, want preserved replacement conflict")
 			}
@@ -1476,6 +1582,7 @@ func TestPlanMigrationRecoversConflictIntentDraftPersistenceStates(t *testing.T)
 
 			assertSimulatedCrash(t, func() { _, _ = PlanMigration(paths) })
 			migrationOS = originalOps
+			assertReadOnlyMigrationInspection(t, paths)
 			if _, err := PlanMigration(paths); err == nil {
 				t.Fatal("reentered PlanMigration() error = nil, want preserved replacement conflict")
 			}
@@ -1905,6 +2012,7 @@ func TestPlanMigrationRecoversAnchoredMarkerInterruptions(t *testing.T) {
 			assertSimulatedCrash(t, func() { _ = migration.Apply(func(Config) error { return nil }) })
 			migrationOS = originalOps
 			t.Cleanup(func() { migrationOS = originalOps })
+			assertReadOnlyMigrationInspection(t, paths)
 
 			next, err := PlanMigration(paths)
 			if err != nil {
@@ -1920,6 +2028,34 @@ func TestPlanMigrationRecoversAnchoredMarkerInterruptions(t *testing.T) {
 			assertAbsent(t, marker+".staged-anchor")
 			assertNoMatches(t, marker+".staged-*")
 		})
+	}
+}
+
+func assertReadOnlyMigrationInspection(t *testing.T, paths Paths) {
+	t.Helper()
+	before := snapshotMigrationTree(t, paths)
+	first, err := InspectMigration(paths)
+	if err != nil {
+		if !errors.Is(err, ErrMigrationStateChanged) && !strings.Contains(err.Error(), "conflict") && !strings.Contains(err.Error(), "corrupt") && !strings.Contains(err.Error(), "invalid") {
+			t.Fatalf("InspectMigration() error = %v, want typed drift or explicit conflict", err)
+		}
+	} else {
+		if first == nil {
+			t.Fatal("InspectMigration() = nil, want interrupted migration inspection")
+		}
+		if _, err := first.Load(); err != nil {
+			t.Fatalf("Load() interrupted logical configuration: %v", err)
+		}
+		second, err := InspectMigration(paths)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if second == nil || first.Fingerprint() != second.Fingerprint() {
+			t.Fatalf("inspection fingerprint is unstable: %v != %v", first, second)
+		}
+	}
+	if after := snapshotMigrationTree(t, paths); before != after {
+		t.Fatalf("InspectMigration changed interrupted tree\nbefore: %s\nafter:  %s", before, after)
 	}
 }
 

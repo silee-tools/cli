@@ -40,6 +40,7 @@ type migrationInspection struct {
 	sourcePath  string
 	sourceID    fileIdentity
 	sourceHash  [32]byte
+	legacyID    fileIdentity
 	recovery    bool
 }
 
@@ -190,7 +191,7 @@ func inspectMigration(paths Paths) (migrationInspection, bool, error) {
 		return migrationInspection{}, false, err
 	}
 	if firstFingerprint != secondFingerprint {
-		return migrationInspection{}, false, errors.New("migration artifacts changed during inspection")
+		return migrationInspection{}, false, fmt.Errorf("%w: artifacts changed during inspection", ErrMigrationStateChanged)
 	}
 	_ = first
 
@@ -210,7 +211,7 @@ func inspectMigration(paths Paths) (migrationInspection, bool, error) {
 		if !ok || !source.mode.IsRegular() {
 			return migrationInspection{}, false, fmt.Errorf("legacy configuration is unavailable during inspection: %s", paths.Legacy)
 		}
-		return migrationInspection{fingerprint: secondFingerprint, sourcePath: source.path, sourceID: source.identity, sourceHash: source.digest}, true, nil
+		return migrationInspection{fingerprint: secondFingerprint, sourcePath: source.path, sourceID: source.identity, sourceHash: source.digest, legacyID: source.identity}, true, nil
 	}
 
 	inspection, err := inspectInterruptedMigration(paths, second, secondFingerprint)
@@ -234,35 +235,97 @@ func snapshotMigrationArtifacts(paths Paths) (map[string]migrationArtifact, stri
 		} else if err != nil {
 			return nil, "", fmt.Errorf("inspect migration directory: %w", err)
 		}
-		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if path == paths.Legacy+".oma-migration.lock" {
-				return nil
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return nil, "", fmt.Errorf("enumerate migration directory: %w", err)
+		}
+		for _, entry := range entries {
+			path := filepath.Join(root, entry.Name())
+			if !isMigrationArtifactPath(paths, path) {
+				continue
 			}
 			artifact, err := readMigrationArtifact(path)
 			if err != nil {
-				return err
+				return nil, "", err
 			}
 			artifacts[path] = artifact
-			return nil
-		})
-		if err != nil {
-			return nil, "", fmt.Errorf("snapshot migration directory: %w", err)
 		}
 	}
-	pathsSorted := make([]string, 0, len(artifacts))
-	for path := range artifacts {
-		pathsSorted = append(pathsSorted, path)
-	}
-	sort.Strings(pathsSorted)
+	pathsSorted := sortedMigrationArtifactPaths(artifacts)
 	hash := sha256.New()
 	for _, path := range pathsSorted {
 		artifact := artifacts[path]
 		_, _ = fmt.Fprintf(hash, "%s\x00%d\x00%d\x00%d\x00%d\x00%x\x00%s\x00", path, artifact.mode, artifact.identity.Device, artifact.identity.Inode, len(artifact.data), artifact.digest, artifact.linkTarget)
 	}
 	return artifacts, hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func sortedMigrationArtifactPaths(artifacts map[string]migrationArtifact) []string {
+	paths := make([]string, 0, len(artifacts))
+	for path := range artifacts {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func isMigrationArtifactPath(paths Paths, path string) bool {
+	marker := migrationMarkerPath(paths)
+	backup := migrationBackupPath(paths)
+	anchor := stagedMarkerAnchorPath(marker)
+	for _, fixed := range []string{paths.Canonical, paths.Legacy, marker, backup, anchor} {
+		if path == fixed {
+			return true
+		}
+		if token, ok := strings.CutPrefix(path, fixed+".oma-quarantine-"); ok && validTransactionToken(token) {
+			return true
+		}
+	}
+	if token, ok := strings.CutPrefix(path, paths.Canonical+".oma-staged-"); ok {
+		return validTransactionToken(token)
+	}
+	suffix, ok := strings.CutPrefix(path, marker+".staged-")
+	if !ok {
+		return false
+	}
+	if validTransactionToken(suffix) || validTokenPairSuffix(suffix, ".oma-quarantine-") {
+		return true
+	}
+	if token, ok := strings.CutPrefix(suffix, "quarantine-"); ok {
+		return validTransactionToken(token)
+	}
+	if token, ok := strings.CutPrefix(suffix, "conflict-"); ok {
+		if validTransactionToken(token) || validTokenPairSuffix(token, ".oma-quarantine-") {
+			return true
+		}
+	}
+	intent, ok := strings.CutPrefix(suffix, "conflict-intent-")
+	if !ok || len(intent) < 32 || !validTransactionToken(intent[:32]) {
+		return false
+	}
+	remainder := intent[32:]
+	if remainder == "" || remainder == ".oma-draft-anchor" {
+		return true
+	}
+	if token, ok := strings.CutPrefix(remainder, ".oma-draft-anchor.oma-quarantine-"); ok {
+		return validTransactionToken(token)
+	}
+	if nonce, ok := strings.CutPrefix(remainder, ".oma-staged-"); ok {
+		return validTransactionToken(nonce)
+	}
+	return false
+}
+
+func validTokenPairSuffix(value, separator string) bool {
+	if len(value) != 32+len(separator)+32 || value[32:32+len(separator)] != separator {
+		return false
+	}
+	return validTransactionToken(value[:32]) && value[:32] == value[32+len(separator):]
+}
+
+func validTransactionToken(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 16
 }
 
 func readMigrationArtifact(path string) (migrationArtifact, error) {
@@ -286,8 +349,11 @@ func readMigrationArtifact(path string) (migrationArtifact, error) {
 			return migrationArtifact{}, err
 		}
 		owned, err := hasIdentity(after, identity)
-		if err != nil || !owned {
-			return migrationArtifact{}, errors.New("migration artifact changed while it was read")
+		if err != nil {
+			return migrationArtifact{}, err
+		}
+		if !owned {
+			return migrationArtifact{}, fmt.Errorf("%w: artifact identity changed while it was read", ErrMigrationStateChanged)
 		}
 		artifact.data = data
 		artifact.digest = sha256.Sum256(data)
@@ -308,7 +374,8 @@ func inspectInterruptedMigration(paths Paths, artifacts map[string]migrationArti
 	}
 
 	var records []transactionRecord
-	for path, artifact := range artifacts {
+	for _, path := range sortedMigrationArtifactPaths(artifacts) {
+		artifact := artifacts[path]
 		if !artifact.mode.IsRegular() || !bytes.HasPrefix(artifact.data, []byte(migrationMarkerMagic)) {
 			continue
 		}
@@ -345,11 +412,10 @@ func inspectInterruptedMigration(paths Paths, artifacts map[string]migrationArti
 		if !ok || !legacy.mode.IsRegular() {
 			return migrationInspection{}, errors.New("migration recovery has no verified logical configuration")
 		}
-		return migrationInspection{fingerprint: fingerprint, sourcePath: legacy.path, sourceID: legacy.identity, sourceHash: legacy.digest, recovery: true}, nil
+		return migrationInspection{fingerprint: fingerprint, sourcePath: legacy.path, sourceID: legacy.identity, sourceHash: legacy.digest, legacyID: legacy.identity, recovery: true}, nil
 	}
-	token := records[0].Token
 	for _, record := range records[1:] {
-		if record.Token != token || record.Digest != records[0].Digest {
+		if !sameTransactionRecord(records[0], record) {
 			return migrationInspection{}, errors.New("conflicting migration markers describe different transactions")
 		}
 	}
@@ -369,14 +435,26 @@ func inspectInterruptedMigration(paths Paths, artifacts map[string]migrationArti
 				continue
 			}
 		}
-		return migrationInspection{fingerprint: fingerprint, sourcePath: path, sourceID: artifact.identity, sourceHash: artifact.digest, recovery: true}, nil
+		return migrationInspection{fingerprint: fingerprint, sourcePath: path, sourceID: artifact.identity, sourceHash: artifact.digest, legacyID: record.LegacyID, recovery: true}, nil
 	}
-	for path, artifact := range artifacts {
+	for _, path := range sortedMigrationArtifactPaths(artifacts) {
+		artifact := artifacts[path]
 		if artifact.mode.IsRegular() && artifact.digest == expected && strings.Contains(path, ".oma-quarantine-") {
-			return migrationInspection{fingerprint: fingerprint, sourcePath: path, sourceID: artifact.identity, sourceHash: artifact.digest, recovery: true}, nil
+			return migrationInspection{fingerprint: fingerprint, sourcePath: path, sourceID: artifact.identity, sourceHash: artifact.digest, legacyID: record.LegacyID, recovery: true}, nil
 		}
 	}
 	return migrationInspection{}, errors.New("migration recovery has no artifact matching the recorded configuration digest")
+}
+
+func sameTransactionRecord(left, right transactionRecord) bool {
+	if left.Version != right.Version || left.Token != right.Token || left.Canonical != right.Canonical || left.Legacy != right.Legacy || left.CanonicalID != right.CanonicalID || left.LegacyID != right.LegacyID || left.Digest != right.Digest {
+		return false
+	}
+	leftQuarantines := append([]string(nil), left.Quarantines...)
+	rightQuarantines := append([]string(nil), right.Quarantines...)
+	sort.Strings(leftQuarantines)
+	sort.Strings(rightQuarantines)
+	return strings.Join(leftQuarantines, "\x00") == strings.Join(rightQuarantines, "\x00")
 }
 
 func validateInspectedRecord(paths Paths, record transactionRecord) error {
@@ -401,10 +479,13 @@ func validateInspectedRecord(paths Paths, record transactionRecord) error {
 func readInspectedConfig(inspection migrationInspection) ([]byte, error) {
 	artifact, err := readMigrationArtifact(inspection.sourcePath)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("%w: inspected source disappeared", ErrMigrationStateChanged)
+		}
 		return nil, fmt.Errorf("read inspected migration configuration: %w", err)
 	}
 	if artifact.identity != inspection.sourceID || artifact.digest != inspection.sourceHash || !artifact.mode.IsRegular() {
-		return nil, errors.New("inspected migration configuration changed before it was read")
+		return nil, fmt.Errorf("%w: inspected source identity or digest changed", ErrMigrationStateChanged)
 	}
 	return append([]byte(nil), artifact.data...), nil
 }
@@ -456,6 +537,13 @@ func (m Migration) Apply(validate func(Config) error) error {
 		return err
 	}
 	defer lock.release()
+	_, lockedFingerprint, err := snapshotMigrationArtifacts(m.paths)
+	if err != nil {
+		return err
+	}
+	if lockedFingerprint != m.inspection.fingerprint {
+		return ErrMigrationStateChanged
+	}
 	current, needed, err := inspectMigration(m.paths)
 	if err != nil {
 		return err
@@ -468,7 +556,7 @@ func (m Migration) Apply(validate func(Config) error) error {
 		return err
 	}
 	if sha256.Sum256(data) != m.inspection.sourceHash {
-		return errors.New("migration configuration changed after validation")
+		return fmt.Errorf("%w: migration configuration changed after validation", ErrMigrationStateChanged)
 	}
 	if err := recoverInterruptedMigration(m.paths); err != nil {
 		return err
@@ -484,8 +572,8 @@ func (m Migration) Apply(validate func(Config) error) error {
 	if err != nil {
 		return err
 	}
-	if sha256.Sum256(currentData) != current.sourceHash {
-		return errors.New("legacy configuration changed after recovery")
+	if currentID != current.legacyID || sha256.Sum256(currentData) != current.sourceHash {
+		return fmt.Errorf("%w: legacy configuration identity or digest changed after recovery", ErrMigrationStateChanged)
 	}
 	return m.applyLocked(currentData, currentID)
 }

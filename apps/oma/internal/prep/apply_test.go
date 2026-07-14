@@ -140,6 +140,34 @@ func TestApplyConfigurationMigrationDriftReturnsFreshPlanBeforeWrites(t *testing
 	}
 }
 
+func TestApplyConfigurationMigrationApplyRaceReturnsFreshPlanBeforeExternalWrites(t *testing.T) {
+	git := &fakeGitGateway{snapshot: testGitSnapshot()}
+	store := &fakePlanStore{}
+	j := &fakeJiraGateway{issue: jiraIssueInProgress()}
+	migration := &fakeMigration{applyErr: config.ErrMigrationStateChanged}
+	configs := fakeConfigGateway{config: testConfig(), migration: migration}
+	planner := testPlanner(store, git, configs, fakeJiraProvider{gateway: j})
+	input := Input{Kind: InputJira, IssueKey: "ABC-123", ProductType: "feature", Repo: "/repo", BranchType: "feature", Base: "main", Worktree: "new"}
+	planned, err := planner.build(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.claimed = planned.payload
+	store.claimRecord = state.Record{Fingerprint: planned.fingerprint}
+	git.events, j.events = nil, nil
+
+	result, err := planner.Apply(context.Background(), "old-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "planned" || result.PlanToken == "" || store.creates != 1 || store.consumes != 1 {
+		t.Fatalf("result=%+v creates=%d consumes=%d", result, store.creates, store.consumes)
+	}
+	if git.writes != 0 || slices.Contains(j.events, "fields") || slices.Contains(j.events, "transition") {
+		t.Fatalf("gitWrites=%d jira=%v", git.writes, j.events)
+	}
+}
+
 func TestApplyExpiredPlanReturnsFreshPlanBeforeExternalWrites(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -716,8 +744,9 @@ func (g *threeHopJira) ApplyTransition(context.Context, string, string) error {
 func (*threeHopJira) WriteSnapshot(string, []byte) error { return nil }
 
 type fakeMigration struct {
-	applied int
-	events  *[]string
+	applied  int
+	events   *[]string
+	applyErr error
 }
 
 type mutableConfigGateway struct {
@@ -738,6 +767,9 @@ func (f *mutableConfigGateway) InspectMigration(config.Paths) (configMigrationIn
 
 func (f *fakeMigration) Apply(validate func(config.Config) error) error {
 	f.applied++
+	if f.applyErr != nil {
+		return f.applyErr
+	}
 	if f.events != nil {
 		*f.events = append(*f.events, "migration")
 	}
