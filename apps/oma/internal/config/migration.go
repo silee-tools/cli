@@ -52,6 +52,9 @@ type migrationFileOps struct {
 	afterMarkerAnchorSync   func()
 	afterMarkerCommit       func()
 	afterStagedMarkerRead   func(string)
+	afterConflictAnchorMove func()
+	afterConflictRestore    func()
+	conflictDirectorySync   func(string) error
 }
 
 var migrationOS = migrationFileOps{
@@ -1049,6 +1052,9 @@ func readTransactionMarker(path string) (transactionRecord, fileIdentity, error)
 }
 
 func recoverStagedMarker(marker string) error {
+	if handled, err := recoverStagedMarkerConflict(marker); handled {
+		return err
+	}
 	anchor := stagedMarkerAnchorPath(marker)
 	if err := restoreQuarantinedStagedAnchor(marker, anchor); err != nil {
 		return err
@@ -1262,11 +1268,24 @@ func promoteCompletedStagedMarker(marker, anchor, target, token string, targetID
 	}
 	if !owned {
 		conflict := fmt.Errorf("staged marker changed after read: unexpected identity or type")
+		conflictAnchor := stagedMarkerConflictPath(marker, token)
+		if err := renameNoReplace(anchor, conflictAnchor); err != nil {
+			return errors.Join(conflict, fmt.Errorf("transition staged marker anchor to conflict state: %w", err))
+		}
+		if err := syncDirectory(filepath.Dir(conflictAnchor)); err != nil {
+			return errors.Join(conflict, fmt.Errorf("sync staged marker conflict anchor: %w", err))
+		}
+		if migrationOS.afterConflictAnchorMove != nil {
+			migrationOS.afterConflictAnchorMove()
+		}
 		restoreErr := restoreStagedMarkerPromotion(quarantine, target)
 		if restoreErr != nil {
 			return errors.Join(conflict, restoreErr)
 		}
-		anchorErr := removeOwnedSymlink(anchor, target, token)
+		if migrationOS.afterConflictRestore != nil {
+			migrationOS.afterConflictRestore()
+		}
+		anchorErr := removeStagedMarkerConflictAnchor(conflictAnchor, target, token)
 		return errors.Join(conflict, anchorErr)
 	}
 	if err := renameNoReplace(quarantine, marker); err != nil {
@@ -1287,6 +1306,173 @@ func restoreStagedMarkerPromotion(quarantine, target string) error {
 
 func stagedMarkerPromotionPath(marker, token string) string {
 	return marker + ".staged-quarantine-" + token
+}
+
+func recoverStagedMarkerConflict(marker string) (bool, error) {
+	matches, err := filepath.Glob(marker + ".staged-conflict-*")
+	if err != nil {
+		return true, err
+	}
+	if len(matches) == 0 {
+		return false, nil
+	}
+	var conflict, quarantine, token string
+	for _, match := range matches {
+		base, matchToken, quarantined, err := parseStagedMarkerConflictPath(marker, match)
+		if err != nil {
+			return true, err
+		}
+		if token != "" && token != matchToken {
+			return true, fmt.Errorf("multiple staged marker conflict tokens are present")
+		}
+		token = matchToken
+		if quarantined {
+			if quarantine != "" {
+				return true, fmt.Errorf("multiple staged marker conflict anchor quarantines are present")
+			}
+			quarantine = match
+			conflict = base
+			continue
+		}
+		if conflict != "" && conflict != match {
+			return true, fmt.Errorf("multiple staged marker conflict anchors are present")
+		}
+		conflict = match
+	}
+	if quarantine != "" {
+		if _, err := os.Lstat(conflict); err == nil {
+			return true, fmt.Errorf("staged marker conflict anchor and quarantine both exist: %w", fs.ErrExist)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return true, err
+		}
+		target, err := os.Readlink(quarantine)
+		if err != nil {
+			return true, fmt.Errorf("quarantined staged marker conflict anchor is not a symlink: %w", err)
+		}
+		anchorToken, err := stagedMarkerToken(marker, target)
+		if err != nil || anchorToken != token {
+			return true, fmt.Errorf("quarantined staged marker conflict anchor target is invalid")
+		}
+		if err := renameNoReplace(quarantine, conflict); err != nil {
+			return true, fmt.Errorf("restore staged marker conflict anchor: %w", err)
+		}
+		if err := syncDirectory(filepath.Dir(conflict)); err != nil {
+			return true, err
+		}
+	}
+
+	info, err := os.Lstat(conflict)
+	if err != nil {
+		return true, err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return true, fmt.Errorf("staged marker conflict anchor is not a symlink: %s", conflict)
+	}
+	target, err := os.Readlink(conflict)
+	if err != nil {
+		return true, err
+	}
+	anchorToken, err := stagedMarkerToken(marker, target)
+	if err != nil || anchorToken != token || conflict != stagedMarkerConflictPath(marker, token) {
+		return true, fmt.Errorf("staged marker conflict anchor target or token is invalid")
+	}
+	promotion := stagedMarkerPromotionPath(marker, token)
+	targetExists, err := pathExists(target)
+	if err != nil {
+		return true, err
+	}
+	promotionExists, err := pathExists(promotion)
+	if err != nil {
+		return true, err
+	}
+	if targetExists && promotionExists {
+		return true, fmt.Errorf("external staged marker replacement and quarantine both exist: %w", fs.ErrExist)
+	}
+	if !targetExists && promotionExists {
+		if err := restoreStagedMarkerPromotion(promotion, target); err != nil {
+			return true, err
+		}
+		targetExists = true
+	}
+	conflictErr := errors.New("external staged marker replacement is preserved")
+	if !targetExists {
+		return true, errors.Join(conflictErr, errors.New("replacement evidence is missing"))
+	}
+	return true, errors.Join(conflictErr, removeStagedMarkerConflictAnchor(conflict, target, token))
+}
+
+func parseStagedMarkerConflictPath(marker, path string) (base, token string, quarantined bool, err error) {
+	prefix := marker + ".staged-conflict-"
+	if !strings.HasPrefix(path, prefix) {
+		return "", "", false, fmt.Errorf("unexpected staged marker conflict path: %s", path)
+	}
+	suffix := strings.TrimPrefix(path, prefix)
+	if index := strings.Index(suffix, ".oma-quarantine-"); index >= 0 {
+		token = suffix[:index]
+		if suffix[index+len(".oma-quarantine-"):] != token {
+			return "", "", false, fmt.Errorf("staged marker conflict quarantine token mismatch: %s", path)
+		}
+		quarantined = true
+	} else {
+		token = suffix
+	}
+	decoded, decodeErr := hex.DecodeString(token)
+	if decodeErr != nil || len(decoded) != 16 {
+		return "", "", false, fmt.Errorf("staged marker conflict token is invalid: %s", path)
+	}
+	return prefix + token, token, quarantined, nil
+}
+
+func removeStagedMarkerConflictAnchor(path, expectedTarget, token string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("staged marker conflict anchor is not a symlink: %s", path)
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		return err
+	}
+	if target != expectedTarget {
+		return fmt.Errorf("staged marker conflict anchor has unexpected target: %s", target)
+	}
+	quarantine := path + ".oma-quarantine-" + token
+	if err := renameNoReplace(path, quarantine); err != nil {
+		return fmt.Errorf("quarantine staged marker conflict anchor: %w", err)
+	}
+	if err := syncConflictDirectory(filepath.Dir(path)); err != nil {
+		return err
+	}
+	actualTarget, err := os.Readlink(quarantine)
+	if err != nil || actualTarget != expectedTarget {
+		return fmt.Errorf("staged marker conflict anchor quarantine has unexpected target: %q: %w", actualTarget, err)
+	}
+	removeErr := migrationOS.remove(quarantine)
+	syncErr := syncConflictDirectory(filepath.Dir(quarantine))
+	return errors.Join(removeErr, syncErr)
+}
+
+func syncConflictDirectory(path string) error {
+	if migrationOS.conflictDirectorySync != nil {
+		return migrationOS.conflictDirectorySync(path)
+	}
+	return syncDirectory(path)
+}
+
+func stagedMarkerConflictPath(marker, token string) string {
+	return marker + ".staged-conflict-" + token
+}
+
+func pathExists(path string) (bool, error) {
+	if _, err := os.Lstat(path); err == nil {
+		return true, nil
+	} else if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	} else {
+		return false, err
+	}
 }
 
 func stagedMarkerToken(marker, target string) (string, error) {

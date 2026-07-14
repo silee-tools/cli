@@ -961,6 +961,197 @@ func TestPlanMigrationPreservesBothObjectsWhenStagedMarkerRestoreIsOccupied(t *t
 	assertRegularFile(t, paths.Legacy, validTOML, 0o640)
 }
 
+func TestPlanMigrationPreservesReplacementAcrossConflictAnchorInterruptions(t *testing.T) {
+	tests := []struct {
+		name           string
+		createSentinel func(*testing.T, string)
+		assertSentinel func(*testing.T, string)
+		setCrash       func(*migrationFileOps)
+	}{
+		{
+			name:           "before regular replacement restore",
+			createSentinel: createRegularStagedSentinel,
+			assertSentinel: assertRegularStagedSentinel,
+			setCrash:       func(ops *migrationFileOps) { ops.afterConflictAnchorMove = func() { panic(simulatedCrash{}) } },
+		},
+		{
+			name:           "after regular replacement restore",
+			createSentinel: createRegularStagedSentinel,
+			assertSentinel: assertRegularStagedSentinel,
+			setCrash:       func(ops *migrationFileOps) { ops.afterConflictRestore = func() { panic(simulatedCrash{}) } },
+		},
+		{
+			name:           "after symlink replacement restore",
+			createSentinel: createSymlinkStagedSentinel,
+			assertSentinel: assertSymlinkStagedSentinel,
+			setCrash:       func(ops *migrationFileOps) { ops.afterConflictRestore = func() { panic(simulatedCrash{}) } },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testPaths(t)
+			marker, target := createCompletedAnchoredMarker(t, paths)
+			promotion := stagedPromotionPathForTest(marker, target)
+			originalOps := migrationOS
+			migrationOS.afterStagedMarkerRead = func(path string) {
+				if path != target {
+					return
+				}
+				if err := os.Remove(path); err != nil {
+					panic(err)
+				}
+				tt.createSentinel(t, path)
+			}
+			tt.setCrash(&migrationOS)
+			t.Cleanup(func() { migrationOS = originalOps })
+
+			assertSimulatedCrash(t, func() { _, _ = PlanMigration(paths) })
+			migrationOS = originalOps
+			if _, err := PlanMigration(paths); err == nil {
+				t.Fatal("reentered PlanMigration() error = nil, want preserved replacement conflict")
+			}
+			tt.assertSentinel(t, target)
+			assertRegularFile(t, paths.Legacy, validTOML, 0o640)
+			assertAbsent(t, marker)
+			assertAbsent(t, promotion)
+			assertAbsent(t, marker+".staged-anchor")
+			assertNoMatches(t, marker+".staged-conflict-*")
+		})
+	}
+}
+
+func TestPlanMigrationRecoversConflictAnchorCleanupFailures(t *testing.T) {
+	tests := []struct {
+		name           string
+		createSentinel func(*testing.T, string)
+		assertSentinel func(*testing.T, string)
+		setFailure     func(*migrationFileOps, string, error)
+	}{
+		{
+			name:           "directory sync failure preserves regular replacement",
+			createSentinel: createRegularStagedSentinel,
+			assertSentinel: assertRegularStagedSentinel,
+			setFailure: func(ops *migrationFileOps, _ string, injected error) {
+				ops.conflictDirectorySync = func(string) error { return injected }
+			},
+		},
+		{
+			name:           "remove failure preserves symlink replacement",
+			createSentinel: createSymlinkStagedSentinel,
+			assertSentinel: assertSymlinkStagedSentinel,
+			setFailure: func(ops *migrationFileOps, conflict string, injected error) {
+				ops.remove = func(path string) error {
+					if strings.HasPrefix(path, conflict+".oma-quarantine-") {
+						return injected
+					}
+					return os.Remove(path)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testPaths(t)
+			marker, target := createCompletedAnchoredMarker(t, paths)
+			conflict := stagedConflictPathForTest(marker, target)
+			injected := errors.New("injected conflict anchor cleanup failure")
+			originalOps := migrationOS
+			migrationOS.afterStagedMarkerRead = func(path string) {
+				if path != target {
+					return
+				}
+				if err := os.Remove(path); err != nil {
+					panic(err)
+				}
+				tt.createSentinel(t, path)
+			}
+			tt.setFailure(&migrationOS, conflict, injected)
+			t.Cleanup(func() { migrationOS = originalOps })
+
+			if _, err := PlanMigration(paths); !errors.Is(err, injected) {
+				t.Fatalf("PlanMigration() error = %v, want %v", err, injected)
+			}
+			tt.assertSentinel(t, target)
+			assertMatches(t, marker+".staged-conflict-*")
+
+			migrationOS = originalOps
+			if _, err := PlanMigration(paths); err == nil {
+				t.Fatal("reentered PlanMigration() error = nil, want preserved replacement conflict")
+			}
+			tt.assertSentinel(t, target)
+			assertRegularFile(t, paths.Legacy, validTOML, 0o640)
+			assertAbsent(t, marker)
+			assertAbsent(t, marker+".staged-anchor")
+			assertNoMatches(t, marker+".staged-conflict-*")
+			assertNoMatches(t, marker+".staged-quarantine-*")
+		})
+	}
+}
+
+func TestPlanMigrationPreservesEvidenceWhenConflictAnchorTransitionFails(t *testing.T) {
+	paths := testPaths(t)
+	marker, target := createCompletedAnchoredMarker(t, paths)
+	promotion := stagedPromotionPathForTest(marker, target)
+	conflict := stagedConflictPathForTest(marker, target)
+	originalOps := migrationOS
+	migrationOS.afterStagedMarkerRead = func(path string) {
+		if path != target {
+			return
+		}
+		if err := os.Remove(path); err != nil {
+			panic(err)
+		}
+		createRegularStagedSentinel(t, path)
+		writeFile(t, conflict, "external conflict-anchor sentinel", 0o644)
+	}
+	t.Cleanup(func() { migrationOS = originalOps })
+
+	if _, err := PlanMigration(paths); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("PlanMigration() error = %v, want conflict-anchor destination exists", err)
+	}
+	assertAbsent(t, target)
+	assertRegularStagedSentinel(t, promotion)
+	assertSymlink(t, marker+".staged-anchor", target)
+	assertRegularFile(t, conflict, "external conflict-anchor sentinel", 0o644)
+
+	migrationOS = originalOps
+	if _, err := PlanMigration(paths); err == nil {
+		t.Fatal("reentered PlanMigration() error = nil, want preserved transition evidence conflict")
+	}
+	assertAbsent(t, target)
+	assertRegularStagedSentinel(t, promotion)
+	assertSymlink(t, marker+".staged-anchor", target)
+	assertRegularFile(t, conflict, "external conflict-anchor sentinel", 0o644)
+	assertRegularFile(t, paths.Legacy, validTOML, 0o640)
+}
+
+func createRegularStagedSentinel(t *testing.T, path string) {
+	t.Helper()
+	writeFile(t, path, "external staged marker sentinel", 0o640)
+}
+
+func assertRegularStagedSentinel(t *testing.T, path string) {
+	t.Helper()
+	assertRegularFile(t, path, "external staged marker sentinel", 0o640)
+}
+
+func createSymlinkStagedSentinel(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Symlink("external-staged-marker-target", path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertSymlinkStagedSentinel(t *testing.T, path string) {
+	t.Helper()
+	assertSymlink(t, path, "external-staged-marker-target")
+}
+
+func stagedConflictPathForTest(marker, target string) string {
+	token := strings.TrimPrefix(target, marker+".staged-")
+	return marker + ".staged-conflict-" + token
+}
+
 func createCompletedAnchoredMarker(t *testing.T, paths Paths) (string, string) {
 	t.Helper()
 	writeFile(t, paths.Legacy, validTOML, 0o640)
@@ -1166,6 +1357,17 @@ func assertNoMatches(t *testing.T, pattern string) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("matches for %s = %v, want none", pattern, matches)
+	}
+}
+
+func assertMatches(t *testing.T, pattern string) {
+	t.Helper()
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) == 0 {
+		t.Fatalf("matches for %s = none, want at least one", pattern)
 	}
 }
 
