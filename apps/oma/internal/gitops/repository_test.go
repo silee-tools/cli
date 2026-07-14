@@ -16,7 +16,7 @@ func TestNormalizeRepoAndDefaultBase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := &recordingRunner{inner: CommandRunner{}}
+	runner := &recordingRunner{inner: testRunner(t)}
 	root, common, err := NormalizeRepo(context.Background(), runner, nested)
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +49,7 @@ func TestNormalizeRepoAndDefaultBase(t *testing.T) {
 }
 
 func TestNormalizeRepoRejectsNonRepository(t *testing.T) {
-	root, common, err := NormalizeRepo(context.Background(), CommandRunner{}, t.TempDir())
+	root, common, err := NormalizeRepo(context.Background(), testRunner(t), t.TempDir())
 	if err == nil || root != "" || common != "" {
 		t.Fatalf("NormalizeRepo() = (%q, %q, %v), want non-empty error and empty paths", root, common, err)
 	}
@@ -57,7 +57,7 @@ func TestNormalizeRepoRejectsNonRepository(t *testing.T) {
 
 func TestFetchOriginDoesNotPrune(t *testing.T) {
 	repo, _ := newRemoteRepo(t)
-	runner := &recordingRunner{inner: CommandRunner{}}
+	runner := &recordingRunner{inner: testRunner(t)}
 	if err := FetchOrigin(context.Background(), runner, repo); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestFetchOriginWithoutRemoteIsNoOp(t *testing.T) {
 	runGit(t, "", "init", "--initial-branch=main", repo)
 	configureIdentity(t, repo)
 	commitFile(t, repo, "README.md", "local\n", "initial")
-	if err := FetchOrigin(context.Background(), CommandRunner{}, repo); err != nil {
+	if err := FetchOrigin(context.Background(), testRunner(t), repo); err != nil {
 		t.Fatalf("FetchOrigin() without origin returned %v", err)
 	}
 }
@@ -89,7 +89,7 @@ func TestDefaultBaseFallbackOrder(t *testing.T) {
 	runGit(t, repo, "branch", "change/a-first")
 	runGit(t, repo, "branch", "release/2")
 
-	base, candidates, err := DefaultBase(context.Background(), CommandRunner{}, repo)
+	base, candidates, err := DefaultBase(context.Background(), testRunner(t), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestNormalizeRepoFromLinkedWorktree(t *testing.T) {
 	worktree := filepath.Join(t.TempDir(), "linked")
 	runGit(t, repo, "worktree", "add", "-b", "feature/linked", worktree, "main")
 
-	root, common, err := NormalizeRepo(context.Background(), CommandRunner{}, worktree)
+	root, common, err := NormalizeRepo(context.Background(), testRunner(t), worktree)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestNormalizeRepoFromLinkedWorktree(t *testing.T) {
 func TestDefaultBaseReportsMissingHead(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "empty")
 	runGit(t, "", "init", repo)
-	base, candidates, err := DefaultBase(context.Background(), CommandRunner{}, repo)
+	base, candidates, err := DefaultBase(context.Background(), testRunner(t), repo)
 	if err == nil || base != "" || len(candidates) != 0 || !strings.Contains(err.Error(), "base") {
 		t.Fatalf("DefaultBase() = (%q, %q, %v), want descriptive base error", base, candidates, err)
 	}

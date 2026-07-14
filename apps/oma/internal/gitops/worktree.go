@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 )
@@ -15,6 +17,14 @@ type Worktree struct {
 	Path   string
 	Branch string
 	Head   string
+}
+
+type worktreeRecord struct {
+	Worktree
+	Prunable bool
+	Locked   bool
+	Bare     bool
+	Detached bool
 }
 
 type Submodule struct {
@@ -82,10 +92,11 @@ func Inspect(ctx context.Context, runner Runner, request InspectRequest) (Snapsh
 		return Snapshot{}, fmt.Errorf("resolve base ref %q: %w", baseRef, err)
 	}
 	baseSHA := strings.TrimSpace(string(baseOutput))
-	worktrees, err := listWorktrees(ctx, runner, repoRoot)
+	records, err := listWorktreeRecords(ctx, runner, repoRoot)
 	if err != nil {
 		return Snapshot{}, err
 	}
+	worktrees := publicWorktrees(records)
 
 	if request.Worktree == "current" {
 		status, statusErr := git(ctx, runner, repoRoot, "status", "--porcelain=v1", "-z")
@@ -100,7 +111,7 @@ func Inspect(ctx context.Context, runner Runner, request InspectRequest) (Snapsh
 		if pathErr != nil {
 			return Snapshot{}, fmt.Errorf("normalize worktree path: %w", pathErr)
 		}
-		if err := inspectWorktreeTarget(ctx, runner, repoRoot, target, request.Branch, baseSHA, worktrees); err != nil {
+		if err := inspectWorktreeTarget(ctx, runner, repoRoot, target, request.Branch, baseSHA, records); err != nil {
 			return Snapshot{}, err
 		}
 	}
@@ -109,7 +120,7 @@ func Inspect(ctx context.Context, runner Runner, request InspectRequest) (Snapsh
 	if err != nil {
 		return Snapshot{}, err
 	}
-	setupHash, err := hashSetupScript(repoRoot)
+	setupHash, err := hashSetupScript(ctx, runner, repoRoot, baseSHA)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -130,11 +141,18 @@ func CreateWorktree(ctx context.Context, runner Runner, operation Operation) err
 	if err != nil {
 		return fmt.Errorf("normalize worktree path: %w", err)
 	}
-	worktrees, err := listWorktrees(ctx, runner, operation.Repo)
+	records, err := listWorktreeRecords(ctx, runner, operation.Repo)
 	if err != nil {
 		return err
 	}
-	for _, worktree := range worktrees {
+	for _, record := range records {
+		worktree := record.Worktree
+		if record.Prunable {
+			if worktree.Path == target {
+				return fmt.Errorf("worktree conflict: target %q has a prunable registration; refusing to prune it automatically", target)
+			}
+			continue
+		}
 		if worktree.Path == target && worktree.Branch == operation.Branch {
 			if worktree.Head != operation.BaseSHA {
 				return fmt.Errorf("worktree conflict: %q uses %q at %s, expected %s", target, operation.Branch, worktree.Head, operation.BaseSHA)
@@ -186,6 +204,9 @@ func PrepareSubmodules(ctx context.Context, runner Runner, worktree string, oper
 		}
 		if err := validateSubmodulePath(operation.Path); err != nil {
 			return err
+		}
+		if err := validateRemoteURL(operation.URL); err != nil {
+			return fmt.Errorf("submodule %q URL: %w", operation.Path, err)
 		}
 		config, ok := configured[operation.Path]
 		if !ok {
@@ -261,13 +282,13 @@ func validateBranch(ctx context.Context, runner Runner, repo, branch string) err
 	return nil
 }
 
-func listWorktrees(ctx context.Context, runner Runner, repo string) ([]Worktree, error) {
+func listWorktreeRecords(ctx context.Context, runner Runner, repo string) ([]worktreeRecord, error) {
 	output, err := git(ctx, runner, repo, "worktree", "list", "--porcelain", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("list worktrees: %w", err)
 	}
-	var result []Worktree
-	var current *Worktree
+	var result []worktreeRecord
+	var current *worktreeRecord
 	for _, raw := range bytes.Split(output, []byte{0}) {
 		line := strings.TrimSpace(string(raw))
 		switch {
@@ -275,15 +296,23 @@ func listWorktrees(ctx context.Context, runner Runner, repo string) ([]Worktree,
 			if current != nil {
 				result = append(result, *current)
 			}
-			path, pathErr := canonicalExisting(strings.TrimPrefix(line, "worktree "))
+			path, pathErr := canonicalWorktreeRecordPath(strings.TrimPrefix(line, "worktree "))
 			if pathErr != nil {
-				return nil, fmt.Errorf("canonicalize registered worktree: %w", pathErr)
+				return nil, fmt.Errorf("normalize registered worktree: %w", pathErr)
 			}
-			current = &Worktree{Path: path}
+			current = &worktreeRecord{Worktree: Worktree{Path: path}}
 		case current != nil && strings.HasPrefix(line, "HEAD "):
 			current.Head = strings.TrimPrefix(line, "HEAD ")
 		case current != nil && strings.HasPrefix(line, "branch refs/heads/"):
 			current.Branch = strings.TrimPrefix(line, "branch refs/heads/")
+		case current != nil && strings.HasPrefix(line, "prunable"):
+			current.Prunable = true
+		case current != nil && strings.HasPrefix(line, "locked"):
+			current.Locked = true
+		case current != nil && line == "bare":
+			current.Bare = true
+		case current != nil && line == "detached":
+			current.Detached = true
 		case line == "" && current != nil:
 			result = append(result, *current)
 			current = nil
@@ -293,6 +322,18 @@ func listWorktrees(ctx context.Context, runner Runner, repo string) ([]Worktree,
 		result = append(result, *current)
 	}
 	return result, nil
+}
+
+func publicWorktrees(records []worktreeRecord) []Worktree {
+	result := make([]Worktree, 0, len(records))
+	for _, record := range records {
+		result = append(result, record.Worktree)
+	}
+	return result
+}
+
+func canonicalWorktreeRecordPath(value string) (string, error) {
+	return canonicalTarget(value)
 }
 
 func canonicalTarget(path string) (string, error) {
@@ -308,11 +349,35 @@ func canonicalTarget(path string) (string, error) {
 	} else if !os.IsNotExist(resolveErr) {
 		return "", resolveErr
 	}
+	ancestor := filepath.Dir(abs)
+	for {
+		if resolved, resolveErr := filepath.EvalSymlinks(ancestor); resolveErr == nil {
+			remainder, relativeErr := filepath.Rel(ancestor, abs)
+			if relativeErr != nil {
+				return "", relativeErr
+			}
+			return filepath.Clean(filepath.Join(resolved, remainder)), nil
+		} else if !os.IsNotExist(resolveErr) {
+			return "", resolveErr
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			break
+		}
+		ancestor = parent
+	}
 	return filepath.Clean(abs), nil
 }
 
-func inspectWorktreeTarget(ctx context.Context, runner Runner, repo, target, branch, baseSHA string, worktrees []Worktree) error {
-	for _, worktree := range worktrees {
+func inspectWorktreeTarget(ctx context.Context, runner Runner, repo, target, branch, baseSHA string, records []worktreeRecord) error {
+	for _, record := range records {
+		worktree := record.Worktree
+		if record.Prunable {
+			if worktree.Path == target {
+				return fmt.Errorf("worktree conflict: target %q has a prunable registration; refusing to prune it automatically", target)
+			}
+			continue
+		}
 		if worktree.Path == target && worktree.Branch == branch {
 			if worktree.Head != baseSHA {
 				return fmt.Errorf("worktree conflict: reusable branch %q is at %s, not planned base %s", branch, worktree.Head, baseSHA)
@@ -392,7 +457,14 @@ func inspectSubmodules(ctx context.Context, runner Runner, repo string, selected
 		if !ok {
 			return nil, fmt.Errorf("selected submodule %q is not declared in .gitmodules", path)
 		}
-		output, runErr := git(ctx, runner, repo, "ls-remote", "--symref", config.URL, "HEAD")
+		if err := validateRemoteURL(config.URL); err != nil {
+			return nil, fmt.Errorf("submodule %q URL: %w", path, err)
+		}
+		lookupURL, resolveErr := resolveSubmoduleLookupURL(ctx, runner, repo, config.URL)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("resolve submodule %q URL: %w", path, resolveErr)
+		}
+		output, runErr := git(ctx, runner, repo, "ls-remote", "--symref", "--", lookupURL, "HEAD")
 		if runErr != nil {
 			return nil, fmt.Errorf("resolve submodule %q remote HEAD: %w", path, runErr)
 		}
@@ -427,13 +499,97 @@ func validateSubmodulePath(path string) error {
 	return nil
 }
 
-func hashSetupScript(repo string) (string, error) {
-	contents, err := os.ReadFile(filepath.Join(repo, "scripts", "setup-worktree.sh"))
-	if os.IsNotExist(err) {
+func validateRemoteURL(value string) error {
+	if value == "" {
+		return fmt.Errorf("is empty")
+	}
+	if strings.HasPrefix(value, "-") {
+		return fmt.Errorf("must not begin with '-'")
+	}
+	if strings.ContainsAny(value, "\x00\r\n") {
+		return fmt.Errorf("contains a control character")
+	}
+	if strings.ContainsAny(value, "?#%\\") {
+		return fmt.Errorf("contains a query, fragment, escape, or backslash")
+	}
+	return nil
+}
+
+func resolveSubmoduleLookupURL(ctx context.Context, runner Runner, repo, raw string) (string, error) {
+	if !strings.HasPrefix(raw, "./") && !strings.HasPrefix(raw, "../") {
+		return raw, nil
+	}
+	hasOrigin, err := remoteExists(ctx, runner, repo, "origin")
+	if err != nil {
+		return "", err
+	}
+	if !hasOrigin {
+		return "", fmt.Errorf("relative submodule URL %q requires an origin remote", raw)
+	}
+	output, err := git(ctx, runner, repo, "remote", "get-url", "origin")
+	if err != nil {
+		return "", fmt.Errorf("read origin URL: %w", err)
+	}
+	base := strings.TrimSpace(string(output))
+	if err := validateRemoteURL(base); err != nil {
+		return "", fmt.Errorf("origin URL: %w", err)
+	}
+	resolved, err := resolveRelativeRemoteURL(repo, base, raw)
+	if err != nil {
+		return "", err
+	}
+	if err := validateRemoteURL(resolved); err != nil {
+		return "", fmt.Errorf("resolved URL: %w", err)
+	}
+	return resolved, nil
+}
+
+func resolveRelativeRemoteURL(repo, base, relative string) (string, error) {
+	if err := validateRemoteURL(base); err != nil {
+		return "", fmt.Errorf("base URL: %w", err)
+	}
+	if err := validateRemoteURL(relative); err != nil {
+		return "", fmt.Errorf("relative URL: %w", err)
+	}
+	if !strings.Contains(base, "://") {
+		if colon := strings.IndexByte(base, ':'); colon > 0 {
+			if slash := strings.IndexByte(base, '/'); slash == -1 || colon < slash {
+				remotePath := base[colon+1:]
+				return base[:colon+1] + pathpkg.Clean(pathpkg.Join(remotePath, relative)), nil
+			}
+		}
+	}
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("parse base URL %q: %w", base, err)
+	}
+	if parsed.Scheme != "" {
+		if parsed.Opaque != "" {
+			return "", fmt.Errorf("base URL %q uses an unsupported opaque form", base)
+		}
+		parsed.Path = pathpkg.Clean(pathpkg.Join(parsed.Path, relative))
+		parsed.RawPath = ""
+		return parsed.String(), nil
+	}
+	basePath := filepath.FromSlash(base)
+	if !filepath.IsAbs(basePath) {
+		basePath = filepath.Join(repo, basePath)
+	}
+	return filepath.Clean(filepath.Join(basePath, filepath.FromSlash(relative))), nil
+}
+
+func hashSetupScript(ctx context.Context, runner Runner, repo, baseSHA string) (string, error) {
+	const setupPath = "scripts/setup-worktree.sh"
+	entry, err := git(ctx, runner, repo, "ls-tree", "-z", "--name-only", baseSHA, "--", setupPath)
+	if err != nil {
+		return "", fmt.Errorf("inspect setup script at base %s: %w", baseSHA, err)
+	}
+	if len(entry) == 0 {
 		return "", nil
 	}
+	contents, err := git(ctx, runner, repo, "cat-file", "blob", baseSHA+":"+setupPath)
 	if err != nil {
-		return "", fmt.Errorf("read setup script: %w", err)
+		return "", fmt.Errorf("read setup script at base %s: %w", baseSHA, err)
 	}
 	hash := sha256.Sum256(contents)
 	return fmt.Sprintf("%x", hash), nil

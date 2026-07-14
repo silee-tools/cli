@@ -25,9 +25,12 @@ func TestInspectPlansRepositoryState(t *testing.T) {
 	runGit(t, repo, "add", ".gitignore", "scripts/setup-worktree.sh")
 	runGit(t, repo, "commit", "-m", "add worktree setup")
 	runGit(t, repo, "push", "origin", "main")
+	if err := os.WriteFile(filepath.Join(repo, "scripts", "setup-worktree.sh"), []byte("working checkout differs\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	worktree := filepath.Join(repo, ".worktrees", "task")
-	snapshot, err := Inspect(context.Background(), CommandRunner{}, InspectRequest{
+	snapshot, err := Inspect(context.Background(), testRunner(t), InspectRequest{
 		Repo: repo, Base: "origin/main", Branch: "feature/task", Worktree: worktree,
 	})
 	if err != nil {
@@ -47,12 +50,38 @@ func TestInspectPlansRepositoryState(t *testing.T) {
 	}
 }
 
+func TestInspectSetupHashIsEmptyWhenScriptIsMissingFromBase(t *testing.T) {
+	repo, _ := newRemoteRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".worktrees/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".gitignore")
+	runGit(t, repo, "commit", "-m", "ignore worktrees")
+	runGit(t, repo, "push", "origin", "main")
+	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "scripts", "setup-worktree.sh"), []byte("working checkout only\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := Inspect(context.Background(), testRunner(t), InspectRequest{
+		Repo: repo, Base: "origin/main", Branch: "feature/task", Worktree: filepath.Join(repo, ".worktrees", "task"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.SetupHash != "" {
+		t.Fatalf("SetupHash = %q, want empty for script missing from selected base", snapshot.SetupHash)
+	}
+}
+
 func TestInspectRejectsDirtyCurrentWorktree(t *testing.T) {
 	repo, _ := newRemoteRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("dirty"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Inspect(context.Background(), CommandRunner{}, InspectRequest{
+	_, err := Inspect(context.Background(), testRunner(t), InspectRequest{
 		Repo: repo, Base: "origin/main", Branch: "feature/task", Worktree: "current",
 	})
 	if err == nil || !strings.Contains(err.Error(), "dirty") {
@@ -63,7 +92,7 @@ func TestInspectRejectsDirtyCurrentWorktree(t *testing.T) {
 func TestInspectRejectsUnignoredAndPartialWorktreeStates(t *testing.T) {
 	t.Run("unignored", func(t *testing.T) {
 		repo, _ := newRemoteRepo(t)
-		_, err := Inspect(context.Background(), CommandRunner{}, InspectRequest{
+		_, err := Inspect(context.Background(), testRunner(t), InspectRequest{
 			Repo: repo, Base: "origin/main", Branch: "feature/task", Worktree: filepath.Join(repo, ".worktrees", "task"),
 		})
 		if err == nil || !strings.Contains(err.Error(), "ignore") {
@@ -80,7 +109,7 @@ func TestInspectRejectsUnignoredAndPartialWorktreeStates(t *testing.T) {
 		if err := os.MkdirAll(worktree, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		_, err := Inspect(context.Background(), CommandRunner{}, InspectRequest{
+		_, err := Inspect(context.Background(), testRunner(t), InspectRequest{
 			Repo: repo, Base: "origin/main", Branch: "feature/task", Worktree: worktree,
 		})
 		if err == nil || !strings.Contains(err.Error(), "conflict") {
@@ -100,28 +129,100 @@ func TestInspectReusesExactWorktreeAndRejectsPartialConflicts(t *testing.T) {
 
 	exact := filepath.Join(repo, ".worktrees", "task")
 	sha := runGit(t, repo, "rev-parse", "origin/main")
-	if err := CreateWorktree(context.Background(), CommandRunner{}, Operation{Repo: repo, Path: exact, Branch: "feature/task", BaseSHA: sha}); err != nil {
+	if err := CreateWorktree(context.Background(), testRunner(t), Operation{Repo: repo, Path: exact, Branch: "feature/task", BaseSHA: sha}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Inspect(context.Background(), CommandRunner{}, InspectRequest{Repo: repo, Base: "origin/main", Branch: "feature/task", Worktree: exact}); err != nil {
+	if _, err := Inspect(context.Background(), testRunner(t), InspectRequest{Repo: repo, Base: "origin/main", Branch: "feature/task", Worktree: exact}); err != nil {
 		t.Fatalf("Inspect() rejected exact reusable state: %v", err)
 	}
 	commitFile(t, repo, "new-base.txt", "new base\n", "advance base")
 	runGit(t, repo, "push", "origin", "main")
-	_, err := Inspect(context.Background(), CommandRunner{}, InspectRequest{Repo: repo, Base: "origin/main", Branch: "feature/task", Worktree: exact})
+	_, err := Inspect(context.Background(), testRunner(t), InspectRequest{Repo: repo, Base: "origin/main", Branch: "feature/task", Worktree: exact})
 	if err == nil || !strings.Contains(err.Error(), "base") {
 		t.Fatalf("Inspect() error = %v, want reusable worktree base mismatch", err)
 	}
 
-	_, err = Inspect(context.Background(), CommandRunner{}, InspectRequest{Repo: repo, Base: "origin/main", Branch: "feature/other", Worktree: exact})
+	_, err = Inspect(context.Background(), testRunner(t), InspectRequest{Repo: repo, Base: "origin/main", Branch: "feature/other", Worktree: exact})
 	if err == nil || !strings.Contains(err.Error(), "conflict") {
 		t.Fatalf("Inspect() error = %v, want path/branch conflict", err)
 	}
 
 	otherPath := filepath.Join(repo, ".worktrees", "other")
-	_, err = Inspect(context.Background(), CommandRunner{}, InspectRequest{Repo: repo, Base: "origin/main", Branch: "feature/task", Worktree: otherPath})
+	_, err = Inspect(context.Background(), testRunner(t), InspectRequest{Repo: repo, Base: "origin/main", Branch: "feature/task", Worktree: otherPath})
 	if err == nil || !strings.Contains(err.Error(), "conflict") {
 		t.Fatalf("Inspect() error = %v, want branch/path conflict", err)
+	}
+}
+
+func TestInspectHandlesPrunableWorktreeRecordsWithoutPruning(t *testing.T) {
+	repo, _ := newRemoteRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".worktrees/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".gitignore")
+	runGit(t, repo, "commit", "-m", "ignore worktrees")
+	runGit(t, repo, "push", "origin", "main")
+	stalePath := filepath.Join(repo, ".worktrees", "stale")
+	runGit(t, repo, "worktree", "add", "-b", "feature/stale", stalePath, "main")
+	if err := os.RemoveAll(stalePath); err != nil {
+		t.Fatal(err)
+	}
+	before := runGit(t, repo, "worktree", "list", "--porcelain")
+	if !strings.Contains(before, "prunable") {
+		t.Fatalf("fixture is not prunable:\n%s", before)
+	}
+
+	if _, err := Inspect(context.Background(), testRunner(t), InspectRequest{
+		Repo: repo, Base: "origin/main", Branch: "feature/task", Worktree: filepath.Join(repo, ".worktrees", "task"),
+	}); err != nil {
+		t.Fatalf("unrelated prunable worktree blocked inspection: %v", err)
+	}
+	_, err := Inspect(context.Background(), testRunner(t), InspectRequest{
+		Repo: repo, Base: "origin/main", Branch: "feature/stale", Worktree: stalePath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "prunable") {
+		t.Fatalf("Inspect() error = %v, want deterministic same-path prunable conflict", err)
+	}
+	after := runGit(t, repo, "worktree", "list", "--porcelain")
+	if !strings.Contains(after, "prunable") {
+		t.Fatalf("Inspect() pruned stale worktree unexpectedly:\n%s", after)
+	}
+}
+
+func TestListWorktreeRecordsPreservesPorcelainStates(t *testing.T) {
+	repo, _ := newRemoteRepo(t)
+	detached := filepath.Join(t.TempDir(), "detached")
+	runGit(t, repo, "worktree", "add", "--detach", detached, "main")
+	runGit(t, repo, "worktree", "lock", detached)
+	records, err := listWorktreeRecords(context.Background(), testRunner(t), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDetached, err := canonicalTarget(detached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, record := range records {
+		if record.Path == wantDetached {
+			found = true
+			if !record.Detached || !record.Locked || record.Bare || record.Prunable {
+				t.Fatalf("detached locked record lost porcelain state: %+v", record)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("detached worktree missing from records: %+v", records)
+	}
+
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	runGit(t, "", "init", "--bare", bare)
+	bareRecords, err := listWorktreeRecords(context.Background(), testRunner(t), bare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bareRecords) != 1 || !bareRecords[0].Bare {
+		t.Fatalf("bare worktree record lost porcelain state: %+v", bareRecords)
 	}
 }
 
@@ -148,7 +249,7 @@ func TestInspectSelectedSubmoduleUsesIndependentRemoteHead(t *testing.T) {
 	runGit(t, parent, "commit", "-m", "ignore worktrees")
 	runGit(t, parent, "push", "origin", "main")
 
-	snapshot, err := Inspect(context.Background(), CommandRunner{}, InspectRequest{
+	snapshot, err := Inspect(context.Background(), testRunner(t), InspectRequest{
 		Repo: parent, Base: "origin/main", Branch: "feature/task", Worktree: filepath.Join(parent, ".worktrees", "task"),
 		Submodules: []string{"modules/first"},
 	})
@@ -157,6 +258,140 @@ func TestInspectSelectedSubmoduleUsesIndependentRemoteHead(t *testing.T) {
 	}
 	if len(snapshot.Submodules) != 1 || snapshot.Submodules[0].Path != "modules/first" || snapshot.Submodules[0].BaseRef != "trunk" || snapshot.Submodules[0].BaseSHA != firstSHA {
 		t.Fatalf("unexpected submodule plan: %+v", snapshot.Submodules)
+	}
+}
+
+func TestInspectResolvesRelativeSubmoduleURLFromSuperprojectOrigin(t *testing.T) {
+	root := t.TempDir()
+	remotes := filepath.Join(root, "remotes")
+	if err := os.MkdirAll(remotes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	childOrigin := filepath.Join(remotes, "child.git")
+	childWork := filepath.Join(root, "child-work")
+	runGit(t, "", "init", "--bare", "--initial-branch=main", childOrigin)
+	runGit(t, "", "init", "--initial-branch=main", childWork)
+	configureIdentity(t, childWork)
+	childSHA := commitFile(t, childWork, "child.txt", "child\n", "child initial")
+	runGit(t, childWork, "remote", "add", "origin", childOrigin)
+	runGit(t, childWork, "push", "-u", "origin", "main")
+
+	parentOrigin := filepath.Join(remotes, "parent.git")
+	parent := filepath.Join(root, "parent-work")
+	runGit(t, "", "init", "--bare", "--initial-branch=main", parentOrigin)
+	runGit(t, "", "init", "--initial-branch=main", parent)
+	configureIdentity(t, parent)
+	modules := "[submodule \"child\"]\n\tpath = modules/child\n\turl = ../child.git\n"
+	if err := os.WriteFile(filepath.Join(parent, ".gitmodules"), []byte(modules), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, ".gitignore"), []byte(".worktrees/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, parent, "add", ".gitmodules", ".gitignore")
+	runGit(t, parent, "commit", "-m", "add relative submodule")
+	runGit(t, parent, "remote", "add", "origin", parentOrigin)
+	runGit(t, parent, "push", "-u", "origin", "main")
+
+	snapshot, err := Inspect(context.Background(), testRunner(t), InspectRequest{
+		Repo: parent, Base: "origin/main", Branch: "feature/task",
+		Worktree: filepath.Join(parent, ".worktrees", "task"), Submodules: []string{"modules/child"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Submodules) != 1 || snapshot.Submodules[0].URL != "../child.git" || snapshot.Submodules[0].BaseRef != "main" || snapshot.Submodules[0].BaseSHA != childSHA {
+		t.Fatalf("unexpected relative submodule plan: %+v", snapshot.Submodules)
+	}
+}
+
+func TestResolveRelativeRemoteURLKinds(t *testing.T) {
+	tests := []struct {
+		name string
+		base string
+		want string
+	}{
+		{name: "https", base: "https://example.com/group/parent.git", want: "https://example.com/group/child.git"},
+		{name: "ssh", base: "ssh://git@example.com/group/parent.git", want: "ssh://git@example.com/group/child.git"},
+		{name: "scp", base: "git@example.com:group/parent.git", want: "git@example.com:group/child.git"},
+		{name: "file URL", base: "file:///srv/group/parent.git", want: "file:///srv/group/child.git"},
+		{name: "local path", base: "/srv/group/parent.git", want: "/srv/group/child.git"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := resolveRelativeRemoteURL("/checkout/super", test.base, "../child.git")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("resolveRelativeRemoteURL() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestInspectRelativeSubmoduleRequiresOrigin(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	runGit(t, "", "init", "--initial-branch=main", repo)
+	configureIdentity(t, repo)
+	modules := "[submodule \"child\"]\n\tpath = modules/child\n\turl = ../child.git\n"
+	if err := os.WriteFile(filepath.Join(repo, ".gitmodules"), []byte(modules), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".worktrees/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".gitmodules", ".gitignore")
+	runGit(t, repo, "commit", "-m", "add relative submodule")
+
+	_, err := Inspect(context.Background(), testRunner(t), InspectRequest{
+		Repo: repo, Base: "main", Branch: "feature/task",
+		Worktree: filepath.Join(repo, ".worktrees", "task"), Submodules: []string{"modules/child"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "origin") {
+		t.Fatalf("Inspect() error = %v, want relative URL origin error", err)
+	}
+}
+
+func TestInspectRejectsSubmoduleURLGitOptionInjection(t *testing.T) {
+	parent, _ := newRemoteRepo(t)
+	_, childOrigin := newRemoteRepo(t)
+	headRepo := filepath.Join(parent, "HEAD")
+	runGit(t, "", "clone", "--bare", childOrigin, headRepo)
+	sentinel := filepath.Join(t.TempDir(), "upload-pack-ran")
+	uploadPack := filepath.Join(t.TempDir(), "upload-pack")
+	script := "#!/bin/sh\n: > \"" + sentinel + "\"\nexec git-upload-pack \"$@\"\n"
+	if err := os.WriteFile(uploadPack, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	modules := "[submodule \"evil\"]\n\tpath = modules/evil\n\turl = --upload-pack=" + uploadPack + "\n"
+	if err := os.WriteFile(filepath.Join(parent, ".gitmodules"), []byte(modules), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, ".gitignore"), []byte(".worktrees/\nHEAD/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, parent, "add", ".gitmodules", ".gitignore")
+	runGit(t, parent, "commit", "-m", "add hostile submodule URL")
+	runGit(t, parent, "push", "origin", "main")
+
+	_, err := Inspect(context.Background(), testRunner(t), InspectRequest{
+		Repo: parent, Base: "origin/main", Branch: "feature/task",
+		Worktree: filepath.Join(parent, ".worktrees", "task"), Submodules: []string{"modules/evil"},
+	})
+	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
+		t.Fatalf("Git option injection executed upload-pack sentinel: %v", statErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "URL") {
+		t.Fatalf("Inspect() error = %v, want unsafe URL rejection", err)
+	}
+}
+
+func TestValidateRemoteURLRejectsOptionAndURLControlForms(t *testing.T) {
+	for _, value := range []string{"-repository", "--upload-pack=evil", "https://example.com/repo.git?x=1", "ssh://example.com/repo.git#fragment", "file:///tmp/%2e%2e/repo.git", "..\\repo.git", "repo.git\nnext"} {
+		if err := validateRemoteURL(value); err == nil {
+			t.Errorf("validateRemoteURL(%q) succeeded, want rejection", value)
+		}
 	}
 }
 
@@ -172,13 +407,13 @@ func TestPrepareSubmodulesInitializesOnlySelectedPath(t *testing.T) {
 	runGit(t, parent, "commit", "-m", "add submodules")
 	base := runGit(t, parent, "rev-parse", "HEAD")
 	worktree := filepath.Join(t.TempDir(), "worktree")
-	if err := CreateWorktree(context.Background(), CommandRunner{}, Operation{Repo: parent, Path: worktree, Branch: "feature/task", BaseSHA: base}); err != nil {
+	if err := CreateWorktree(context.Background(), testRunner(t), Operation{Repo: parent, Path: worktree, Branch: "feature/task", BaseSHA: base}); err != nil {
 		t.Fatal(err)
 	}
 
 	firstSHA := runGit(t, first, "rev-parse", "HEAD")
 	operations := []SubmoduleOperation{{Path: "modules/first", URL: firstOrigin, Branch: "feature/task", BaseRef: "main", BaseSHA: firstSHA}}
-	if err := PrepareSubmodules(context.Background(), CommandRunner{}, worktree, operations); err != nil {
+	if err := PrepareSubmodules(context.Background(), testRunner(t), worktree, operations); err != nil {
 		t.Fatal(err)
 	}
 	if got := runGit(t, filepath.Join(worktree, "modules", "first"), "branch", "--show-current"); got != "feature/task" {

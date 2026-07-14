@@ -18,7 +18,7 @@ func TestCreateWorktreeAndPush(t *testing.T) {
 	runGit(t, repo, "push", "origin", "main")
 	sha := runGit(t, repo, "rev-parse", "HEAD")
 	worktree := filepath.Join(repo, ".worktrees", "task")
-	runner := &recordingRunner{inner: CommandRunner{}}
+	runner := &recordingRunner{inner: testRunner(t)}
 
 	operation := Operation{Repo: repo, Path: worktree, Branch: "feature/task", BaseSHA: sha}
 	if err := CreateWorktree(context.Background(), runner, operation); err != nil {
@@ -53,7 +53,7 @@ func TestCreateWorktreeAndPush(t *testing.T) {
 func TestCreateWorktreeValidatesBranchBeforeMutation(t *testing.T) {
 	repo, _ := newRemoteRepo(t)
 	path := filepath.Join(t.TempDir(), "worktree")
-	err := CreateWorktree(context.Background(), CommandRunner{}, Operation{
+	err := CreateWorktree(context.Background(), testRunner(t), Operation{
 		Repo: repo, Path: path, Branch: "bad branch", BaseSHA: runGit(t, repo, "rev-parse", "HEAD"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "branch") {
@@ -70,7 +70,7 @@ func TestPushRejectsMissingRemoteAndRemoteChanges(t *testing.T) {
 		runGit(t, "", "init", "--initial-branch=main", repo)
 		configureIdentity(t, repo)
 		commitFile(t, repo, "README.md", "local\n", "initial")
-		if err := Push(context.Background(), CommandRunner{}, repo, "main"); err == nil || !strings.Contains(err.Error(), "origin") {
+		if err := Push(context.Background(), testRunner(t), repo, "main"); err == nil || !strings.Contains(err.Error(), "origin") {
 			t.Fatalf("Push() error = %v, want missing origin error", err)
 		}
 	})
@@ -103,7 +103,7 @@ func TestPushRejectsMissingRemoteAndRemoteChanges(t *testing.T) {
 			}
 			runGit(t, other, forceArgs...)
 
-			runner := &recordingRunner{inner: CommandRunner{}}
+			runner := &recordingRunner{inner: testRunner(t)}
 			err := Push(context.Background(), runner, repo, branch)
 			if err == nil || !strings.Contains(err.Error(), "remote") {
 				t.Fatalf("Push() error = %v, want remote mismatch error", err)
