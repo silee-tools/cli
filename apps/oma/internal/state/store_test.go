@@ -92,7 +92,11 @@ func TestStoreUsesResolvedApplicationStateRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(paths.StateRoot, "plans")
+	canonicalRoot, err := filepath.EvalSymlinks(paths.StateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(canonicalRoot, "plans")
 	if store.dir != want {
 		t.Fatalf("store dir = %q, want %q", store.dir, want)
 	}
@@ -778,7 +782,7 @@ func TestStoreReconcilesLegacyPublicationLinks(t *testing.T) {
 		}
 	})
 
-	t.Run("unrelated inode", func(t *testing.T) {
+	t.Run("unrelated inode is ignored", func(t *testing.T) {
 		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x5c}, tokenBytes))
 		created, err := store.Create(testPayload{Title: "unrelated"}, "fingerprint")
 		if err != nil {
@@ -788,10 +792,169 @@ func TestStoreReconcilesLegacyPublicationLinks(t *testing.T) {
 			t.Fatal(err)
 		}
 		var payload testPayload
-		if _, err := store.Load(created.Token, &payload); !errors.Is(err, ErrUnsafeRecord) {
-			t.Fatalf("Load() error = %v, want ErrUnsafeRecord", err)
+		unrelated := filepath.Join(store.dir, ".plan-unrelated")
+		if _, err := store.Load(created.Token, &payload); err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if _, err := os.Stat(unrelated); err != nil {
+			t.Fatalf("unrelated legacy file was mutated: %v", err)
 		}
 	})
+
+	t.Run("two tokens own independent legacy links", func(t *testing.T) {
+		random := append(bytes.Repeat([]byte{0x5d}, tokenBytes), bytes.Repeat([]byte{0x5e}, tokenBytes)...)
+		store := newTestStore(t, time.Now(), random)
+		first, err := store.Create(testPayload{Title: "first"}, "first")
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := store.Create(testPayload{Title: "second"}, "second")
+		if err != nil {
+			t.Fatal(err)
+		}
+		firstLegacy := filepath.Join(store.dir, ".plan-first")
+		secondLegacy := filepath.Join(store.dir, ".plan-second")
+		if err := os.Link(store.path(first.Token, pendingSuffix), firstLegacy); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(store.path(second.Token, pendingSuffix), secondLegacy); err != nil {
+			t.Fatal(err)
+		}
+		var payload testPayload
+		if _, err := store.Load(first.Token, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Load(second.Token, &payload); err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range []string{firstLegacy, secondLegacy} {
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("legacy link remains at %s: %v", path, err)
+			}
+		}
+	})
+}
+
+func TestStoreCleansLegacyLinksOnlyAfterValidatedRead(t *testing.T) {
+	t.Run("corrupt JSON remains untouched", func(t *testing.T) {
+		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x5f}, tokenBytes))
+		created, err := store.Create(testPayload{Title: "corrupt"}, "fingerprint")
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacy := filepath.Join(store.dir, ".plan-corrupt")
+		if err := os.Link(store.path(created.Token, pendingSuffix), legacy); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(store.path(created.Token, pendingSuffix), []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var payload testPayload
+		if _, err := store.Load(created.Token, &payload); !errors.Is(err, ErrCorrupt) {
+			t.Fatalf("Load() error = %v, want ErrCorrupt", err)
+		}
+		if _, err := os.Stat(legacy); err != nil {
+			t.Fatalf("legacy link was removed before decode validation: %v", err)
+		}
+	})
+
+	t.Run("close failure remains untouched", func(t *testing.T) {
+		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x60}, tokenBytes))
+		created, err := store.Create(testPayload{Title: "close"}, "fingerprint")
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacy := filepath.Join(store.dir, ".plan-close")
+		if err := os.Link(store.path(created.Token, pendingSuffix), legacy); err != nil {
+			t.Fatal(err)
+		}
+		injected := errors.New("close failed")
+		originalClose := store.closeRead
+		closeCalls := 0
+		store.closeRead = func(file *os.File) error {
+			closeCalls++
+			err := originalClose(file)
+			if closeCalls == 2 {
+				return errors.Join(err, injected)
+			}
+			return err
+		}
+		var payload testPayload
+		if _, err := store.Load(created.Token, &payload); !errors.Is(err, injected) {
+			t.Fatalf("Load() error = %v, want close failure", err)
+		}
+		if _, err := os.Stat(legacy); err != nil {
+			t.Fatalf("legacy link was removed before close succeeded: %v", err)
+		}
+	})
+
+	t.Run("cleanup sync failure is committed", func(t *testing.T) {
+		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x61}, tokenBytes))
+		created, err := store.Create(testPayload{Title: "sync"}, "fingerprint")
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacy := filepath.Join(store.dir, ".plan-sync")
+		if err := os.Link(store.path(created.Token, pendingSuffix), legacy); err != nil {
+			t.Fatal(err)
+		}
+		injected := errors.New("cleanup sync failed")
+		store.syncDir = func(string) error { return injected }
+		var payload testPayload
+		loaded, err := store.Load(created.Token, &payload)
+		assertCommittedError(t, err, Pending, true)
+		if loaded.Token != created.Token || !errors.Is(err, injected) {
+			t.Fatalf("Load() = (%#v, %v)", loaded, err)
+		}
+		if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("legacy link was not removed: %v", err)
+		}
+	})
+}
+
+func TestStoreCanonicalizesIntermediateSymlinkOnce(t *testing.T) {
+	parent := t.TempDir()
+	firstTarget := filepath.Join(parent, "first")
+	secondTarget := filepath.Join(parent, "second")
+	for _, path := range []string{firstTarget, secondTarget} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(parent, "state-link")
+	if err := os.Symlink(firstTarget, link); err != nil {
+		t.Fatal(err)
+	}
+	logicalRoot := filepath.Join(link, "nested", "oma")
+	store, err := New(logicalRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalFirst, err := filepath.EvalSymlinks(firstTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDir := filepath.Join(canonicalFirst, "nested", "oma", "plans")
+	if store.dir != wantDir {
+		t.Fatalf("store dir = %q, want canonical %q", store.dir, wantDir)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secondTarget, link); err != nil {
+		t.Fatal(err)
+	}
+	store.random = bytes.NewReader(bytes.Repeat([]byte{0x62}, tokenBytes))
+	created, err := store.Create(testPayload{Title: "canonical"}, "fingerprint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(wantDir, created.Token+pendingSuffix)); err != nil {
+		t.Fatalf("record missing from original canonical target: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(secondTarget, "nested")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retargeted symlink moved Store: %v", err)
+	}
 }
 
 func TestStorePreservesRecordMatchErrors(t *testing.T) {

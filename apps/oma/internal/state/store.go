@@ -82,14 +82,15 @@ type diskRecord struct {
 }
 
 type Store struct {
-	dir      string
-	now      func() time.Time
-	random   io.Reader
-	lstat    func(string) (os.FileInfo, error)
-	link     func(string, string) error
-	remove   func(string) error
-	syncDir  func(string) error
-	openRead func(string) (*os.File, error)
+	dir       string
+	now       func() time.Time
+	random    io.Reader
+	lstat     func(string) (os.FileInfo, error)
+	link      func(string, string) error
+	remove    func(string) error
+	syncDir   func(string) error
+	openRead  func(string) (*os.File, error)
+	closeRead func(*os.File) error
 }
 
 func New(stateRoot string) (*Store, error) {
@@ -99,7 +100,10 @@ func New(stateRoot string) (*Store, error) {
 	if !filepath.IsAbs(stateRoot) {
 		return nil, fmt.Errorf("%w: state root must be absolute", ErrUnsafeRoot)
 	}
-	appRoot := filepath.Clean(stateRoot)
+	appRoot, err := canonicalApplicationRoot(filepath.Clean(stateRoot))
+	if err != nil {
+		return nil, err
+	}
 	if err := ensureSecurePath(appRoot); err != nil {
 		return nil, err
 	}
@@ -111,7 +115,49 @@ func New(stateRoot string) (*Store, error) {
 		dir: plansDir, now: time.Now, random: rand.Reader,
 		lstat: os.Lstat, link: os.Link, remove: os.Remove,
 		syncDir: syncDirectory, openRead: openNoFollow,
+		closeRead: func(file *os.File) error { return file.Close() },
 	}, nil
+}
+
+func canonicalApplicationRoot(logicalRoot string) (string, error) {
+	if info, err := os.Lstat(logicalRoot); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", fmt.Errorf("%w: %s is not a real directory", ErrUnsafeRoot, logicalRoot)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("%w: %v", ErrUnsafeRoot, err)
+	}
+	existing := logicalRoot
+	for {
+		_, err := os.Lstat(existing)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%w: %v", ErrUnsafeRoot, err)
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return "", fmt.Errorf("%w: no existing ancestor", ErrUnsafeRoot)
+		}
+		existing = parent
+	}
+	canonicalAncestor, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve existing ancestor: %v", ErrUnsafeRoot, err)
+	}
+	info, err := os.Stat(canonicalAncestor)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("%w: existing ancestor is not a directory", ErrUnsafeRoot)
+	}
+	remainder, err := filepath.Rel(existing, logicalRoot)
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve state root: %v", ErrUnsafeRoot, err)
+	}
+	if remainder == "." {
+		return canonicalAncestor, nil
+	}
+	return filepath.Join(canonicalAncestor, remainder), nil
 }
 
 // Create stores a plan under an opaque, non-empty fingerprint. Expiration uses
@@ -425,15 +471,16 @@ func (s *Store) ensureReservation(token string) error {
 }
 
 func (s *Store) validateReservation(token string) error {
-	data, cleaned, err := s.readSafeFile(s.path(token, reservationSuffix), token)
+	data, legacyLinks, err := s.readSafeFile(s.path(token, reservationSuffix), token)
 	if err != nil {
 		return err
 	}
-	if err := cleaned.err(); err != nil {
-		return &CommittedError{Token: token, State: Pending, Ambiguous: cleaned.syncErr != nil, Err: err}
-	}
 	if string(data) != token+"\n" {
 		return ErrStateConflict
+	}
+	cleaned := s.cleanupLegacyLinks(legacyLinks)
+	if err := cleaned.err(); err != nil {
+		return &CommittedError{Token: token, State: Pending, Ambiguous: cleaned.syncErr != nil, Err: err}
 	}
 	return nil
 }
@@ -481,7 +528,7 @@ func (s *Store) read(token, suffix string, wantState State, payload any) (diskRe
 
 func (s *Store) decodeRecord(token, suffix string, wantState State) (diskRecord, error) {
 	path := s.path(token, suffix)
-	data, cleaned, err := s.readSafeFile(path, token)
+	data, legacyLinks, err := s.readSafeFile(path, token)
 	if err != nil {
 		return diskRecord{}, err
 	}
@@ -496,67 +543,68 @@ func (s *Store) decodeRecord(token, suffix string, wantState State) (diskRecord,
 		!disk.ExpiresAt.Equal(disk.CreatedAt.Add(planTTL)) || !json.Valid(disk.Payload) {
 		return diskRecord{}, ErrCorrupt
 	}
+	cleaned := s.cleanupLegacyLinks(legacyLinks)
 	if cleanupErr := cleaned.err(); cleanupErr != nil {
 		return disk, &CommittedError{Token: token, State: wantState, Ambiguous: cleaned.syncErr != nil, Err: cleanupErr}
 	}
 	return disk, nil
 }
 
-func (s *Store) readSafeFile(path, token string) ([]byte, finalizeOutcome, error) {
+func (s *Store) readSafeFile(path, token string) ([]byte, []string, error) {
 	file, err := s.openRead(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, finalizeOutcome{}, ErrMissing
+			return nil, nil, ErrMissing
 		}
 		if errors.Is(err, syscall.ELOOP) {
-			return nil, finalizeOutcome{}, ErrUnsafeRecord
+			return nil, nil, ErrUnsafeRecord
 		}
-		return nil, finalizeOutcome{}, fmt.Errorf("open plan record: %w", err)
+		return nil, nil, fmt.Errorf("open plan record: %w", err)
 	}
 	info, statErr := file.Stat()
 	if statErr != nil {
 		_ = file.Close()
-		return nil, finalizeOutcome{}, fmt.Errorf("inspect open plan record: %w", statErr)
+		return nil, nil, fmt.Errorf("inspect open plan record: %w", statErr)
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	fileSecurityMode := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
 	if !ok || !info.Mode().IsRegular() || fileSecurityMode != 0o600 ||
 		uint32(stat.Uid) != uint32(os.Geteuid()) {
 		_ = file.Close()
-		return nil, finalizeOutcome{}, ErrUnsafeRecord
+		return nil, nil, ErrUnsafeRecord
 	}
-	cleaned, err := s.validateLinkTopology(file, path, token)
+	legacyLinks, err := s.validateLinkTopology(file, path, token)
 	if err != nil {
 		_ = file.Close()
-		return nil, finalizeOutcome{}, err
+		return nil, nil, err
 	}
 	data, readErr := io.ReadAll(file)
-	closeErr := file.Close()
+	closeErr := s.closeRead(file)
 	if readErr != nil {
-		return nil, finalizeOutcome{}, fmt.Errorf("read plan record: %w", readErr)
+		return nil, nil, fmt.Errorf("read plan record: %w", readErr)
 	}
 	if closeErr != nil {
-		return nil, finalizeOutcome{}, fmt.Errorf("close plan record: %w", closeErr)
+		return nil, nil, fmt.Errorf("close plan record: %w", closeErr)
 	}
-	return data, cleaned, nil
+	return data, legacyLinks, nil
 }
 
-func (s *Store) validateLinkTopology(file *os.File, path, token string) (finalizeOutcome, error) {
+func (s *Store) validateLinkTopology(file *os.File, path, token string) ([]string, error) {
 	for range 4 {
 		before, err := file.Stat()
 		if err != nil {
-			return finalizeOutcome{}, fmt.Errorf("inspect plan link count: %w", err)
+			return nil, fmt.Errorf("inspect plan link count: %w", err)
 		}
 		beforeStat, ok := before.Sys().(*syscall.Stat_t)
 		if !ok {
-			return finalizeOutcome{}, ErrUnsafeRecord
+			return nil, ErrUnsafeRecord
 		}
 		if beforeStat.Nlink == 0 {
-			return finalizeOutcome{}, ErrMissing
+			return nil, ErrMissing
 		}
 		entries, err := os.ReadDir(s.dir)
 		if err != nil {
-			return finalizeOutcome{}, fmt.Errorf("inspect plan link topology: %w", err)
+			return nil, fmt.Errorf("inspect plan link topology: %w", err)
 		}
 		wantBase := filepath.Base(path)
 		tempPrefix := "." + token + ".tmp-"
@@ -570,18 +618,15 @@ func (s *Store) validateLinkTopology(file *os.File, path, token string) (finaliz
 				if errors.Is(err, os.ErrNotExist) {
 					continue
 				}
-				return finalizeOutcome{}, fmt.Errorf("inspect plan link: %w", err)
+				return nil, fmt.Errorf("inspect plan link: %w", err)
 			}
 			sameFile := os.SameFile(before, info)
-			if strings.HasPrefix(entry.Name(), ".plan-") && !sameFile && !strings.HasSuffix(wantBase, reservationSuffix) {
-				return finalizeOutcome{}, ErrUnsafeRecord
-			}
 			if !sameFile {
 				continue
 			}
 			legacy := strings.HasPrefix(entry.Name(), ".plan-")
 			if entry.Name() != wantBase && !strings.HasPrefix(entry.Name(), tempPrefix) && !legacy {
-				return finalizeOutcome{}, ErrUnsafeRecord
+				return nil, ErrUnsafeRecord
 			}
 			if legacy {
 				legacyLinks = append(legacyLinks, entryPath)
@@ -591,32 +636,36 @@ func (s *Store) validateLinkTopology(file *os.File, path, token string) (finaliz
 		}
 		after, err := file.Stat()
 		if err != nil {
-			return finalizeOutcome{}, fmt.Errorf("recheck plan link count: %w", err)
+			return nil, fmt.Errorf("recheck plan link count: %w", err)
 		}
 		afterStat, ok := after.Sys().(*syscall.Stat_t)
 		if !ok {
-			return finalizeOutcome{}, ErrUnsafeRecord
+			return nil, ErrUnsafeRecord
 		}
 		if beforeStat.Nlink != afterStat.Nlink {
 			continue
 		}
 		if !sawTarget || knownLinks != uint64(afterStat.Nlink) {
-			return finalizeOutcome{}, ErrUnsafeRecord
+			return nil, ErrUnsafeRecord
 		}
-		var cleaned finalizeOutcome
-		for _, legacyPath := range legacyLinks {
-			if err := s.remove(legacyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				cleaned.cleanupErr = errors.Join(cleaned.cleanupErr, fmt.Errorf("remove legacy publication link: %w", err))
-			}
-		}
-		if len(legacyLinks) > 0 {
-			if err := s.syncDir(s.dir); err != nil {
-				cleaned.syncErr = fmt.Errorf("sync legacy publication cleanup: %w", err)
-			}
-		}
-		return cleaned, nil
+		return legacyLinks, nil
 	}
-	return finalizeOutcome{}, ErrUnsafeRecord
+	return nil, ErrUnsafeRecord
+}
+
+func (s *Store) cleanupLegacyLinks(paths []string) finalizeOutcome {
+	var cleaned finalizeOutcome
+	for _, path := range paths {
+		if err := s.remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			cleaned.cleanupErr = errors.Join(cleaned.cleanupErr, fmt.Errorf("remove legacy publication link: %w", err))
+		}
+	}
+	if len(paths) > 0 {
+		if err := s.syncDir(s.dir); err != nil {
+			cleaned.syncErr = fmt.Errorf("sync legacy publication cleanup: %w", err)
+		}
+	}
+	return cleaned
 }
 
 func (s *Store) absentState(token string) error {
