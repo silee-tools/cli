@@ -188,6 +188,41 @@ func TestRunHiddenProductTypeCompletionUsesHomeLegacyFallback(t *testing.T) {
 	}
 }
 
+func TestHiddenCompletionBypassesRuntimeChannelLookup(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "oma")
+	build := exec.Command("go", "build", "-o", binary, ".")
+	build.Dir = filepath.Join(".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build oma: %v\n%s", err, output)
+	}
+	fakeBin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "brew-called")
+	writeExecutable(t, filepath.Join(fakeBin, "brew"), "#!/bin/sh\n: >\"$BREW_CALLED\"\nexit 97\n")
+	configPath := filepath.Join(root, "config", "oma", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("product_type_options = { feature = \"Feature\" }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(binary, "__complete", "product-types")
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin, "BREW_CALLED="+marker, "XDG_CONFIG_HOME="+filepath.Dir(filepath.Dir(configPath)))
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "feature\x00" {
+		t.Fatalf("stdout = %q", output)
+	}
+	if _, err := os.Lstat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runtime channel lookup called brew: %v", err)
+	}
+}
+
 func TestRunInteractiveCollectsRequiredInputsThenApprovesExactPlan(t *testing.T) {
 	workflow := &fakeWorkflow{
 		plans: []prep.Result{

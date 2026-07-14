@@ -474,6 +474,13 @@ const prepHelp = `Usage: oma prep <JIRA-KEY>
 `
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "__complete" && os.Args[2] == "product-types" {
+		if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, dependencies{}); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	target, err := runtimechannel.ReleaseExecutable(version, runtimeStatePath, "oma")
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "oma:", err)
