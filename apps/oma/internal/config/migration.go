@@ -21,6 +21,7 @@ const (
 	migrationMarkerSuffix = ".oma-migration"
 	migrationBackupSuffix = ".oma-migration-backup"
 	migrationMarkerMagic  = "OMA-MIGRATION-V2\n"
+	migrationAnchorSuffix = ".staged-anchor"
 )
 
 var errMigrationBusy = errors.New("configuration migration is busy")
@@ -46,6 +47,10 @@ type migrationFileOps struct {
 	afterMarkerPartialWrite func()
 	afterMarkerFileSync     func()
 	markerDirectorySync     func(string) error
+	afterRecoveryCheck      func()
+	afterMarkerMagicWrite   func(int)
+	afterMarkerAnchorSync   func()
+	afterMarkerCommit       func()
 }
 
 var migrationOS = migrationFileOps{
@@ -83,21 +88,29 @@ func PlanMigration(paths Paths) (*Migration, error) {
 		return nil, err
 	}
 	if !needed {
-		return planMigrationLocked(paths)
+		if migrationOS.afterRecoveryCheck != nil {
+			migrationOS.afterRecoveryCheck()
+		}
+		return planMigrationReadOnly(paths)
 	}
 	lock, err := acquireMigrationLock(paths)
 	if err != nil {
 		return nil, err
 	}
 	defer lock.release()
-	return planMigrationLocked(paths)
-}
-
-func planMigrationLocked(paths Paths) (*Migration, error) {
-	if err := recoverInterruptedMigration(paths); err != nil {
+	needed, err = recoveryNeeded(paths)
+	if err != nil {
 		return nil, err
 	}
+	if needed {
+		if err := recoverInterruptedMigration(paths); err != nil {
+			return nil, err
+		}
+	}
+	return planMigrationReadOnly(paths)
+}
 
+func planMigrationReadOnly(paths Paths) (*Migration, error) {
 	canonicalInfo, canonicalErr := os.Lstat(paths.Canonical)
 	legacyInfo, legacyErr := os.Lstat(paths.Legacy)
 	if err := unexpectedStatError(paths.Canonical, canonicalErr); err != nil {
@@ -293,7 +306,8 @@ func acquireMigrationLock(paths Paths) (*migrationLock, error) {
 }
 
 func recoveryNeeded(paths Paths) (bool, error) {
-	for _, path := range []string{migrationMarkerPath(paths), migrationBackupPath(paths)} {
+	marker := migrationMarkerPath(paths)
+	for _, path := range []string{marker, migrationBackupPath(paths), stagedMarkerAnchorPath(marker)} {
 		if _, err := os.Lstat(path); err == nil {
 			return true, nil
 		} else if !errors.Is(err, fs.ErrNotExist) {
@@ -301,6 +315,13 @@ func recoveryNeeded(paths Paths) (bool, error) {
 		}
 	}
 	matches, err := filepath.Glob(migrationMarkerPath(paths) + ".oma-quarantine-*")
+	if err != nil {
+		return false, err
+	}
+	if len(matches) > 0 {
+		return true, nil
+	}
+	matches, err = filepath.Glob(stagedMarkerAnchorPath(marker) + ".oma-quarantine-*")
 	if err != nil {
 		return false, err
 	}
@@ -412,24 +433,46 @@ func createTransactionMarker(paths Paths, record transactionRecord) (fileIdentit
 		return fileIdentity{}, fmt.Errorf("encode migration marker: %w", err)
 	}
 	staged := marker + ".staged-" + record.Token
+	anchor := stagedMarkerAnchorPath(marker)
+	if _, err := os.Lstat(staged); err == nil {
+		return fileIdentity{}, fmt.Errorf("staged migration marker already exists: %s", staged)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fileIdentity{}, fmt.Errorf("inspect staged migration marker: %w", err)
+	}
+	if err := os.Symlink(staged, anchor); err != nil {
+		return fileIdentity{}, fmt.Errorf("establish staged migration marker anchor without replacement: %w", err)
+	}
+	if err := syncMarkerDirectory(filepath.Dir(marker)); err != nil {
+		return fileIdentity{}, fmt.Errorf("sync legacy directory after marker anchor creation: %w", err)
+	}
+	if migrationOS.afterMarkerAnchorSync != nil {
+		migrationOS.afterMarkerAnchorSync()
+	}
 	file, err := os.OpenFile(staged, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if err != nil {
 		return fileIdentity{}, fmt.Errorf("create staged migration marker without replacement: %w", err)
+	}
+	if migrationOS.afterMarkerOpen != nil {
+		migrationOS.afterMarkerOpen()
 	}
 	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
 		return fileIdentity{}, fmt.Errorf("protect migration marker: %w", err)
 	}
-	if _, err := file.WriteString(migrationMarkerMagic); err != nil {
+	magicHalf := len(migrationMarkerMagic) / 2
+	if _, err := file.WriteString(migrationMarkerMagic[:magicHalf]); err != nil {
 		_ = file.Close()
-		return fileIdentity{}, fmt.Errorf("write migration marker ownership prefix: %w", err)
+		return fileIdentity{}, fmt.Errorf("write first migration marker ownership prefix part: %w", err)
 	}
-	if err := file.Sync(); err != nil {
+	if migrationOS.afterMarkerMagicWrite != nil {
+		migrationOS.afterMarkerMagicWrite(1)
+	}
+	if _, err := file.WriteString(migrationMarkerMagic[magicHalf:]); err != nil {
 		_ = file.Close()
-		return fileIdentity{}, fmt.Errorf("sync migration marker ownership prefix: %w", err)
+		return fileIdentity{}, fmt.Errorf("write second migration marker ownership prefix part: %w", err)
 	}
-	if migrationOS.afterMarkerOpen != nil {
-		migrationOS.afterMarkerOpen()
+	if migrationOS.afterMarkerMagicWrite != nil {
+		migrationOS.afterMarkerMagicWrite(2)
 	}
 	half := len(data) / 2
 	if _, err := file.Write(data[:half]); err != nil {
@@ -466,14 +509,23 @@ func createTransactionMarker(paths Paths, record transactionRecord) (fileIdentit
 	if err := renameNoReplace(staged, marker); err != nil {
 		return fileIdentity{}, fmt.Errorf("commit migration marker without replacement: %w", err)
 	}
-	syncMarkerDir := syncDirectory
-	if migrationOS.markerDirectorySync != nil {
-		syncMarkerDir = migrationOS.markerDirectorySync
-	}
-	if err := syncMarkerDir(filepath.Dir(marker)); err != nil {
+	if err := syncMarkerDirectory(filepath.Dir(marker)); err != nil {
 		return fileIdentity{}, fmt.Errorf("sync legacy directory after marker creation: %w", err)
 	}
+	if migrationOS.afterMarkerCommit != nil {
+		migrationOS.afterMarkerCommit()
+	}
+	if err := removeOwnedSymlink(anchor, staged, record.Token); err != nil {
+		return fileIdentity{}, fmt.Errorf("remove staged migration marker anchor: %w", err)
+	}
 	return id, nil
+}
+
+func syncMarkerDirectory(path string) error {
+	if migrationOS.markerDirectorySync != nil {
+		return migrationOS.markerDirectorySync(path)
+	}
+	return syncDirectory(path)
 }
 
 func recoverInterruptedMigration(paths Paths) error {
@@ -733,6 +785,13 @@ func removeOwnedSymlink(path, expectedTarget, token string) error {
 }
 
 func renameNoReplace(source, destination string) error {
+	return renameNoReplaceForPlatform(source, destination, runtime.GOOS, runtime.GOARCH, syscall.Syscall6)
+}
+
+func renameNoReplaceForPlatform(
+	source, destination, goos, goarch string,
+	call func(uintptr, uintptr, uintptr, uintptr, uintptr, uintptr, uintptr) (uintptr, uintptr, syscall.Errno),
+) error {
 	sourcePtr, err := syscall.BytePtrFromString(source)
 	if err != nil {
 		return err
@@ -741,25 +800,11 @@ func renameNoReplace(source, destination string) error {
 	if err != nil {
 		return err
 	}
-	var trap, flags uintptr
-	switch runtime.GOOS {
-	case "darwin":
-		trap, flags = 488, 0x4 // renameatx_np with RENAME_EXCL.
-	case "linux":
-		flags = 0x1 // renameat2 with RENAME_NOREPLACE.
-		switch runtime.GOARCH {
-		case "amd64":
-			trap = 316
-		case "arm64":
-			trap = 276
-		default:
-			return fmt.Errorf("no no-replace rename syscall for linux/%s", runtime.GOARCH)
-		}
-	default:
-		return fmt.Errorf("no no-replace rename syscall for %s", runtime.GOOS)
+	trap, atFDCWD, flags, err := renameNoReplaceRoute(goos, goarch)
+	if err != nil {
+		return err
 	}
-	atFDCWD := ^uintptr(1) // -2 in two's complement.
-	_, _, errno := syscall.Syscall6(
+	_, _, errno := call(
 		trap,
 		atFDCWD,
 		uintptr(unsafe.Pointer(sourcePtr)),
@@ -772,6 +817,29 @@ func renameNoReplace(source, destination string) error {
 		return errno
 	}
 	return nil
+}
+
+func renameNoReplaceRoute(goos, goarch string) (trap, dirFD, flags uintptr, err error) {
+	switch goos {
+	case "darwin":
+		switch goarch {
+		case "amd64", "arm64":
+			return 488, ^uintptr(1), 0x4, nil // renameatx_np with RENAME_EXCL and AT_FDCWD=-2.
+		default:
+			return 0, 0, 0, fmt.Errorf("no no-replace rename syscall for darwin/%s", goarch)
+		}
+	case "linux":
+		switch goarch {
+		case "amd64":
+			return 316, ^uintptr(99), 0x1, nil // renameat2 with RENAME_NOREPLACE and AT_FDCWD=-100.
+		case "arm64":
+			return 276, ^uintptr(99), 0x1, nil
+		default:
+			return 0, 0, 0, fmt.Errorf("no no-replace rename syscall for linux/%s", goarch)
+		}
+	default:
+		return 0, 0, 0, fmt.Errorf("no no-replace rename syscall for %s", goos)
+	}
 }
 
 func restoreQuarantinedRegular(quarantine, destination string) error {
@@ -978,6 +1046,87 @@ func readTransactionMarker(path string) (transactionRecord, fileIdentity, error)
 }
 
 func recoverStagedMarker(marker string) error {
+	anchor := stagedMarkerAnchorPath(marker)
+	if err := restoreQuarantinedStagedAnchor(marker, anchor); err != nil {
+		return err
+	}
+	anchorInfo, err := os.Lstat(anchor)
+	if errors.Is(err, fs.ErrNotExist) {
+		return recoverLegacyStagedMarker(marker)
+	}
+	if err != nil {
+		return err
+	}
+	if anchorInfo.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("staged migration marker anchor is not a symlink: %s", anchor)
+	}
+	target, err := os.Readlink(anchor)
+	if err != nil {
+		return fmt.Errorf("read staged migration marker anchor: %w", err)
+	}
+	token, err := stagedMarkerToken(marker, target)
+	if err != nil {
+		return err
+	}
+	if err := restoreAnchoredTargetQuarantine(target, token); err != nil {
+		return err
+	}
+
+	if _, err := os.Lstat(marker); err == nil {
+		record, _, err := readTransactionMarker(marker)
+		if err != nil {
+			return err
+		}
+		if record.Token != token {
+			return fmt.Errorf("staged migration marker anchor token does not match fixed marker")
+		}
+		if _, err := os.Lstat(target); err == nil {
+			return fmt.Errorf("staged marker target conflicts with committed marker: %s", target)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return removeOwnedSymlink(anchor, target, token)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+
+	targetInfo, err := os.Lstat(target)
+	if errors.Is(err, fs.ErrNotExist) {
+		return removeOwnedSymlink(anchor, target, token)
+	}
+	if err != nil {
+		return err
+	}
+	if !targetInfo.Mode().IsRegular() {
+		return fmt.Errorf("staged migration marker target is not a regular file: %s", target)
+	}
+	targetID, err := identityOf(targetInfo)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return err
+	}
+	var record transactionRecord
+	complete := bytes.HasPrefix(data, []byte(migrationMarkerMagic)) && json.Unmarshal(data[len(migrationMarkerMagic):], &record) == nil
+	if complete {
+		if record.Token != token {
+			return fmt.Errorf("staged migration marker token mismatch: %s", target)
+		}
+		if err := renameNoReplace(target, marker); err != nil {
+			return fmt.Errorf("commit recovered staged migration marker: %w", err)
+		}
+		if err := syncDirectory(filepath.Dir(marker)); err != nil {
+			return err
+		}
+	} else if err := removeOwnedRegular(target, targetID, token); err != nil {
+		return fmt.Errorf("discard incomplete anchored migration marker: %w", err)
+	}
+	return removeOwnedSymlink(anchor, target, token)
+}
+
+func recoverLegacyStagedMarker(marker string) error {
 	if _, err := os.Lstat(marker); err == nil {
 		return nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -1018,6 +1167,75 @@ func recoverStagedMarker(marker string) error {
 		return fmt.Errorf("commit recovered staged migration marker: %w", err)
 	}
 	return syncDirectory(filepath.Dir(marker))
+}
+
+func restoreQuarantinedStagedAnchor(marker, anchor string) error {
+	matches, err := filepath.Glob(anchor + ".oma-quarantine-*")
+	if err != nil {
+		return err
+	}
+	if len(matches) == 0 {
+		return nil
+	}
+	if len(matches) != 1 {
+		return fmt.Errorf("multiple quarantined staged marker anchors conflict: %v", matches)
+	}
+	if _, err := os.Lstat(anchor); err == nil {
+		return fmt.Errorf("staged marker anchor and quarantine both exist")
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	quarantine := matches[0]
+	target, err := os.Readlink(quarantine)
+	if err != nil {
+		return fmt.Errorf("quarantined staged marker anchor is not a symlink: %w", err)
+	}
+	token, err := stagedMarkerToken(marker, target)
+	if err != nil {
+		return err
+	}
+	if quarantine != anchor+".oma-quarantine-"+token {
+		return fmt.Errorf("quarantined staged marker anchor token mismatch: %s", quarantine)
+	}
+	if err := renameNoReplace(quarantine, anchor); err != nil {
+		return fmt.Errorf("restore staged marker anchor quarantine: %w", err)
+	}
+	return syncDirectory(filepath.Dir(anchor))
+}
+
+func restoreAnchoredTargetQuarantine(target, token string) error {
+	quarantine := target + ".oma-quarantine-" + token
+	if _, err := os.Lstat(quarantine); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(target); err == nil {
+		return fmt.Errorf("staged marker target and quarantine both exist")
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := renameNoReplace(quarantine, target); err != nil {
+		return fmt.Errorf("restore staged marker target quarantine: %w", err)
+	}
+	return syncDirectory(filepath.Dir(target))
+}
+
+func stagedMarkerToken(marker, target string) (string, error) {
+	prefix := marker + ".staged-"
+	if filepath.Dir(target) != filepath.Dir(marker) || !strings.HasPrefix(target, prefix) {
+		return "", fmt.Errorf("staged migration marker anchor has unexpected target: %s", target)
+	}
+	token := strings.TrimPrefix(target, prefix)
+	decoded, err := hex.DecodeString(token)
+	if err != nil || len(decoded) != 16 {
+		return "", fmt.Errorf("staged migration marker anchor has invalid token: %s", target)
+	}
+	return token, nil
+}
+
+func stagedMarkerAnchorPath(marker string) string {
+	return marker + migrationAnchorSuffix
 }
 
 func migrationMarkerPath(paths Paths) string {

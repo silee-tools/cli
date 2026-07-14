@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -670,6 +671,249 @@ func TestPlanMigrationRecoversMarkerEstablishmentFailures(t *testing.T) {
 			assertNoMatches(t, marker+".staged-*")
 		})
 	}
+}
+
+func TestPlanMigrationDoesNotRecoverTransactionCreatedAfterReadOnlyCheck(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	migration, err := PlanMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migration == nil {
+		t.Fatal("PlanMigration() = nil, want migration")
+	}
+
+	markerEstablished := make(chan struct{})
+	releaseApply := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseApply) }) }
+	defer release()
+	originalOps := migrationOS
+	var startOnce sync.Once
+	applyResult := make(chan error, 1)
+	migrationOS.afterMarkerEstablished = func() {
+		close(markerEstablished)
+		<-releaseApply
+	}
+	migrationOS.afterRecoveryCheck = func() {
+		startOnce.Do(func() {
+			go func() { applyResult <- migration.Apply(func(Config) error { return nil }) }()
+			<-markerEstablished
+		})
+	}
+	t.Cleanup(func() { migrationOS = originalOps })
+
+	if _, err := PlanMigration(paths); err != nil {
+		t.Fatalf("read-only PlanMigration() error = %v", err)
+	}
+	marker, _ := transactionPaths(paths)
+	assertRegularExists(t, marker, 0o600)
+	release()
+	if err := <-applyResult; err != nil {
+		t.Fatalf("concurrent Apply() error = %v, want success", err)
+	}
+	assertRegularFile(t, paths.Canonical, validTOML, 0o600)
+	assertSymlink(t, paths.Legacy, paths.Canonical)
+}
+
+func TestRenameNoReplaceRouteUsesOperatingSystemDirFD(t *testing.T) {
+	tests := []struct {
+		name   string
+		goos   string
+		goarch string
+		trap   uintptr
+		dirFD  uintptr
+		flags  uintptr
+	}{
+		{name: "darwin amd64", goos: "darwin", goarch: "amd64", trap: 488, dirFD: ^uintptr(1), flags: 0x4},
+		{name: "darwin arm64", goos: "darwin", goarch: "arm64", trap: 488, dirFD: ^uintptr(1), flags: 0x4},
+		{name: "linux amd64", goos: "linux", goarch: "amd64", trap: 316, dirFD: ^uintptr(99), flags: 0x1},
+		{name: "linux arm64", goos: "linux", goarch: "arm64", trap: 276, dirFD: ^uintptr(99), flags: 0x1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			trap, dirFD, flags, err := renameNoReplaceRoute(tt.goos, tt.goarch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if trap != tt.trap || dirFD != tt.dirFD || flags != tt.flags {
+				t.Fatalf("route = (%d, %d, %#x), want (%d, %d, %#x)", trap, dirFD, flags, tt.trap, tt.dirFD, tt.flags)
+			}
+		})
+	}
+
+	t.Run("linux relative paths reach syscall with linux dirfd", func(t *testing.T) {
+		called := false
+		err := renameNoReplaceForPlatform(
+			"relative-source",
+			"relative-destination",
+			"linux",
+			"amd64",
+			func(trap, sourceDirFD, sourcePointer, destinationDirFD, destinationPointer, flags, _ uintptr) (uintptr, uintptr, syscall.Errno) {
+				called = true
+				if trap != 316 || sourceDirFD != ^uintptr(99) || destinationDirFD != ^uintptr(99) || flags != 0x1 {
+					t.Fatalf("syscall route = (%d, %d, %d, %#x), want linux renameat2 route", trap, sourceDirFD, destinationDirFD, flags)
+				}
+				if sourcePointer == 0 || destinationPointer == 0 {
+					t.Fatal("relative path pointers must be passed to syscall")
+				}
+				return 0, 0, 0
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !called {
+			t.Fatal("raw syscall seam was not called")
+		}
+	})
+}
+
+func TestPlanMigrationRecoversAnchoredMarkerInterruptions(t *testing.T) {
+	tests := []struct {
+		name     string
+		setCrash func(*migrationFileOps, *testing.T, string)
+	}{
+		{name: "after anchor sync", setCrash: func(ops *migrationFileOps, _ *testing.T, _ string) {
+			ops.afterMarkerAnchorSync = func() { panic(simulatedCrash{}) }
+		}},
+		{name: "immediately after marker open", setCrash: func(ops *migrationFileOps, t *testing.T, marker string) {
+			ops.afterMarkerOpen = func() {
+				staged := findStagedMarkerTarget(t, marker)
+				data, err := os.ReadFile(staged)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(data) != 0 {
+					t.Fatalf("staged marker content = %q, want empty immediately after open", data)
+				}
+				panic(simulatedCrash{})
+			}
+		}},
+		{name: "after first magic write", setCrash: func(ops *migrationFileOps, t *testing.T, marker string) {
+			ops.afterMarkerMagicWrite = func(part int) {
+				if part != 1 {
+					return
+				}
+				staged := findStagedMarkerTarget(t, marker)
+				data, err := os.ReadFile(staged)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := migrationMarkerMagic[:len(migrationMarkerMagic)/2]
+				if string(data) != want {
+					t.Fatalf("first magic write = %q, want %q", data, want)
+				}
+				panic(simulatedCrash{})
+			}
+		}},
+		{name: "after second magic write", setCrash: func(ops *migrationFileOps, t *testing.T, marker string) {
+			ops.afterMarkerMagicWrite = func(part int) {
+				if part != 2 {
+					return
+				}
+				staged := findStagedMarkerTarget(t, marker)
+				data, err := os.ReadFile(staged)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(data) != migrationMarkerMagic {
+					t.Fatalf("complete magic write = %q, want %q", data, migrationMarkerMagic)
+				}
+				panic(simulatedCrash{})
+			}
+		}},
+		{name: "after complete marker sync", setCrash: func(ops *migrationFileOps, _ *testing.T, _ string) {
+			ops.afterMarkerFileSync = func() { panic(simulatedCrash{}) }
+		}},
+		{name: "after fixed marker commit", setCrash: func(ops *migrationFileOps, _ *testing.T, _ string) {
+			ops.afterMarkerCommit = func() { panic(simulatedCrash{}) }
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testPaths(t)
+			writeFile(t, paths.Legacy, validTOML, 0o640)
+			migration, err := PlanMigration(paths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			marker, backup := transactionPaths(paths)
+			originalOps := migrationOS
+			tt.setCrash(&migrationOS, t, marker)
+			assertSimulatedCrash(t, func() { _ = migration.Apply(func(Config) error { return nil }) })
+			migrationOS = originalOps
+			t.Cleanup(func() { migrationOS = originalOps })
+
+			next, err := PlanMigration(paths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if next == nil {
+				t.Fatal("PlanMigration() = nil, want migration after marker recovery")
+			}
+			assertRegularFile(t, paths.Legacy, validTOML, 0o640)
+			assertAbsent(t, paths.Canonical)
+			assertAbsent(t, marker)
+			assertAbsent(t, backup)
+			assertAbsent(t, marker+".staged-anchor")
+			assertNoMatches(t, marker+".staged-*")
+		})
+	}
+}
+
+func TestPlanMigrationPreservesUnknownStagedAnchor(t *testing.T) {
+	tests := []struct {
+		name   string
+		create func(*testing.T, string)
+	}{
+		{name: "regular file", create: func(t *testing.T, path string) { writeFile(t, path, "unknown anchor", 0o640) }},
+		{name: "symlink", create: func(t *testing.T, path string) {
+			if err := os.Symlink("unknown-target", path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testPaths(t)
+			writeFile(t, paths.Legacy, validTOML, 0o640)
+			marker, _ := transactionPaths(paths)
+			anchor := marker + ".staged-anchor"
+			tt.create(t, anchor)
+			before, err := os.Lstat(anchor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := PlanMigration(paths); err == nil {
+				t.Fatal("PlanMigration() error = nil, want staged anchor conflict")
+			}
+			after, err := os.Lstat(anchor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !os.SameFile(before, after) {
+				t.Fatal("unknown staged anchor was replaced")
+			}
+		})
+	}
+}
+
+func findStagedMarkerTarget(t *testing.T, marker string) string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(marker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := filepath.Base(marker) + ".staged-"
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) && entry.Name() != filepath.Base(marker)+".staged-anchor" && entry.Type().IsRegular() {
+			return filepath.Join(filepath.Dir(marker), entry.Name())
+		}
+	}
+	t.Fatal("staged marker target not found")
+	return ""
 }
 
 type directorySnapshot struct {
