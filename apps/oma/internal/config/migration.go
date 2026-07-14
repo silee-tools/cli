@@ -1811,7 +1811,13 @@ func findStagedMarkerConflictIntent(marker string) (intent, quarantine, token st
 	}
 	filtered := matches[:0]
 	for _, match := range matches {
-		if !strings.Contains(match, ".oma-draft-anchor") && !strings.Contains(match, ".oma-staged-") {
+		basename := filepath.Base(match)
+		artifactPrefix := filepath.Base(marker) + ".staged-conflict-intent-"
+		artifactSuffix := strings.TrimPrefix(basename, artifactPrefix)
+		if !strings.HasPrefix(basename, artifactPrefix) {
+			return "", "", "", true, fmt.Errorf("unexpected staged marker conflict intent basename: %s", basename)
+		}
+		if !strings.Contains(artifactSuffix, ".oma-draft-anchor") && !strings.Contains(artifactSuffix, ".oma-staged-") {
 			filtered = append(filtered, match)
 		}
 	}

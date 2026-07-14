@@ -1196,6 +1196,50 @@ func TestPlanMigrationRecoversConflictIntentPersistenceStates(t *testing.T) {
 	}
 }
 
+func TestPlanMigrationFindsFixedConflictIntentUnderReservedParentNames(t *testing.T) {
+	tests := []struct {
+		parent         string
+		createSentinel func(*testing.T, string)
+		assertSentinel func(*testing.T, string)
+	}{
+		{"parent.oma-draft-anchor", createRegularStagedSentinel, assertRegularStagedSentinel},
+		{"parent.oma-staged-token", createSymlinkStagedSentinel, assertSymlinkStagedSentinel},
+		{"parent.oma-draft-anchor.oma-staged-token", createRegularStagedSentinel, assertRegularStagedSentinel},
+	}
+	for _, tt := range tests {
+		t.Run(tt.parent, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), tt.parent)
+			paths := Paths{
+				Canonical: filepath.Join(root, "config", "oma", "config.toml"),
+				Legacy:    filepath.Join(root, "config", "prep-task", "config.toml"),
+				CacheRoot: filepath.Join(root, "cache", "oma"),
+				StateRoot: filepath.Join(root, "state", "oma"),
+				Netrc:     filepath.Join(root, "home", ".netrc"),
+			}
+			marker, target := createCompletedAnchoredMarker(t, paths)
+			originalOps := migrationOS
+			migrationOS.afterStagedMarkerRead = func(path string) {
+				if path == target {
+					if err := os.Remove(path); err != nil {
+						panic(err)
+					}
+					tt.createSentinel(t, path)
+				}
+			}
+			migrationOS.afterConflictIntentSync = func() { panic(simulatedCrash{}) }
+			t.Cleanup(func() { migrationOS = originalOps })
+			assertSimulatedCrash(t, func() { _, _ = PlanMigration(paths) })
+
+			migrationOS = originalOps
+			if _, err := PlanMigration(paths); err == nil {
+				t.Fatal("reentered PlanMigration() error = nil, want preserved replacement conflict")
+			}
+			tt.assertSentinel(t, target)
+			assertAbsent(t, marker+".staged-anchor")
+		})
+	}
+}
+
 func TestPlanMigrationRecoversConflictIntentDraftPersistenceStates(t *testing.T) {
 	tests := []struct {
 		name           string
