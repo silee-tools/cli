@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,12 +11,16 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
+	"unsafe"
 )
 
 const (
 	migrationMarkerSuffix = ".oma-migration"
 	migrationBackupSuffix = ".oma-migration-backup"
+	migrationMarkerMagic  = "OMA-MIGRATION-V2\n"
 )
 
 var errMigrationBusy = errors.New("configuration migration is busy")
@@ -25,16 +30,22 @@ type Migration struct {
 }
 
 type migrationFileOps struct {
-	symlink                func(string, string) error
-	remove                 func(string) error
-	beforeCanonicalCommit  func(string) error
-	afterCanonicalCommit   func()
-	afterLegacyBackup      func()
-	afterSymlink           func()
-	afterOwnershipCheck    func(string)
-	beforeMarker           func()
-	afterMarkerEstablished func()
-	afterCanonicalLink     func()
+	symlink                 func(string, string) error
+	remove                  func(string) error
+	beforeCanonicalCommit   func(string) error
+	afterCanonicalCommit    func()
+	afterLegacyBackup       func()
+	afterSymlink            func()
+	afterOwnershipCheck     func(string)
+	beforeMarker            func()
+	afterMarkerEstablished  func()
+	afterCanonicalLink      func()
+	beforeQuarantineMove    func(string, string)
+	afterQuarantineMove     func(string, string) error
+	afterMarkerOpen         func()
+	afterMarkerPartialWrite func()
+	afterMarkerFileSync     func()
+	markerDirectorySync     func(string) error
 }
 
 var migrationOS = migrationFileOps{
@@ -55,6 +66,7 @@ type transactionRecord struct {
 	CanonicalID fileIdentity `json:"canonical_identity"`
 	LegacyID    fileIdentity `json:"legacy_identity"`
 	Digest      string       `json:"config_sha256"`
+	Quarantines []string     `json:"quarantine_paths"`
 }
 
 type migrationTransaction struct {
@@ -66,6 +78,13 @@ type migrationTransaction struct {
 }
 
 func PlanMigration(paths Paths) (*Migration, error) {
+	needed, err := recoveryNeeded(paths)
+	if err != nil {
+		return nil, err
+	}
+	if !needed {
+		return planMigrationLocked(paths)
+	}
 	lock, err := acquireMigrationLock(paths)
 	if err != nil {
 		return nil, err
@@ -107,48 +126,34 @@ func planMigrationLocked(paths Paths) (*Migration, error) {
 }
 
 func (m Migration) Apply(validate func(Config) error) error {
+	data, legacyID, err := validateLegacyBeforeMutation(m.paths, validate)
+	if err != nil {
+		return err
+	}
 	lock, err := acquireMigrationLock(m.paths)
 	if err != nil {
 		return err
 	}
 	defer lock.release()
-	return m.applyLocked(validate)
-}
-
-func (m Migration) applyLocked(validate func(Config) error) error {
 	if err := recoverInterruptedMigration(m.paths); err != nil {
 		return err
 	}
+	currentData, currentID, err := readLegacyIdentity(m.paths.Legacy)
+	if err != nil {
+		return err
+	}
+	if currentID != legacyID || sha256.Sum256(currentData) != sha256.Sum256(data) {
+		return errors.New("legacy configuration changed after validation")
+	}
+	return m.applyLocked(data, legacyID)
+}
+
+func (m Migration) applyLocked(data []byte, legacyID fileIdentity) error {
 	if _, err := os.Lstat(m.paths.Canonical); err == nil {
 		return fmt.Errorf("canonical configuration already exists: %s", m.paths.Canonical)
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("inspect canonical configuration: %w", err)
 	}
-	legacyInfo, err := os.Lstat(m.paths.Legacy)
-	if err != nil {
-		return fmt.Errorf("inspect legacy configuration: %w", err)
-	}
-	if !legacyInfo.Mode().IsRegular() {
-		return fmt.Errorf("legacy configuration is not a regular file: %s", m.paths.Legacy)
-	}
-	legacyID, err := identityOf(legacyInfo)
-	if err != nil {
-		return fmt.Errorf("identify legacy configuration: %w", err)
-	}
-	data, err := os.ReadFile(m.paths.Legacy)
-	if err != nil {
-		return fmt.Errorf("read legacy configuration: %w", err)
-	}
-	config, err := decodeConfig(data)
-	if err != nil {
-		return fmt.Errorf("decode legacy configuration: %w", err)
-	}
-	if validate != nil {
-		if err := validate(config); err != nil {
-			return fmt.Errorf("validate legacy configuration: %w", err)
-		}
-	}
-
 	token, err := newTransactionToken()
 	if err != nil {
 		return err
@@ -163,6 +168,13 @@ func (m Migration) applyLocked(validate func(Config) error) error {
 		Legacy:    m.paths.Legacy,
 		LegacyID:  legacyID,
 		Digest:    fmt.Sprintf("%x", sha256.Sum256(data)),
+	}
+	record.Quarantines = []string{
+		canonicalStagedPath(m.paths, token),
+		m.paths.Legacy,
+		migrationBackupPath(m.paths),
+		migrationMarkerPath(m.paths),
+		m.paths.Canonical,
 	}
 	markerID, err := createTransactionMarker(m.paths, record)
 	if err != nil {
@@ -253,11 +265,12 @@ type migrationLock struct {
 
 func acquireMigrationLock(paths Paths) (*migrationLock, error) {
 	parent := filepath.Dir(paths.Legacy)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return nil, fmt.Errorf("create migration lock directory: %w", err)
+	info, err := os.Stat(parent)
+	if err != nil {
+		return nil, fmt.Errorf("migration lock parent is unavailable: %w", err)
 	}
-	if err := os.Chmod(parent, 0o700); err != nil {
-		return nil, fmt.Errorf("protect migration lock directory: %w", err)
+	if !info.IsDir() {
+		return nil, fmt.Errorf("migration lock parent is not a directory: %s", parent)
 	}
 	path := paths.Legacy + ".oma-migration.lock"
 	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW, 0o600)
@@ -277,6 +290,67 @@ func acquireMigrationLock(paths Paths) (*migrationLock, error) {
 		return nil, fmt.Errorf("lock configuration migration: %w", err)
 	}
 	return &migrationLock{file: file}, nil
+}
+
+func recoveryNeeded(paths Paths) (bool, error) {
+	for _, path := range []string{migrationMarkerPath(paths), migrationBackupPath(paths)} {
+		if _, err := os.Lstat(path); err == nil {
+			return true, nil
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return false, err
+		}
+	}
+	matches, err := filepath.Glob(migrationMarkerPath(paths) + ".oma-quarantine-*")
+	if err != nil {
+		return false, err
+	}
+	if len(matches) > 0 {
+		return true, nil
+	}
+	matches, err = filepath.Glob(migrationMarkerPath(paths) + ".staged-*")
+	if err != nil {
+		return false, err
+	}
+	if len(matches) > 0 {
+		return true, nil
+	}
+	return false, nil
+}
+
+func validateLegacyBeforeMutation(paths Paths, validate func(Config) error) ([]byte, fileIdentity, error) {
+	data, id, err := readLegacyIdentity(paths.Legacy)
+	if err != nil {
+		return nil, fileIdentity{}, err
+	}
+	config, err := decodeConfig(data)
+	if err != nil {
+		return nil, fileIdentity{}, fmt.Errorf("decode legacy configuration: %w", err)
+	}
+	if validate != nil {
+		if err := validate(config); err != nil {
+			return nil, fileIdentity{}, fmt.Errorf("validate legacy configuration: %w", err)
+		}
+	}
+	return data, id, nil
+}
+
+func readLegacyIdentity(path string) ([]byte, fileIdentity, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fileIdentity{}, fmt.Errorf("inspect legacy configuration: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fileIdentity{}, fmt.Errorf("legacy configuration is not a regular file: %s", path)
+	}
+	id, err := identityOf(info)
+	if err != nil {
+		return nil, fileIdentity{}, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fileIdentity{}, err
+	}
+	return data, id, nil
 }
 
 func (l *migrationLock) release() {
@@ -337,21 +411,44 @@ func createTransactionMarker(paths Paths, record transactionRecord) (fileIdentit
 	if err != nil {
 		return fileIdentity{}, fmt.Errorf("encode migration marker: %w", err)
 	}
-	file, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	staged := marker + ".staged-" + record.Token
+	file, err := os.OpenFile(staged, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if err != nil {
-		return fileIdentity{}, fmt.Errorf("create migration marker without replacement: %w", err)
+		return fileIdentity{}, fmt.Errorf("create staged migration marker without replacement: %w", err)
 	}
 	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
 		return fileIdentity{}, fmt.Errorf("protect migration marker: %w", err)
 	}
-	if _, err := file.Write(data); err != nil {
+	if _, err := file.WriteString(migrationMarkerMagic); err != nil {
+		_ = file.Close()
+		return fileIdentity{}, fmt.Errorf("write migration marker ownership prefix: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fileIdentity{}, fmt.Errorf("sync migration marker ownership prefix: %w", err)
+	}
+	if migrationOS.afterMarkerOpen != nil {
+		migrationOS.afterMarkerOpen()
+	}
+	half := len(data) / 2
+	if _, err := file.Write(data[:half]); err != nil {
 		_ = file.Close()
 		return fileIdentity{}, fmt.Errorf("write migration marker: %w", err)
+	}
+	if migrationOS.afterMarkerPartialWrite != nil {
+		migrationOS.afterMarkerPartialWrite()
+	}
+	if _, err := file.Write(data[half:]); err != nil {
+		_ = file.Close()
+		return fileIdentity{}, fmt.Errorf("finish migration marker: %w", err)
 	}
 	if err := file.Sync(); err != nil {
 		_ = file.Close()
 		return fileIdentity{}, fmt.Errorf("sync migration marker: %w", err)
+	}
+	if migrationOS.afterMarkerFileSync != nil {
+		migrationOS.afterMarkerFileSync()
 	}
 	info, err := file.Stat()
 	if err != nil {
@@ -366,7 +463,14 @@ func createTransactionMarker(paths Paths, record transactionRecord) (fileIdentit
 	if err := file.Close(); err != nil {
 		return fileIdentity{}, fmt.Errorf("close migration marker: %w", err)
 	}
-	if err := syncDirectory(filepath.Dir(marker)); err != nil {
+	if err := renameNoReplace(staged, marker); err != nil {
+		return fileIdentity{}, fmt.Errorf("commit migration marker without replacement: %w", err)
+	}
+	syncMarkerDir := syncDirectory
+	if migrationOS.markerDirectorySync != nil {
+		syncMarkerDir = migrationOS.markerDirectorySync
+	}
+	if err := syncMarkerDir(filepath.Dir(marker)); err != nil {
 		return fileIdentity{}, fmt.Errorf("sync legacy directory after marker creation: %w", err)
 	}
 	return id, nil
@@ -374,6 +478,12 @@ func createTransactionMarker(paths Paths, record transactionRecord) (fileIdentit
 
 func recoverInterruptedMigration(paths Paths) error {
 	marker := migrationMarkerPath(paths)
+	if err := recoverStagedMarker(marker); err != nil {
+		return err
+	}
+	if err := restoreQuarantinedMarker(marker); err != nil {
+		return err
+	}
 	record, markerID, err := readTransactionMarker(marker)
 	if errors.Is(err, fs.ErrNotExist) {
 		if _, backupErr := os.Lstat(migrationBackupPath(paths)); backupErr == nil {
@@ -386,8 +496,11 @@ func recoverInterruptedMigration(paths Paths) error {
 	if err != nil {
 		return err
 	}
-	if record.Version != 2 || record.Token == "" || record.Canonical != paths.Canonical || record.Legacy != paths.Legacy {
+	if record.Version != 2 || record.Token == "" || len(record.Quarantines) == 0 || record.Canonical != paths.Canonical || record.Legacy != paths.Legacy {
 		return fmt.Errorf("migration marker does not belong to requested paths: %s", marker)
+	}
+	if err := restoreRecordedQuarantines(record); err != nil {
+		return err
 	}
 	record, err = hydrateCanonicalIdentity(paths, record)
 	if err != nil {
@@ -442,6 +555,9 @@ func recoverInterruptedMigration(paths Paths) error {
 }
 
 func rollbackTransaction(tx migrationTransaction) error {
+	if err := restoreRecordedQuarantines(tx.record); err != nil {
+		return err
+	}
 	legacyInfo, legacyErr := os.Lstat(tx.paths.Legacy)
 	legacySecured := false
 	var rollbackErrors []error
@@ -550,8 +666,16 @@ func removeOwnedRegular(path string, expected fileIdentity, token string) error 
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	if err := os.Rename(path, quarantine); err != nil {
+	if migrationOS.beforeQuarantineMove != nil {
+		migrationOS.beforeQuarantineMove(path, quarantine)
+	}
+	if err := renameNoReplace(path, quarantine); err != nil {
 		return fmt.Errorf("move regular file to quarantine: %w", err)
+	}
+	if migrationOS.afterQuarantineMove != nil {
+		if err := migrationOS.afterQuarantineMove(path, quarantine); err != nil {
+			return fmt.Errorf("after regular quarantine move: %w", err)
+		}
 	}
 	if err := syncDirectory(filepath.Dir(path)); err != nil {
 		return err
@@ -584,8 +708,16 @@ func removeOwnedSymlink(path, expectedTarget, token string) error {
 		migrationOS.afterOwnershipCheck(path)
 	}
 	quarantine := path + ".oma-quarantine-" + token
-	if err := os.Rename(path, quarantine); err != nil {
+	if migrationOS.beforeQuarantineMove != nil {
+		migrationOS.beforeQuarantineMove(path, quarantine)
+	}
+	if err := renameNoReplace(path, quarantine); err != nil {
 		return fmt.Errorf("move symlink to quarantine: %w", err)
+	}
+	if migrationOS.afterQuarantineMove != nil {
+		if err := migrationOS.afterQuarantineMove(path, quarantine); err != nil {
+			return fmt.Errorf("after symlink quarantine move: %w", err)
+		}
 	}
 	if err := syncDirectory(filepath.Dir(path)); err != nil {
 		return err
@@ -600,11 +732,98 @@ func removeOwnedSymlink(path, expectedTarget, token string) error {
 	return errors.Join(removeErr, syncErr)
 }
 
+func renameNoReplace(source, destination string) error {
+	sourcePtr, err := syscall.BytePtrFromString(source)
+	if err != nil {
+		return err
+	}
+	destinationPtr, err := syscall.BytePtrFromString(destination)
+	if err != nil {
+		return err
+	}
+	var trap, flags uintptr
+	switch runtime.GOOS {
+	case "darwin":
+		trap, flags = 488, 0x4 // renameatx_np with RENAME_EXCL.
+	case "linux":
+		flags = 0x1 // renameat2 with RENAME_NOREPLACE.
+		switch runtime.GOARCH {
+		case "amd64":
+			trap = 316
+		case "arm64":
+			trap = 276
+		default:
+			return fmt.Errorf("no no-replace rename syscall for linux/%s", runtime.GOARCH)
+		}
+	default:
+		return fmt.Errorf("no no-replace rename syscall for %s", runtime.GOOS)
+	}
+	atFDCWD := ^uintptr(1) // -2 in two's complement.
+	_, _, errno := syscall.Syscall6(
+		trap,
+		atFDCWD,
+		uintptr(unsafe.Pointer(sourcePtr)),
+		atFDCWD,
+		uintptr(unsafe.Pointer(destinationPtr)),
+		flags,
+		0,
+	)
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
 func restoreQuarantinedRegular(quarantine, destination string) error {
 	if err := os.Link(quarantine, destination); err != nil {
 		return fmt.Errorf("restore quarantined regular file without replacement: %w", err)
 	}
 	return syncDirectory(filepath.Dir(destination))
+}
+
+func restoreQuarantinedMarker(marker string) error {
+	if _, err := os.Lstat(marker); err == nil {
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	matches, err := filepath.Glob(marker + ".oma-quarantine-*")
+	if err != nil {
+		return err
+	}
+	if len(matches) == 0 {
+		return nil
+	}
+	if len(matches) != 1 {
+		return fmt.Errorf("multiple quarantined migration markers conflict: %v", matches)
+	}
+	if err := renameNoReplace(matches[0], marker); err != nil {
+		return fmt.Errorf("restore quarantined migration marker: %w", err)
+	}
+	return syncDirectory(filepath.Dir(marker))
+}
+
+func restoreRecordedQuarantines(record transactionRecord) error {
+	for _, original := range record.Quarantines {
+		quarantine := original + ".oma-quarantine-" + record.Token
+		if _, err := os.Lstat(quarantine); errors.Is(err, fs.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if _, err := os.Lstat(original); err == nil {
+			return fmt.Errorf("quarantine recovery conflict: both %s and %s exist", original, quarantine)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		if err := renameNoReplace(quarantine, original); err != nil {
+			return fmt.Errorf("restore recorded quarantine %s: %w", quarantine, err)
+		}
+		if err := syncDirectory(filepath.Dir(original)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func restoreQuarantinedObject(quarantine, destination string) error {
@@ -739,6 +958,10 @@ func readTransactionMarker(path string) (transactionRecord, fileIdentity, error)
 	if err != nil {
 		return transactionRecord{}, fileIdentity{}, fmt.Errorf("read migration marker: %w", err)
 	}
+	if !bytes.HasPrefix(data, []byte(migrationMarkerMagic)) {
+		return transactionRecord{}, fileIdentity{}, errors.New("migration marker ownership prefix is missing")
+	}
+	data = data[len(migrationMarkerMagic):]
 	current, err := os.Lstat(path)
 	if err != nil {
 		return transactionRecord{}, fileIdentity{}, fmt.Errorf("recheck migration marker: %w", err)
@@ -752,6 +975,49 @@ func readTransactionMarker(path string) (transactionRecord, fileIdentity, error)
 		return transactionRecord{}, fileIdentity{}, fmt.Errorf("decode migration marker: %w", err)
 	}
 	return record, id, nil
+}
+
+func recoverStagedMarker(marker string) error {
+	if _, err := os.Lstat(marker); err == nil {
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	matches, err := filepath.Glob(marker + ".staged-*")
+	if err != nil {
+		return err
+	}
+	if len(matches) == 0 {
+		return nil
+	}
+	if len(matches) != 1 {
+		return fmt.Errorf("multiple staged migration markers conflict: %v", matches)
+	}
+	staged := matches[0]
+	data, err := os.ReadFile(staged)
+	if err != nil {
+		return err
+	}
+	if !bytes.HasPrefix(data, []byte(migrationMarkerMagic)) {
+		return fmt.Errorf("staged migration marker ownership cannot be proven: %s", staged)
+	}
+	var record transactionRecord
+	if err := json.Unmarshal(data[len(migrationMarkerMagic):], &record); err != nil {
+		discard := staged + ".discard"
+		if err := renameNoReplace(staged, discard); err != nil {
+			return fmt.Errorf("isolate incomplete staged marker: %w", err)
+		}
+		removeErr := os.Remove(discard)
+		syncErr := syncDirectory(filepath.Dir(discard))
+		return errors.Join(removeErr, syncErr)
+	}
+	if record.Token == "" || !strings.HasSuffix(staged, ".staged-"+record.Token) {
+		return fmt.Errorf("staged migration marker token mismatch: %s", staged)
+	}
+	if err := renameNoReplace(staged, marker); err != nil {
+		return fmt.Errorf("commit recovered staged migration marker: %w", err)
+	}
+	return syncDirectory(filepath.Dir(marker))
 }
 
 func migrationMarkerPath(paths Paths) string {
