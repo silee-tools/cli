@@ -87,10 +87,7 @@ type diskRecord struct {
 
 type Store struct {
 	dir       string
-	dirFile   *os.File
-	dirDev    uint64
-	dirIno    uint64
-	closeOnce sync.Once
+	resource  *directoryResource
 	now       func() time.Time
 	random    io.Reader
 	statAt    func(string) (unix.Stat_t, error)
@@ -102,11 +99,32 @@ type Store struct {
 	closeRead func(*os.File) error
 }
 
+type directoryResource struct {
+	mu       sync.RWMutex
+	file     *os.File
+	dev      uint64
+	ino      uint64
+	closed   bool
+	closeErr error
+}
+
+type directoryHooks struct {
+	beforeCreate func(string)
+	fchmodat     func(int, string, uint32, int) error
+}
+
 func New(stateRoot string) (*Store, error) {
 	return newWithDirectoryHook(stateRoot, nil)
 }
 
 func newWithDirectoryHook(stateRoot string, hook func(string)) (*Store, error) {
+	return newWithDirectoryHooks(stateRoot, directoryHooks{beforeCreate: hook})
+}
+
+func newWithDirectoryHooks(stateRoot string, hooks directoryHooks) (*Store, error) {
+	if hooks.fchmodat == nil {
+		hooks.fchmodat = unix.Fchmodat
+	}
 	if stateRoot == "" {
 		return nil, fmt.Errorf("%w: path is empty", ErrUnsafeRoot)
 	}
@@ -117,11 +135,11 @@ func newWithDirectoryHook(stateRoot string, hook func(string)) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	appFD, err := openApplicationRoot(stateRoot, hook)
+	appFD, err := openApplicationRoot(stateRoot, hooks)
 	if err != nil {
 		return nil, err
 	}
-	plansFD, err := openOrCreateDirectoryAt(appFD, "plans", true, nil, filepath.Join(stateRoot, "plans"))
+	plansFD, err := openOrCreateDirectoryAt(appFD, "plans", true, hooks, filepath.Join(stateRoot, "plans"))
 	if err == nil {
 		if chmodErr := unix.Fchmod(plansFD, 0o700); chmodErr != nil {
 			err = fmt.Errorf("%w: secure plans directory: %v", ErrUnsafeRoot, chmodErr)
@@ -148,19 +166,21 @@ func newWithDirectoryHook(stateRoot string, hook func(string)) (*Store, error) {
 		_ = plansFile.Close()
 		return nil, fmt.Errorf("%w: inspect plans directory: %v", ErrUnsafeRoot, err)
 	}
+	resource := &directoryResource{
+		file: plansFile, dev: uint64(plansStat.Dev), ino: plansStat.Ino,
+	}
 	store := &Store{
-		dir: filepath.Join(appRoot, "plans"), dirFile: plansFile,
-		dirDev: uint64(plansStat.Dev), dirIno: plansStat.Ino,
+		dir: filepath.Join(appRoot, "plans"), resource: resource,
 		now: time.Now, random: rand.Reader,
 		closeRead: func(file *os.File) error { return file.Close() },
 	}
-	store.statAt = store.defaultStatAt
-	store.readDir = store.defaultReadDir
-	store.link = store.defaultLink
-	store.remove = store.defaultRemove
-	store.syncDir = func(string) error { return store.dirFile.Sync() }
-	store.openRead = store.defaultOpenRead
-	runtime.SetFinalizer(store, func(value *Store) { _ = value.close() })
+	store.statAt = resource.statAt
+	store.readDir = resource.readDir
+	store.link = resource.link
+	store.remove = resource.remove
+	store.syncDir = resource.sync
+	store.openRead = resource.openRead
+	runtime.SetFinalizer(resource, func(value *directoryResource) { _ = value.close() })
 	return store, nil
 }
 
@@ -205,7 +225,7 @@ func canonicalApplicationRoot(logicalRoot string) (string, error) {
 	return filepath.Join(canonicalAncestor, remainder), nil
 }
 
-func openApplicationRoot(stateRoot string, hook func(string)) (int, error) {
+func openApplicationRoot(stateRoot string, hooks directoryHooks) (int, error) {
 	cleaned := filepath.Clean(stateRoot)
 	currentFD, err := unix.Open(string(os.PathSeparator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -218,7 +238,7 @@ func openApplicationRoot(stateRoot string, hook func(string)) (int, error) {
 			continue
 		}
 		logicalPath = filepath.Join(logicalPath, part)
-		nextFD, openErr := openOrCreateDirectoryAt(currentFD, part, index == len(parts)-1, hook, logicalPath)
+		nextFD, openErr := openOrCreateDirectoryAt(currentFD, part, index == len(parts)-1, hooks, logicalPath)
 		closeErr := unix.Close(currentFD)
 		if openErr != nil {
 			return -1, errors.Join(openErr, closeErr)
@@ -236,7 +256,7 @@ func openApplicationRoot(stateRoot string, hook func(string)) (int, error) {
 	return currentFD, nil
 }
 
-func openOrCreateDirectoryAt(parentFD int, name string, noFollow bool, hook func(string), logicalPath string) (int, error) {
+func openOrCreateDirectoryAt(parentFD int, name string, noFollow bool, hooks directoryHooks, logicalPath string) (int, error) {
 	flags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC
 	if noFollow {
 		flags |= unix.O_NOFOLLOW
@@ -248,18 +268,23 @@ func openOrCreateDirectoryAt(parentFD int, name string, noFollow bool, hook func
 	if !errors.Is(err, unix.ENOENT) {
 		return -1, fmt.Errorf("%w: open state directory %s: %v", ErrUnsafeRoot, logicalPath, err)
 	}
-	if hook != nil {
-		hook(logicalPath)
+	if hooks.beforeCreate != nil {
+		hooks.beforeCreate(logicalPath)
 	}
 	if err := unix.Mkdirat(parentFD, name, 0o700); err != nil {
 		return -1, fmt.Errorf("%w: create state directory %s: %v", ErrUnsafeRoot, logicalPath, err)
 	}
-	if err := unix.Fchmodat(parentFD, name, 0o700, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-		return -1, fmt.Errorf("%w: secure new state directory %s: %v", ErrUnsafeRoot, logicalPath, err)
-	}
-	fd, err = unix.Openat(parentFD, name, flags|unix.O_NOFOLLOW, 0)
+	fd, created, err := secureCreatedDirectoryAt(parentFD, name, hooks)
 	if err != nil {
-		return -1, fmt.Errorf("%w: open new state directory %s: %v", ErrUnsafeRoot, logicalPath, err)
+		cleanupErr := removeCreatedDirectoryAt(parentFD, name, created)
+		return -1, errors.Join(fmt.Errorf("%w: secure new state directory %s: %w", ErrUnsafeRoot, logicalPath, err), cleanupErr)
+	}
+	if fd < 0 {
+		fd, err = unix.Openat(parentFD, name, flags|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			cleanupErr := removeCreatedDirectoryAt(parentFD, name, created)
+			return -1, errors.Join(fmt.Errorf("%w: open new state directory %s: %v", ErrUnsafeRoot, logicalPath, err), cleanupErr)
+		}
 	}
 	if err := unix.Fchmod(fd, 0o700); err != nil {
 		closeErr := unix.Close(fd)
@@ -268,13 +293,122 @@ func openOrCreateDirectoryAt(parentFD int, name string, noFollow bool, hook func
 	return fd, nil
 }
 
+const (
+	linuxOPath       = 0x200000
+	linuxATEmptyPath = 0x1000
+)
+
+func secureCreatedDirectoryAt(parentFD int, name string, hooks directoryHooks) (int, unix.Stat_t, error) {
+	if runtime.GOOS != "linux" {
+		var created unix.Stat_t
+		if err := unix.Fstatat(parentFD, name, &created, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			return -1, created, err
+		}
+		return -1, created, hooks.fchmodat(parentFD, name, 0o700, unix.AT_SYMLINK_NOFOLLOW)
+	}
+	pathFD, err := unix.Openat(parentFD, name, linuxOPath|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, unix.Stat_t{}, err
+	}
+	var anchored unix.Stat_t
+	if err := unix.Fstat(pathFD, &anchored); err != nil {
+		_ = unix.Close(pathFD)
+		return -1, anchored, err
+	}
+	chmodErr := hooks.fchmodat(pathFD, "", 0o700, linuxATEmptyPath)
+	fallback := errors.Is(chmodErr, unix.EOPNOTSUPP) || errors.Is(chmodErr, unix.EINVAL)
+	if chmodErr != nil && !fallback {
+		_ = unix.Close(pathFD)
+		return -1, anchored, chmodErr
+	}
+	if fallback {
+		procPath := fmt.Sprintf("/proc/self/fd/%d", pathFD)
+		if err := hooks.fchmodat(unix.AT_FDCWD, procPath, 0o700, 0); err != nil {
+			_ = unix.Close(pathFD)
+			return -1, anchored, err
+		}
+		fd, err := unix.Open(procPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		closeErr := unix.Close(pathFD)
+		if err != nil {
+			return -1, anchored, errors.Join(err, closeErr)
+		}
+		if closeErr != nil {
+			_ = unix.Close(fd)
+			return -1, anchored, closeErr
+		}
+		if err := verifyDirectoryIdentity(fd, anchored); err != nil {
+			_ = unix.Close(fd)
+			return -1, anchored, err
+		}
+		if err := verifyDirectoryNameAt(parentFD, name, anchored); err != nil {
+			_ = unix.Close(fd)
+			return -1, anchored, err
+		}
+		return fd, anchored, nil
+	}
+	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	closeErr := unix.Close(pathFD)
+	if err != nil {
+		return -1, anchored, errors.Join(err, closeErr)
+	}
+	if closeErr != nil {
+		_ = unix.Close(fd)
+		return -1, anchored, closeErr
+	}
+	if err := verifyDirectoryIdentity(fd, anchored); err != nil {
+		_ = unix.Close(fd)
+		return -1, anchored, err
+	}
+	return fd, anchored, nil
+}
+
+func verifyDirectoryIdentity(fd int, want unix.Stat_t) error {
+	var got unix.Stat_t
+	if err := unix.Fstat(fd, &got); err != nil {
+		return err
+	}
+	if got.Mode&unix.S_IFMT != unix.S_IFDIR || uint64(got.Dev) != uint64(want.Dev) || got.Ino != want.Ino {
+		return ErrUnsafeRoot
+	}
+	return nil
+}
+
+func verifyDirectoryNameAt(parentFD int, name string, want unix.Stat_t) error {
+	var got unix.Stat_t
+	if err := unix.Fstatat(parentFD, name, &got, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return err
+	}
+	if got.Mode&unix.S_IFMT != unix.S_IFDIR || uint64(got.Dev) != uint64(want.Dev) || got.Ino != want.Ino {
+		return ErrUnsafeRoot
+	}
+	return nil
+}
+
+func removeCreatedDirectoryAt(parentFD int, name string, want unix.Stat_t) error {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(parentFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return ErrUnsafeRoot
+	}
+	if uint64(stat.Dev) != uint64(want.Dev) || stat.Ino != want.Ino {
+		return ErrUnsafeRoot
+	}
+	return unix.Unlinkat(parentFD, name, unix.AT_REMOVEDIR)
+}
+
 // Create stores a plan under an opaque, non-empty fingerprint. Expiration uses
 // the local clock captured here and the local clock at Load or Claim; a clock
 // moved backward therefore extends validity until it reaches ExpiresAt again.
 func (s *Store) Create(payload any, fingerprint string) (Record, error) {
-	if err := s.verifyDirectory(); err != nil {
+	if err := s.resource.begin(); err != nil {
 		return Record{}, err
 	}
+	defer s.resource.end()
 	if strings.TrimSpace(fingerprint) == "" {
 		return Record{}, ErrInvalidFingerprint
 	}
@@ -329,9 +463,10 @@ func (s *Store) Create(payload any, fingerprint string) (Record, error) {
 }
 
 func (s *Store) Load(token string, payload any) (Record, error) {
-	if err := s.verifyDirectory(); err != nil {
+	if err := s.resource.begin(); err != nil {
 		return Record{}, err
 	}
+	defer s.resource.end()
 	if err := validateToken(token); err != nil {
 		return Record{}, err
 	}
@@ -356,9 +491,10 @@ func (s *Store) Load(token string, payload any) (Record, error) {
 }
 
 func (s *Store) Claim(token string, payload any) (Record, error) {
-	if err := s.verifyDirectory(); err != nil {
+	if err := s.resource.begin(); err != nil {
 		return Record{}, err
 	}
+	defer s.resource.end()
 	if err := validateToken(token); err != nil {
 		return Record{}, err
 	}
@@ -415,9 +551,10 @@ func (s *Store) Claim(token string, payload any) (Record, error) {
 // Consume is idempotent for an already-consumed token so callers can safely
 // defer it after Claim. The durable tombstone remains and Claim never replays it.
 func (s *Store) Consume(token string) error {
-	if err := s.verifyDirectory(); err != nil {
+	if err := s.resource.begin(); err != nil {
 		return err
 	}
+	defer s.resource.end()
 	if err := validateToken(token); err != nil {
 		return err
 	}
@@ -543,7 +680,7 @@ func (s *Store) tokenOccupied(token string) (bool, error) {
 
 func (s *Store) createReservation(token string) error {
 	path := s.path(token, reservationSuffix)
-	fd, err := unix.Openat(int(s.dirFile.Fd()), filepath.Base(path), unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	fd, err := unix.Openat(s.resource.fd(), filepath.Base(path), unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return err
 	}
@@ -909,7 +1046,7 @@ func (s *Store) createTemp(token string) (*os.File, error) {
 			return nil, err
 		}
 		name := "." + token + ".tmp-" + base64.RawURLEncoding.EncodeToString(raw)
-		fd, err := unix.Openat(int(s.dirFile.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+		fd, err := unix.Openat(s.resource.fd(), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 		if errors.Is(err, unix.EEXIST) {
 			continue
 		}
@@ -951,43 +1088,67 @@ func (s *Store) exists(path string) (bool, error) {
 	return false, err
 }
 
-func (s *Store) verifyDirectory() error {
-	if s.dirFile == nil {
+// Close releases the stable plans directory descriptor. It is safe to call
+// concurrently with Store operations and returns the same result on every call.
+func (s *Store) Close() error {
+	if s == nil || s.resource == nil {
+		return nil
+	}
+	return s.resource.close()
+}
+
+func (r *directoryResource) begin() error {
+	r.mu.RLock()
+	if err := r.verifyLocked(); err != nil {
+		r.mu.RUnlock()
+		return err
+	}
+	return nil
+}
+
+func (r *directoryResource) end() { r.mu.RUnlock() }
+
+func (r *directoryResource) fd() int { return int(r.file.Fd()) }
+
+func (r *directoryResource) verifyLocked() error {
+	if r.closed || r.file == nil {
 		return ErrUnsafeRoot
 	}
 	var stat unix.Stat_t
-	if err := unix.Fstat(int(s.dirFile.Fd()), &stat); err != nil {
+	if err := unix.Fstat(r.fd(), &stat); err != nil {
 		return fmt.Errorf("%w: verify plans directory: %v", ErrUnsafeRoot, err)
 	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Nlink == 0 || uint64(stat.Dev) != s.dirDev || stat.Ino != s.dirIno {
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Nlink == 0 || uint64(stat.Dev) != r.dev || stat.Ino != r.ino {
 		return fmt.Errorf("%w: plans directory identity changed", ErrUnsafeRoot)
 	}
 	return nil
 }
 
-func (s *Store) close() error {
-	var err error
-	s.closeOnce.Do(func() {
-		runtime.SetFinalizer(s, nil)
-		if s.dirFile != nil {
-			err = s.dirFile.Close()
+func (r *directoryResource) close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.closed {
+		runtime.SetFinalizer(r, nil)
+		r.closed = true
+		if r.file != nil {
+			r.closeErr = r.file.Close()
 		}
-	})
-	return err
+	}
+	return r.closeErr
 }
 
-func (s *Store) defaultStatAt(path string) (unix.Stat_t, error) {
+func (r *directoryResource) statAt(path string) (unix.Stat_t, error) {
 	var stat unix.Stat_t
-	err := unix.Fstatat(int(s.dirFile.Fd()), filepath.Base(path), &stat, unix.AT_SYMLINK_NOFOLLOW)
+	err := unix.Fstatat(r.fd(), filepath.Base(path), &stat, unix.AT_SYMLINK_NOFOLLOW)
 	return stat, err
 }
 
-func (s *Store) defaultReadDir() ([]os.DirEntry, error) {
-	fd, err := unix.Openat(int(s.dirFile.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+func (r *directoryResource) readDir() ([]os.DirEntry, error) {
+	fd, err := unix.Openat(r.fd(), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
-	file := os.NewFile(uintptr(fd), s.dir)
+	file := os.NewFile(uintptr(fd), "plans")
 	if file == nil {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("retain plans directory scan")
@@ -997,17 +1158,19 @@ func (s *Store) defaultReadDir() ([]os.DirEntry, error) {
 	return entries, errors.Join(readErr, closeErr)
 }
 
-func (s *Store) defaultLink(oldPath, newPath string) error {
-	fd := int(s.dirFile.Fd())
+func (r *directoryResource) link(oldPath, newPath string) error {
+	fd := r.fd()
 	return unix.Linkat(fd, filepath.Base(oldPath), fd, filepath.Base(newPath), 0)
 }
 
-func (s *Store) defaultRemove(path string) error {
-	return unix.Unlinkat(int(s.dirFile.Fd()), filepath.Base(path), 0)
+func (r *directoryResource) remove(path string) error {
+	return unix.Unlinkat(r.fd(), filepath.Base(path), 0)
 }
 
-func (s *Store) defaultOpenRead(path string) (*os.File, error) {
-	fd, err := unix.Openat(int(s.dirFile.Fd()), filepath.Base(path), unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+func (r *directoryResource) sync(string) error { return r.file.Sync() }
+
+func (r *directoryResource) openRead(path string) (*os.File, error) {
+	fd, err := unix.Openat(r.fd(), filepath.Base(path), unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}

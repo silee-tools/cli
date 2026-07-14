@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -25,6 +26,8 @@ type testPayload struct {
 	ID    int64  `json:"id"`
 }
 
+var _ interface{ Close() error } = (*Store)(nil)
+
 func TestStoreCreatesAndLoadsAPlan(t *testing.T) {
 	stateRoot := t.TempDir()
 	if err := os.Chmod(stateRoot, 0o755); err != nil {
@@ -37,7 +40,7 @@ func TestStoreCreatesAndLoadsAPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = store.close() })
+	t.Cleanup(func() { _ = store.Close() })
 	store.now = func() time.Time { return now }
 	store.random = bytes.NewReader(random)
 
@@ -94,7 +97,7 @@ func TestStoreUsesResolvedApplicationStateRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = store.close() })
+	t.Cleanup(func() { _ = store.Close() })
 	canonicalRoot, err := filepath.EvalSymlinks(paths.StateRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -944,7 +947,7 @@ func TestStoreCanonicalizesIntermediateSymlinkOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = store.close() })
+	t.Cleanup(func() { _ = store.Close() })
 	canonicalFirst, err := filepath.EvalSymlinks(firstTarget)
 	if err != nil {
 		t.Fatal(err)
@@ -1013,13 +1016,182 @@ func TestStoreRejectsSymlinkSwapForMissingComponents(t *testing.T) {
 	}
 }
 
-func TestStoreRejectsOperationsAfterDirectoryDescriptorCloses(t *testing.T) {
-	store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x63}, tokenBytes))
-	if err := store.close(); err != nil {
+func TestStoreFallsBackWhenNoFollowFchmodatIsUnsupported(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux fchmodat2 compatibility contract")
+	}
+	parent := t.TempDir()
+	stateRoot := filepath.Join(parent, "missing", "xdg", "state", "oma")
+	oldUmask := syscall.Umask(0o777)
+	defer syscall.Umask(oldUmask)
+	hooks := directoryHooks{
+		fchmodat: func(dirfd int, path string, mode uint32, flags int) error {
+			if flags != 0 {
+				return unix.EOPNOTSUPP
+			}
+			return unix.Fchmodat(dirfd, path, mode, flags)
+		},
+	}
+	store, err := newWithDirectoryHooks(stateRoot, hooks)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(testPayload{Title: "closed"}, "fingerprint"); !errors.Is(err, ErrUnsafeRoot) {
-		t.Fatalf("Create() error = %v, want ErrUnsafeRoot", err)
+	t.Cleanup(func() { _ = store.Close() })
+	assertMode(t, store.dir, 0o700)
+	for path := stateRoot; path != parent; path = filepath.Dir(path) {
+		assertMode(t, path, 0o700)
+	}
+}
+
+func TestStoreRemovesUnusableDirectoryWhenNoFollowFchmodatIsUnsupported(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux fchmodat2 compatibility contract")
+	}
+	parent := t.TempDir()
+	stateRoot := filepath.Join(parent, "orphan", "oma")
+	oldUmask := syscall.Umask(0o777)
+	defer syscall.Umask(oldUmask)
+	hooks := directoryHooks{
+		fchmodat: func(_ int, _ string, _ uint32, flags int) error {
+			if flags != 0 {
+				return unix.EOPNOTSUPP
+			}
+			return unix.EIO
+		},
+	}
+	if _, err := newWithDirectoryHooks(stateRoot, hooks); !errors.Is(err, unix.EIO) {
+		t.Fatalf("New() error = %v, want EIO", err)
+	}
+	if _, err := os.Lstat(filepath.Join(parent, "orphan")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed creation left an orphan: %v", err)
+	}
+}
+
+func TestStoreCloseIsIdempotentAndReleasesDescriptor(t *testing.T) {
+	baseline := countOpenFileDescriptors(t)
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("second Close() = %v", err)
+	}
+	if got := countOpenFileDescriptors(t); got != baseline {
+		t.Fatalf("open descriptor count = %d, want baseline %d", got, baseline)
+	}
+
+	failedStore, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := failedStore.resource.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	firstErr := failedStore.Close()
+	if firstErr == nil {
+		t.Fatal("Close() error = nil after descriptor was already closed")
+	}
+	if secondErr := failedStore.Close(); secondErr != firstErr {
+		t.Fatalf("second Close() error = %v, want identical %v", secondErr, firstErr)
+	}
+}
+
+func TestStoreCloseWaitsForEveryActivePublicOperation(t *testing.T) {
+	for _, action := range []string{"Create", "Load", "Claim", "Consume"} {
+		t.Run(action, func(t *testing.T) {
+			store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x63}, tokenBytes))
+			var token string
+			if action != "Create" {
+				created, err := store.Create(testPayload{Title: "close race"}, "fingerprint")
+				if err != nil {
+					t.Fatal(err)
+				}
+				token = created.Token
+				if action == "Consume" {
+					var payload testPayload
+					if _, err := store.Claim(token, &payload); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			originalStatAt := store.statAt
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			var once sync.Once
+			store.statAt = func(path string) (unix.Stat_t, error) {
+				once.Do(func() {
+					close(entered)
+					<-release
+				})
+				return originalStatAt(path)
+			}
+			operationDone := make(chan error, 1)
+			go func() {
+				var payload testPayload
+				switch action {
+				case "Create":
+					_, err := store.Create(testPayload{}, "fingerprint")
+					operationDone <- err
+				case "Load":
+					_, err := store.Load(token, &payload)
+					operationDone <- err
+				case "Claim":
+					_, err := store.Claim(token, &payload)
+					operationDone <- err
+				case "Consume":
+					operationDone <- store.Consume(token)
+				}
+			}()
+			<-entered
+			closeStarted := make(chan struct{})
+			closeDone := make(chan error, 1)
+			go func() {
+				close(closeStarted)
+				closeDone <- store.Close()
+			}()
+			<-closeStarted
+			select {
+			case err := <-closeDone:
+				t.Fatalf("Close() returned before active %s(): %v", action, err)
+			case <-time.After(50 * time.Millisecond):
+			}
+			close(release)
+			if err := <-operationDone; err != nil {
+				t.Fatalf("%s() = %v", action, err)
+			}
+			if err := <-closeDone; err != nil {
+				t.Fatalf("Close() = %v", err)
+			}
+		})
+	}
+}
+
+func TestStoreRejectsOperationsAfterDirectoryDescriptorCloses(t *testing.T) {
+	store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x63}, tokenBytes))
+	created, err := store.Create(testPayload{Title: "closed"}, "fingerprint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var payload testPayload
+	checks := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "Create", run: func() error { _, err := store.Create(testPayload{}, "fingerprint"); return err }},
+		{name: "Load", run: func() error { _, err := store.Load(created.Token, &payload); return err }},
+		{name: "Claim", run: func() error { _, err := store.Claim(created.Token, &payload); return err }},
+		{name: "Consume", run: func() error { return store.Consume(created.Token) }},
+	}
+	for _, check := range checks {
+		if err := check.run(); !errors.Is(err, ErrUnsafeRoot) {
+			t.Errorf("%s() error = %v, want ErrUnsafeRoot", check.name, err)
+		}
 	}
 }
 
@@ -1326,7 +1498,7 @@ func TestStoreCreatesOwnedDirectoriesWithRestrictiveUmask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = store.close() })
+	t.Cleanup(func() { _ = store.Close() })
 	assertMode(t, stateRoot, 0o700)
 	assertMode(t, store.dir, 0o700)
 
@@ -1335,7 +1507,7 @@ func TestStoreCreatesOwnedDirectoriesWithRestrictiveUmask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = missingStore.close() })
+	t.Cleanup(func() { _ = missingStore.Close() })
 	assertMode(t, missingRoot, 0o700)
 	assertMode(t, missingStore.dir, 0o700)
 	for path := filepath.Dir(missingRoot); path != parent; path = filepath.Dir(path) {
@@ -1402,8 +1574,19 @@ func newTestStore(t *testing.T, now time.Time, random []byte) *Store {
 	}
 	store.now = func() time.Time { return now }
 	store.random = bytes.NewReader(random)
-	t.Cleanup(func() { _ = store.close() })
+	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+func countOpenFileDescriptors(t *testing.T) int {
+	t.Helper()
+	count := 0
+	for fd := 0; fd < 1024; fd++ {
+		if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err == nil {
+			count++
+		}
+	}
+	return count
 }
 
 func assertMode(t *testing.T, path string, want os.FileMode) {
