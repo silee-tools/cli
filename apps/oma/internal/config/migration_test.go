@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,6 +133,193 @@ func TestPlanMigrationRejectsConflictingFiles(t *testing.T) {
 	}
 }
 
+func TestMigrationRollbackPreservesCompetingLegacyFile(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	sentinel := "created by a competing process"
+	originalOps := migrationOS
+	migrationOS.symlink = func(_, destination string) error {
+		if err := os.WriteFile(destination, []byte(sentinel), 0o644); err != nil {
+			return err
+		}
+		return fs.ErrExist
+	}
+	t.Cleanup(func() { migrationOS = originalOps })
+
+	migration, err := PlanMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migration == nil {
+		t.Fatal("PlanMigration() = nil, want migration")
+	}
+	err = migration.Apply(func(Config) error { return nil })
+	if !errors.Is(err, fs.ErrExist) || !strings.Contains(err.Error(), "replace legacy configuration") || !strings.Contains(err.Error(), "restore legacy configuration") {
+		t.Fatalf("Apply() error = %v, want joined symlink and restore-conflict errors", err)
+	}
+
+	assertRegularFile(t, paths.Legacy, sentinel, 0o644)
+	marker, backup := transactionPaths(paths)
+	assertRegularFile(t, backup, validTOML, 0o640)
+	assertRegularExists(t, marker, 0o600)
+}
+
+func TestMigrationRollbackPreservesCompetingCanonicalFile(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	sentinel := "replacement canonical from a competing process"
+	symlinkErr := errors.New("injected symlink failure")
+	originalOps := migrationOS
+	migrationOS.symlink = func(_, _ string) error {
+		if err := os.Remove(paths.Canonical); err != nil {
+			return err
+		}
+		if err := os.WriteFile(paths.Canonical, []byte(sentinel), 0o644); err != nil {
+			return err
+		}
+		return symlinkErr
+	}
+	t.Cleanup(func() { migrationOS = originalOps })
+
+	migration, err := PlanMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migration == nil {
+		t.Fatal("PlanMigration() = nil, want migration")
+	}
+	err = migration.Apply(func(Config) error { return nil })
+	if !errors.Is(err, symlinkErr) || !strings.Contains(err.Error(), "unexpected identity") {
+		t.Fatalf("Apply() error = %v, want symlink and ownership errors", err)
+	}
+
+	assertRegularFile(t, paths.Canonical, sentinel, 0o644)
+	assertRegularFile(t, paths.Legacy, validTOML, 0o640)
+}
+
+func TestMigrationCanonicalCommitDoesNotReplaceCompetingFile(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	sentinel := "canonical from a competing process"
+	originalOps := migrationOS
+	migrationOS.beforeCanonicalCommit = func(path string) error {
+		return os.WriteFile(path, []byte(sentinel), 0o644)
+	}
+	t.Cleanup(func() { migrationOS = originalOps })
+
+	migration, err := PlanMigration(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migration == nil {
+		t.Fatal("PlanMigration() = nil, want migration")
+	}
+	err = migration.Apply(func(Config) error { return nil })
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("Apply() error = %v, want existing-file error", err)
+	}
+
+	assertRegularFile(t, paths.Canonical, sentinel, 0o644)
+	assertRegularFile(t, paths.Legacy, validTOML, 0o640)
+	marker, backup := transactionPaths(paths)
+	assertAbsent(t, marker)
+	assertAbsent(t, backup)
+}
+
+func TestPlanMigrationRecoversInterruptedTransaction(t *testing.T) {
+	tests := []struct {
+		name      string
+		setCrash  func(*migrationFileOps)
+		wantFinal bool
+	}{
+		{
+			name: "after canonical commit",
+			setCrash: func(ops *migrationFileOps) {
+				ops.afterCanonicalCommit = func() { panic(simulatedCrash{}) }
+			},
+		},
+		{
+			name: "after legacy backup",
+			setCrash: func(ops *migrationFileOps) {
+				ops.afterLegacyBackup = func() { panic(simulatedCrash{}) }
+			},
+		},
+		{
+			name: "after symlink creation",
+			setCrash: func(ops *migrationFileOps) {
+				ops.afterSymlink = func() { panic(simulatedCrash{}) }
+			},
+			wantFinal: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testPaths(t)
+			writeFile(t, paths.Legacy, validTOML, 0o640)
+			migration, err := PlanMigration(paths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if migration == nil {
+				t.Fatal("PlanMigration() = nil, want migration")
+			}
+
+			originalOps := migrationOS
+			tt.setCrash(&migrationOS)
+			assertSimulatedCrash(t, func() {
+				_ = migration.Apply(func(Config) error { return nil })
+			})
+			migrationOS = originalOps
+			t.Cleanup(func() { migrationOS = originalOps })
+
+			next, err := PlanMigration(paths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			marker, backup := transactionPaths(paths)
+			assertAbsent(t, marker)
+			assertAbsent(t, backup)
+			if tt.wantFinal {
+				if next != nil {
+					t.Fatal("PlanMigration() returned migration after completed recovery")
+				}
+				assertRegularFile(t, paths.Canonical, validTOML, 0o600)
+				assertSymlink(t, paths.Legacy, paths.Canonical)
+				return
+			}
+			if next == nil {
+				t.Fatal("PlanMigration() = nil, want migration after rollback recovery")
+			}
+			assertRegularFile(t, paths.Legacy, validTOML, 0o640)
+			assertAbsent(t, paths.Canonical)
+		})
+	}
+}
+
+func TestDirectorySyncSupported(t *testing.T) {
+	dir := t.TempDir()
+	if err := syncDirectory(dir); err != nil {
+		t.Fatalf("syncDirectory(%s): %v", dir, err)
+	}
+}
+
+type simulatedCrash struct{}
+
+func assertSimulatedCrash(t *testing.T, run func()) {
+	t.Helper()
+	defer func() {
+		if _, ok := recover().(simulatedCrash); !ok {
+			t.Fatal("operation did not stop at injected crash point")
+		}
+	}()
+	run()
+}
+
+func transactionPaths(paths Paths) (string, string) {
+	return paths.Legacy + ".oma-migration", paths.Legacy + ".oma-migration-backup"
+}
+
 func assertRegularFile(t *testing.T, path, wantContent string, wantMode os.FileMode) {
 	t.Helper()
 	info, err := os.Lstat(path)
@@ -147,6 +335,20 @@ func assertRegularFile(t *testing.T, path, wantContent string, wantMode os.FileM
 	}
 	if string(content) != wantContent {
 		t.Fatalf("%s content = %q, want %q", path, content, wantContent)
+	}
+	if info.Mode().Perm() != wantMode {
+		t.Fatalf("%s mode = %#o, want %#o", path, info.Mode().Perm(), wantMode)
+	}
+}
+
+func assertRegularExists(t *testing.T, path string, wantMode os.FileMode) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("%s mode = %s, want regular file", path, info.Mode())
 	}
 	if info.Mode().Perm() != wantMode {
 		t.Fatalf("%s mode = %#o, want %#o", path, info.Mode().Perm(), wantMode)
