@@ -56,6 +56,9 @@ type migrationArtifact struct {
 type migrationFileOps struct {
 	symlink                            func(string, string) error
 	remove                             func(string) error
+	afterInspectionReadDir             func(string)
+	beforeInspectionLstat              func(string)
+	beforeInspectionRead               func(string)
 	beforeCanonicalCommit              func(string) error
 	afterCanonicalCommit               func()
 	afterLegacyBackup                  func()
@@ -225,6 +228,7 @@ func snapshotMigrationArtifacts(paths Paths) (map[string]migrationArtifact, stri
 	roots := []string{filepath.Dir(paths.Canonical), filepath.Dir(paths.Legacy)}
 	seenRoots := make(map[string]bool)
 	artifacts := make(map[string]migrationArtifact)
+	candidates := make(map[string]fileIdentity)
 	for _, root := range roots {
 		if seenRoots[root] {
 			continue
@@ -239,17 +243,42 @@ func snapshotMigrationArtifacts(paths Paths) (map[string]migrationArtifact, stri
 		if err != nil {
 			return nil, "", fmt.Errorf("enumerate migration directory: %w", err)
 		}
+		if migrationOS.afterInspectionReadDir != nil {
+			migrationOS.afterInspectionReadDir(root)
+		}
 		for _, entry := range entries {
 			path := filepath.Join(root, entry.Name())
 			if !isMigrationArtifactPath(paths, path) {
 				continue
 			}
-			artifact, err := readMigrationArtifact(path)
+			info, err := entry.Info()
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil, "", fmt.Errorf("%w: artifact disappeared after directory enumeration: %s", ErrMigrationStateChanged, path)
+				}
+				return nil, "", err
+			}
+			identity, err := identityOf(info)
 			if err != nil {
 				return nil, "", err
 			}
-			artifacts[path] = artifact
+			candidates[path] = identity
 		}
+	}
+	candidatePaths := make([]string, 0, len(candidates))
+	for path := range candidates {
+		candidatePaths = append(candidatePaths, path)
+	}
+	sort.Strings(candidatePaths)
+	for _, path := range candidatePaths {
+		if migrationOS.beforeInspectionLstat != nil {
+			migrationOS.beforeInspectionLstat(path)
+		}
+		artifact, err := readMigrationArtifact(path, candidates[path])
+		if err != nil {
+			return nil, "", err
+		}
+		artifacts[path] = artifact
 	}
 	pathsSorted := sortedMigrationArtifactPaths(artifacts)
 	hash := sha256.New()
@@ -281,8 +310,8 @@ func isMigrationArtifactPath(paths Paths, path string) bool {
 			return true
 		}
 	}
-	if token, ok := strings.CutPrefix(path, paths.Canonical+".oma-staged-"); ok {
-		return validTransactionToken(token)
+	if suffix, ok := strings.CutPrefix(path, paths.Canonical+".oma-staged-"); ok {
+		return validTransactionToken(suffix) || validTokenPairSuffix(suffix, ".oma-quarantine-")
 	}
 	suffix, ok := strings.CutPrefix(path, marker+".staged-")
 	if !ok {
@@ -300,7 +329,13 @@ func isMigrationArtifactPath(paths Paths, path string) bool {
 		}
 	}
 	intent, ok := strings.CutPrefix(suffix, "conflict-intent-")
-	if !ok || len(intent) < 32 || !validTransactionToken(intent[:32]) {
+	if !ok {
+		return false
+	}
+	if validTokenPairSuffix(intent, ".oma-quarantine-") {
+		return true
+	}
+	if len(intent) < 32 || !validTransactionToken(intent[:32]) {
 		return false
 	}
 	remainder := intent[32:]
@@ -328,24 +363,39 @@ func validTransactionToken(value string) bool {
 	return err == nil && len(decoded) == 16
 }
 
-func readMigrationArtifact(path string) (migrationArtifact, error) {
+func readMigrationArtifact(path string, enumeratedIdentity fileIdentity) (migrationArtifact, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return migrationArtifact{}, fmt.Errorf("%w: artifact disappeared before inspection: %s", ErrMigrationStateChanged, path)
+		}
 		return migrationArtifact{}, err
 	}
 	identity, err := identityOf(info)
 	if err != nil {
 		return migrationArtifact{}, err
 	}
+	if identity != enumeratedIdentity {
+		return migrationArtifact{}, fmt.Errorf("%w: artifact identity changed after directory enumeration: %s", ErrMigrationStateChanged, path)
+	}
 	artifact := migrationArtifact{path: path, mode: info.Mode(), identity: identity}
+	if migrationOS.beforeInspectionRead != nil {
+		migrationOS.beforeInspectionRead(path)
+	}
 	switch {
 	case info.Mode().IsRegular():
 		data, err := os.ReadFile(path)
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return migrationArtifact{}, fmt.Errorf("%w: artifact disappeared before read: %s", ErrMigrationStateChanged, path)
+			}
 			return migrationArtifact{}, err
 		}
 		after, err := os.Lstat(path)
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return migrationArtifact{}, fmt.Errorf("%w: artifact disappeared while it was read: %s", ErrMigrationStateChanged, path)
+			}
 			return migrationArtifact{}, err
 		}
 		owned, err := hasIdentity(after, identity)
@@ -360,6 +410,9 @@ func readMigrationArtifact(path string) (migrationArtifact, error) {
 	case info.Mode()&os.ModeSymlink != 0:
 		target, err := os.Readlink(path)
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return migrationArtifact{}, fmt.Errorf("%w: artifact disappeared before link read: %s", ErrMigrationStateChanged, path)
+			}
 			return migrationArtifact{}, err
 		}
 		artifact.linkTarget = target
@@ -477,7 +530,7 @@ func validateInspectedRecord(paths Paths, record transactionRecord) error {
 }
 
 func readInspectedConfig(inspection migrationInspection) ([]byte, error) {
-	artifact, err := readMigrationArtifact(inspection.sourcePath)
+	artifact, err := readMigrationArtifact(inspection.sourcePath, inspection.sourceID)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("%w: inspected source disappeared", ErrMigrationStateChanged)

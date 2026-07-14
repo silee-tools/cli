@@ -281,6 +281,7 @@ func TestPlanMigrationRecoversInterruptedTransaction(t *testing.T) {
 			})
 			migrationOS = originalOps
 			t.Cleanup(func() { migrationOS = originalOps })
+			assertReadOnlyMigrationInspection(t, paths)
 
 			next, err := PlanMigration(paths)
 			if err != nil {
@@ -425,7 +426,7 @@ func TestInspectMigrationDistinguishesCorruptMarker(t *testing.T) {
 	paths := testPaths(t)
 	writeFile(t, paths.Legacy, validTOML, 0o640)
 	writeFile(t, migrationMarkerPath(paths), "not-owned", 0o600)
-	if _, err := InspectMigration(paths); err == nil || !strings.Contains(err.Error(), "corrupt migration marker") {
+	if _, err := InspectMigration(paths); err == nil || !strings.Contains(err.Error(), "corrupt migration marker") || errors.Is(err, ErrMigrationStateChanged) {
 		t.Fatalf("InspectMigration() error = %v, want corrupt marker", err)
 	}
 }
@@ -528,6 +529,274 @@ func TestInspectMigrationIgnoresUnrelatedConfigTreeEntries(t *testing.T) {
 	}
 	if before.Fingerprint() != after.Fingerprint() {
 		t.Fatalf("unrelated entries changed fingerprint: %s != %s", before.Fingerprint(), after.Fingerprint())
+	}
+}
+
+func TestMigrationArtifactClassifierTracksTokenConsistentQuarantineVariants(t *testing.T) {
+	paths := testPaths(t)
+	marker := migrationMarkerPath(paths)
+	token := "0123456789abcdef0123456789abcdef"
+	other := "fedcba9876543210fedcba9876543210"
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{
+			name: "canonical staged quarantine",
+			path: canonicalStagedPath(paths, token) + ".oma-quarantine-" + token,
+			want: true,
+		},
+		{
+			name: "conflict intent quarantine",
+			path: marker + ".staged-conflict-intent-" + token + ".oma-quarantine-" + token,
+			want: true,
+		},
+		{
+			name: "canonical staged quarantine mismatched token",
+			path: canonicalStagedPath(paths, token) + ".oma-quarantine-" + other,
+		},
+		{
+			name: "conflict intent quarantine mismatched token",
+			path: marker + ".staged-conflict-intent-" + token + ".oma-quarantine-" + other,
+		},
+		{
+			name: "unrelated name containing canonical staged prefix",
+			path: canonicalStagedPath(paths, token) + ".notes.oma-quarantine-" + token,
+		},
+		{
+			name: "unrelated name containing conflict intent prefix",
+			path: marker + ".staged-conflict-intent-" + token + ".notes.oma-quarantine-" + token,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isMigrationArtifactPath(paths, tt.path); got != tt.want {
+				t.Fatalf("isMigrationArtifactPath(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMigrationArtifactSnapshotFingerprintsOwnedQuarantineVariantsOnly(t *testing.T) {
+	token := "0123456789abcdef0123456789abcdef"
+	tests := []struct {
+		name      string
+		owned     func(Paths) string
+		unrelated func(Paths) string
+	}{
+		{
+			name:      "canonical staged quarantine",
+			owned:     func(paths Paths) string { return canonicalStagedPath(paths, token) + ".oma-quarantine-" + token },
+			unrelated: func(paths Paths) string { return canonicalStagedPath(paths, token) + ".notes.oma-quarantine-" + token },
+		},
+		{
+			name: "conflict intent quarantine",
+			owned: func(paths Paths) string {
+				return migrationMarkerPath(paths) + ".staged-conflict-intent-" + token + ".oma-quarantine-" + token
+			},
+			unrelated: func(paths Paths) string {
+				return migrationMarkerPath(paths) + ".staged-conflict-intent-" + token + ".notes.oma-quarantine-" + token
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testPaths(t)
+			writeFile(t, paths.Legacy, validTOML, 0o640)
+			_, baseline, err := snapshotMigrationArtifacts(paths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			owned := tt.owned(paths)
+			writeFile(t, owned, "owned quarantine", 0o600)
+			_, created, err := snapshotMigrationArtifacts(paths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if created == baseline {
+				t.Fatal("owned quarantine creation did not change fingerprint")
+			}
+			writeFile(t, owned, "changed owned quarantine", 0o600)
+			_, changed, err := snapshotMigrationArtifacts(paths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changed == created {
+				t.Fatal("owned quarantine content change did not change fingerprint")
+			}
+			writeFile(t, tt.unrelated(paths), "unrelated", 0o600)
+			_, ignored, err := snapshotMigrationArtifacts(paths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ignored != changed {
+				t.Fatalf("unrelated similar name changed fingerprint: %s != %s", ignored, changed)
+			}
+		})
+	}
+}
+
+func TestInspectMigrationReturnsTypedDriftAcrossEnumerationAndReadBoundaries(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(*testing.T, Paths)
+		setHook func(*migrationFileOps, Paths)
+	}{
+		{
+			name: "owned marker disappears after enumeration",
+			prepare: func(t *testing.T, paths Paths) {
+				writeFile(t, migrationMarkerPath(paths), "owned marker", 0o600)
+			},
+			setHook: func(ops *migrationFileOps, paths Paths) {
+				called := false
+				ops.afterInspectionReadDir = func(root string) {
+					if called || root != filepath.Dir(paths.Legacy) {
+						return
+					}
+					called = true
+					if err := os.Remove(migrationMarkerPath(paths)); err != nil {
+						panic(err)
+					}
+				}
+			},
+		},
+		{
+			name: "owned marker is replaced before read",
+			prepare: func(t *testing.T, paths Paths) {
+				writeFile(t, migrationMarkerPath(paths), "owned marker", 0o600)
+			},
+			setHook: func(ops *migrationFileOps, paths Paths) {
+				called := false
+				ops.beforeInspectionRead = func(path string) {
+					if called || path != migrationMarkerPath(paths) {
+						return
+					}
+					called = true
+					if err := os.Remove(path); err != nil {
+						panic(err)
+					}
+					if err := os.WriteFile(path, []byte("replacement marker"), 0o600); err != nil {
+						panic(err)
+					}
+				}
+			},
+		},
+		{
+			name: "source disappears after enumeration",
+			setHook: func(ops *migrationFileOps, paths Paths) {
+				called := false
+				ops.afterInspectionReadDir = func(root string) {
+					if called || root != filepath.Dir(paths.Legacy) {
+						return
+					}
+					called = true
+					if err := os.Remove(paths.Legacy); err != nil {
+						panic(err)
+					}
+				}
+			},
+		},
+		{
+			name: "source is replaced after enumeration",
+			setHook: func(ops *migrationFileOps, paths Paths) {
+				called := false
+				ops.beforeInspectionLstat = func(path string) {
+					if called || path != paths.Legacy {
+						return
+					}
+					called = true
+					if err := os.Remove(paths.Legacy); err != nil {
+						panic(err)
+					}
+					if err := os.WriteFile(paths.Legacy, []byte(validTOML), 0o640); err != nil {
+						panic(err)
+					}
+				}
+			},
+		},
+		{
+			name: "source disappears before read",
+			setHook: func(ops *migrationFileOps, paths Paths) {
+				called := false
+				ops.beforeInspectionRead = func(path string) {
+					if called || path != paths.Legacy {
+						return
+					}
+					called = true
+					if err := os.Remove(path); err != nil {
+						panic(err)
+					}
+				}
+			},
+		},
+		{
+			name: "source is replaced before read",
+			setHook: func(ops *migrationFileOps, paths Paths) {
+				called := false
+				ops.beforeInspectionRead = func(path string) {
+					if called || path != paths.Legacy {
+						return
+					}
+					called = true
+					if err := os.Remove(path); err != nil {
+						panic(err)
+					}
+					if err := os.WriteFile(path, []byte(validTOML), 0o640); err != nil {
+						panic(err)
+					}
+				}
+			},
+		},
+		{
+			name: "source digest changes between snapshots",
+			setHook: func(ops *migrationFileOps, paths Paths) {
+				reads := 0
+				ops.beforeInspectionRead = func(path string) {
+					if path != paths.Legacy {
+						return
+					}
+					reads++
+					if reads == 2 {
+						changed := strings.Replace(validTOML, "Feature", "Changed", 1)
+						if err := os.WriteFile(path, []byte(changed), 0o640); err != nil {
+							panic(err)
+						}
+					}
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testPaths(t)
+			writeFile(t, paths.Legacy, validTOML, 0o640)
+			if tt.prepare != nil {
+				tt.prepare(t, paths)
+			}
+			originalOps := migrationOS
+			tt.setHook(&migrationOS, paths)
+			t.Cleanup(func() { migrationOS = originalOps })
+			if _, err := InspectMigration(paths); !errors.Is(err, ErrMigrationStateChanged) {
+				t.Fatalf("InspectMigration() error = %v, want ErrMigrationStateChanged", err)
+			}
+		})
+	}
+}
+
+func TestInspectMigrationKeepsPermissionFailureDistinctFromStateDrift(t *testing.T) {
+	paths := testPaths(t)
+	writeFile(t, paths.Legacy, validTOML, 0o640)
+	if err := os.Chmod(paths.Legacy, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(paths.Legacy, 0o640) })
+	_, err := InspectMigration(paths)
+	if err == nil {
+		t.Fatal("InspectMigration() error = nil, want permission failure")
+	}
+	if errors.Is(err, ErrMigrationStateChanged) {
+		t.Fatalf("InspectMigration() error = %v, permission failure must remain distinct from state drift", err)
 	}
 }
 
@@ -725,6 +994,7 @@ func TestPlanMigrationRecoversEarlyTransactionInterruptions(t *testing.T) {
 			})
 			migrationOS = originalOps
 			t.Cleanup(func() { migrationOS = originalOps })
+			assertReadOnlyMigrationInspection(t, paths)
 
 			if _, err := PlanMigration(paths); err != nil {
 				t.Fatal(err)
@@ -866,6 +1136,7 @@ func TestPlanMigrationRecoversQuarantineInterruptions(t *testing.T) {
 			if !triggered {
 				t.Fatal("quarantine interruption hook was not reached")
 			}
+			assertReadOnlyMigrationInspection(t, paths)
 
 			if _, err := PlanMigration(paths); err != nil {
 				t.Fatal(err)
@@ -919,6 +1190,7 @@ func TestPlanMigrationRecoversMarkerEstablishmentFailures(t *testing.T) {
 			}
 			migrationOS = originalOps
 			t.Cleanup(func() { migrationOS = originalOps })
+			assertReadOnlyMigrationInspection(t, paths)
 
 			if _, err := PlanMigration(paths); err != nil {
 				t.Fatal(err)
@@ -1163,6 +1435,7 @@ func TestPlanMigrationRecoversStagedMarkerPromotionInterruptions(t *testing.T) {
 			assertRegularExists(t, promotion, 0o600)
 
 			migrationOS = originalOps
+			assertReadOnlyMigrationInspection(t, paths)
 			next, err := PlanMigration(paths)
 			if err != nil {
 				t.Fatal(err)
@@ -1334,6 +1607,7 @@ func TestPlanMigrationRecoversConflictAnchorCleanupFailures(t *testing.T) {
 			assertMatches(t, marker+".staged-conflict-*")
 
 			migrationOS = originalOps
+			assertReadOnlyMigrationInspection(t, paths)
 			if _, err := PlanMigration(paths); err == nil {
 				t.Fatal("reentered PlanMigration() error = nil, want preserved replacement conflict")
 			}
@@ -1734,6 +2008,7 @@ func TestPlanMigrationRecoversConflictIntentDraftAnchorCleanupFailures(t *testin
 			assertMatches(t, intent)
 
 			migrationOS = originalOps
+			assertReadOnlyMigrationInspection(t, paths)
 			if _, err := PlanMigration(paths); err == nil {
 				t.Fatal("reentered PlanMigration() error = nil, want preserved replacement conflict")
 			}

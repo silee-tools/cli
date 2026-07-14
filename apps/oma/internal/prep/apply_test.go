@@ -132,7 +132,7 @@ func TestApplyConfigurationMigrationDriftReturnsFreshPlanBeforeWrites(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "planned" || result.PlanToken == "" || store.creates != 1 || store.consumes != 1 {
+	if result.Status != "planned" || result.PlanToken == "" || result.PlanToken == "old-token" || store.creates != 1 || store.consumes != 1 {
 		t.Fatalf("result=%+v creates=%d consumes=%d", result, store.creates, store.consumes)
 	}
 	if migration.applied != 0 || git.writes != 0 || slices.Contains(j.events, "fields") || slices.Contains(j.events, "transition") {
@@ -160,7 +160,7 @@ func TestApplyConfigurationMigrationApplyRaceReturnsFreshPlanBeforeExternalWrite
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "planned" || result.PlanToken == "" || store.creates != 1 || store.consumes != 1 {
+	if result.Status != "planned" || result.PlanToken == "" || result.PlanToken == "old-token" || store.creates != 1 || store.consumes != 1 {
 		t.Fatalf("result=%+v creates=%d consumes=%d", result, store.creates, store.consumes)
 	}
 	if git.writes != 0 || slices.Contains(j.events, "fields") || slices.Contains(j.events, "transition") {
