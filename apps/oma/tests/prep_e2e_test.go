@@ -3,6 +3,7 @@ package tests
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -88,7 +89,7 @@ func TestPrepEndToEnd(t *testing.T) {
 		if got := bareRef(t, h.env, h.subOrigin, applied.Branch); got != subSHA {
 			t.Fatalf("submodule remote SHA = %s, want %s", got, subSHA)
 		}
-		assertFinalSnapshot(t, applied.JiraSnapshotPath)
+		assertFinalSnapshot(t, applied.JiraSnapshotPath, h.jira.startDate(t))
 		finalSnapshot, err := os.ReadFile(applied.JiraSnapshotPath)
 		if err != nil {
 			t.Fatal(err)
@@ -131,8 +132,9 @@ func TestPrepEndToEnd(t *testing.T) {
 	})
 
 	t.Run("setup failure is reported before push", func(t *testing.T) {
-		h := newHarness(t, harnessOptions{setupFail: true})
-		planned := h.descriptionPlan(t, "설정 실패")
+		h := newHarness(t, harnessOptions{setupFail: true, jira: true, submodule: true})
+		planned := h.run(t, h.jiraPlanArgs()...).success(t).document
+		requestStart := h.jira.attemptCount()
 		applied := h.apply(t, planned.PlanToken).failureJSON(t).document
 		if applied.Status != "partial" || !hasStep(applied, "setup", "failed") {
 			t.Fatalf("apply = %+v", applied)
@@ -140,9 +142,16 @@ func TestPrepEndToEnd(t *testing.T) {
 		if got := setupRuns(t, planned.WorktreePath); got != 1 {
 			t.Fatalf("failed setup runs = %d, want 1", got)
 		}
-		if remoteBranchExists(t, h.env, h.origin, planned.Branch) {
-			t.Fatal("setup failure pushed the parent branch")
+		if remoteBranchExists(t, h.env, h.origin, planned.Branch) || remoteBranchExists(t, h.env, h.subOrigin, planned.Branch) {
+			t.Fatal("setup failure pushed a parent or submodule branch")
 		}
+		if fields, transitions := h.jira.writeCounts(); fields != 0 || transitions != 0 {
+			t.Fatalf("setup failure Jira writes fields=%d transitions=%d, want 0/0", fields, transitions)
+		}
+		assertRequestSequence(t, h.jira.attemptsFrom(requestStart),
+			"GET /rest/api/3/issue/OMA-42",
+			"GET /rest/api/3/issue/OMA-42/transitions",
+		)
 	})
 
 	t.Run("submodule push failure preserves parent push", func(t *testing.T) {
@@ -201,12 +210,11 @@ func TestPrepEndToEnd(t *testing.T) {
 		h := newHarness(t, harnessOptions{})
 		planned := h.descriptionPlan(t, "만료 확인")
 		expirePlan(t, filepath.Join(h.state, "oma", "plans", planned.PlanToken+".json"))
-		if result := h.apply(t, planned.PlanToken); result.err == nil {
-			t.Fatal("expired token was accepted")
+		result := h.apply(t, planned.PlanToken)
+		if result.err == nil || result.document.Status != "" || result.stdout != "" {
+			t.Fatalf("expired apply exit/status/stdout = %v/%q/%q, want nonzero/empty/empty", result.err, result.document.Status, result.stdout)
 		}
-		if localBranchExists(t, h.env, h.repo, planned.Branch) || remoteBranchExists(t, h.env, h.origin, planned.Branch) {
-			t.Fatal("expired token changed Git state")
-		}
+		assertNoAppliedState(t, h, planned)
 	})
 
 	t.Run("base drift returns a fresh plan before writes", func(t *testing.T) {
@@ -218,9 +226,7 @@ func TestPrepEndToEnd(t *testing.T) {
 		if refreshed.Status != "planned" || refreshed.PlanToken == "" || refreshed.PlanToken == planned.PlanToken {
 			t.Fatalf("refreshed plan = %+v", refreshed)
 		}
-		if localBranchExists(t, h.env, h.repo, planned.Branch) || remoteBranchExists(t, h.env, h.origin, planned.Branch) {
-			t.Fatal("drifted plan changed Git state")
-		}
+		assertNoAppliedState(t, h, planned)
 	})
 
 	t.Run("concurrent apply consumes one token once", func(t *testing.T) {
@@ -586,6 +592,20 @@ func (j *jiraStub) attemptsFrom(index int) []string {
 	return append([]string(nil), j.attempts[index:]...)
 }
 
+func (j *jiraStub) startDate(t *testing.T) string {
+	t.Helper()
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	var value string
+	if err := json.Unmarshal([]byte(j.startJSON), &value); err != nil {
+		t.Fatalf("decode captured Jira start date: %v", err)
+	}
+	if _, err := time.Parse("2006-01-02", value); err != nil {
+		t.Fatalf("captured Jira start date = %q: %v", value, err)
+	}
+	return value
+}
+
 func (h *testHarness) rejectSubmodulePushes(t *testing.T) {
 	t.Helper()
 	setTreeWritable(t, h.subOrigin, false)
@@ -700,7 +720,7 @@ func setupRuns(t *testing.T, worktree string) int {
 	return count
 }
 
-func assertFinalSnapshot(t *testing.T, path string) {
+func assertFinalSnapshot(t *testing.T, path, expectedStartDate string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -723,8 +743,21 @@ func assertFinalSnapshot(t *testing.T, path string) {
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Fields.Status.Name != "In Progress" || snapshot.Fields.Assignee.AccountID != "test-account" || snapshot.Fields.Product.Value != "Feature" || snapshot.Fields.Start != time.Now().Format("2006-01-02") {
+	if snapshot.Fields.Status.Name != "In Progress" || snapshot.Fields.Assignee.AccountID != "test-account" || snapshot.Fields.Product.Value != "Feature" || snapshot.Fields.Start != expectedStartDate {
 		t.Fatalf("final snapshot fields = %+v", snapshot.Fields)
+	}
+}
+
+func assertNoAppliedState(t *testing.T, h *testHarness, planned cliResult) {
+	t.Helper()
+	if _, err := os.Lstat(planned.WorktreePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worktree lstat error = %v, want ENOENT", err)
+	}
+	if _, err := os.Lstat(filepath.Join(planned.WorktreePath, ".setup-log")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("setup log lstat error = %v, want ENOENT", err)
+	}
+	if localBranchExists(t, h.env, h.repo, planned.Branch) || remoteBranchExists(t, h.env, h.origin, planned.Branch) {
+		t.Fatalf("branch %q exists after blocked apply", planned.Branch)
 	}
 }
 
