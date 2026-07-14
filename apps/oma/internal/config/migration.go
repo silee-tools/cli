@@ -51,6 +51,7 @@ type migrationFileOps struct {
 	afterMarkerMagicWrite   func(int)
 	afterMarkerAnchorSync   func()
 	afterMarkerCommit       func()
+	afterStagedMarkerRead   func(string)
 }
 
 var migrationOS = migrationFileOps{
@@ -813,6 +814,8 @@ func renameNoReplaceForPlatform(
 		flags,
 		0,
 	)
+	runtime.KeepAlive(sourcePtr)
+	runtime.KeepAlive(destinationPtr)
 	if errno != 0 {
 		return errno
 	}
@@ -1068,7 +1071,7 @@ func recoverStagedMarker(marker string) error {
 	if err != nil {
 		return err
 	}
-	if err := restoreAnchoredTargetQuarantine(target, token); err != nil {
+	if err := restoreAnchoredTargetQuarantines(marker, target, token); err != nil {
 		return err
 	}
 
@@ -1114,10 +1117,10 @@ func recoverStagedMarker(marker string) error {
 		if record.Token != token {
 			return fmt.Errorf("staged migration marker token mismatch: %s", target)
 		}
-		if err := renameNoReplace(target, marker); err != nil {
-			return fmt.Errorf("commit recovered staged migration marker: %w", err)
+		if migrationOS.afterStagedMarkerRead != nil {
+			migrationOS.afterStagedMarkerRead(target)
 		}
-		if err := syncDirectory(filepath.Dir(marker)); err != nil {
+		if err := promoteCompletedStagedMarker(marker, anchor, target, token, targetID); err != nil {
 			return err
 		}
 	} else if err := removeOwnedRegular(target, targetID, token); err != nil {
@@ -1203,15 +1206,26 @@ func restoreQuarantinedStagedAnchor(marker, anchor string) error {
 	return syncDirectory(filepath.Dir(anchor))
 }
 
-func restoreAnchoredTargetQuarantine(target, token string) error {
-	quarantine := target + ".oma-quarantine-" + token
+func restoreAnchoredTargetQuarantines(marker, target, token string) error {
+	for _, quarantine := range []string{
+		target + ".oma-quarantine-" + token,
+		stagedMarkerPromotionPath(marker, token),
+	} {
+		if err := restoreAnchoredTargetQuarantine(quarantine, target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func restoreAnchoredTargetQuarantine(quarantine, target string) error {
 	if _, err := os.Lstat(quarantine); errors.Is(err, fs.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return err
 	}
 	if _, err := os.Lstat(target); err == nil {
-		return fmt.Errorf("staged marker target and quarantine both exist")
+		return fmt.Errorf("staged marker target and quarantine both exist: %w", fs.ErrExist)
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -1219,6 +1233,60 @@ func restoreAnchoredTargetQuarantine(target, token string) error {
 		return fmt.Errorf("restore staged marker target quarantine: %w", err)
 	}
 	return syncDirectory(filepath.Dir(target))
+}
+
+func promoteCompletedStagedMarker(marker, anchor, target, token string, targetID fileIdentity) error {
+	quarantine := stagedMarkerPromotionPath(marker, token)
+	if err := renameNoReplace(target, quarantine); err != nil {
+		return fmt.Errorf("isolate staged marker for promotion: %w", err)
+	}
+	if migrationOS.afterQuarantineMove != nil {
+		if err := migrationOS.afterQuarantineMove(target, quarantine); err != nil {
+			return fmt.Errorf("after staged marker promotion quarantine move: %w", err)
+		}
+	}
+	if err := syncMarkerDirectory(filepath.Dir(quarantine)); err != nil {
+		return fmt.Errorf("sync staged marker promotion quarantine: %w", err)
+	}
+
+	info, err := os.Lstat(quarantine)
+	if err != nil {
+		return fmt.Errorf("inspect staged marker promotion quarantine: %w", err)
+	}
+	owned := false
+	if info.Mode().IsRegular() {
+		owned, err = hasIdentity(info, targetID)
+		if err != nil {
+			return err
+		}
+	}
+	if !owned {
+		conflict := fmt.Errorf("staged marker changed after read: unexpected identity or type")
+		restoreErr := restoreStagedMarkerPromotion(quarantine, target)
+		if restoreErr != nil {
+			return errors.Join(conflict, restoreErr)
+		}
+		anchorErr := removeOwnedSymlink(anchor, target, token)
+		return errors.Join(conflict, anchorErr)
+	}
+	if err := renameNoReplace(quarantine, marker); err != nil {
+		return fmt.Errorf("commit verified staged migration marker: %w", err)
+	}
+	if err := syncMarkerDirectory(filepath.Dir(marker)); err != nil {
+		return fmt.Errorf("sync verified staged migration marker: %w", err)
+	}
+	return nil
+}
+
+func restoreStagedMarkerPromotion(quarantine, target string) error {
+	if err := renameNoReplace(quarantine, target); err != nil {
+		return fmt.Errorf("restore staged marker replacement without overwrite: %w", err)
+	}
+	return syncDirectory(filepath.Dir(target))
+}
+
+func stagedMarkerPromotionPath(marker, token string) string {
+	return marker + ".staged-quarantine-" + token
 }
 
 func stagedMarkerToken(marker, target string) (string, error) {
