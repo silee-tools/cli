@@ -18,15 +18,17 @@ type promptOption struct {
 
 type Prompter interface {
 	Select(label string, options []promptOption) (string, error)
+	Input(label string) (string, error)
 	Confirm(message string) (bool, error)
 }
 
 type terminalPrompter struct {
 	input  io.Reader
 	output io.Writer
+	reader *bufio.Reader
 }
 
-func (p terminalPrompter) Select(label string, options []promptOption) (string, error) {
+func (p *terminalPrompter) Select(label string, options []promptOption) (string, error) {
 	if len(options) == 0 {
 		return "", fmt.Errorf("oma prep: %s 후보가 없습니다", label)
 	}
@@ -41,11 +43,10 @@ func (p terminalPrompter) Select(label string, options []promptOption) (string, 
 	if _, err := fmt.Fprint(p.output, "> "); err != nil {
 		return "", err
 	}
-	line, err := bufio.NewReader(p.input).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
+	answer, err := p.readLine()
+	if err != nil {
 		return "", err
 	}
-	answer := strings.TrimSpace(line)
 	if answer == "" {
 		return "", errCancelled
 	}
@@ -60,14 +61,39 @@ func (p terminalPrompter) Select(label string, options []promptOption) (string, 
 	return "", fmt.Errorf("oma prep: 유효하지 않은 선택입니다: %s", answer)
 }
 
-func (p terminalPrompter) Confirm(message string) (bool, error) {
+func (p *terminalPrompter) Input(label string) (string, error) {
+	if _, err := fmt.Fprintf(p.output, "%s ", label); err != nil {
+		return "", err
+	}
+	answer, err := p.readLine()
+	if err != nil {
+		return "", err
+	}
+	if answer == "" {
+		return "", errCancelled
+	}
+	return answer, nil
+}
+
+func (p *terminalPrompter) Confirm(message string) (bool, error) {
 	if _, err := fmt.Fprintf(p.output, "%s [y/N] ", message); err != nil {
 		return false, err
 	}
-	line, err := bufio.NewReader(p.input).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
+	answer, err := p.readLine()
+	if err != nil {
 		return false, err
 	}
-	answer := strings.ToLower(strings.TrimSpace(line))
+	answer = strings.ToLower(answer)
 	return answer == "y" || answer == "yes", nil
+}
+
+func (p *terminalPrompter) readLine() (string, error) {
+	if p.reader == nil {
+		p.reader = bufio.NewReader(p.input)
+	}
+	line, err := p.reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
 }

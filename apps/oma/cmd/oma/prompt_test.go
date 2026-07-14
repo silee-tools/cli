@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/silee-tools/oma/internal/prep"
 )
 
 type fakeCandidates struct {
@@ -23,14 +25,18 @@ type selectCall struct {
 
 type fakePrompter struct {
 	selections []string
+	inputs     []string
 	selectErr  error
+	inputErr   error
 	confirmed  bool
 	confirmErr error
 	calls      []selectCall
 	confirms   []string
+	events     []string
 }
 
 func (f *fakePrompter) Select(label string, options []promptOption) (string, error) {
+	f.events = append(f.events, "select:"+label)
 	f.calls = append(f.calls, selectCall{label: label, options: append([]promptOption(nil), options...)})
 	if f.selectErr != nil {
 		return "", f.selectErr
@@ -43,9 +49,127 @@ func (f *fakePrompter) Select(label string, options []promptOption) (string, err
 	return value, nil
 }
 
+func (f *fakePrompter) Input(label string) (string, error) {
+	f.events = append(f.events, "input:"+label)
+	if f.inputErr != nil {
+		return "", f.inputErr
+	}
+	if len(f.inputs) == 0 {
+		return "", errors.New("unexpected input")
+	}
+	value := f.inputs[0]
+	f.inputs = f.inputs[1:]
+	return value, nil
+}
+
 func (f *fakePrompter) Confirm(message string) (bool, error) {
+	f.events = append(f.events, "confirm:"+message)
 	f.confirms = append(f.confirms, message)
 	return f.confirmed, f.confirmErr
+}
+
+func TestPromptWithExplicitInputAndBaseDoesNotNeedCandidates(t *testing.T) {
+	prompt := &fakePrompter{confirmed: true}
+	err := run([]string{"prep", "--empty", "--base", "main"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, dependencies{
+		IsTerminal: func() bool { return true },
+		Prompter:   prompt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEvents := []string{"confirm:이 계획을 적용할까요?"}
+	if !reflect.DeepEqual(prompt.events, wantEvents) {
+		t.Fatalf("events = %v, want %v", prompt.events, wantEvents)
+	}
+}
+
+func TestPromptCompletesEveryInputKind(t *testing.T) {
+	inputKinds := []promptOption{
+		{Value: "jira", Label: "Jira 작업"},
+		{Value: "description", Label: "작업 설명"},
+		{Value: "empty", Label: "빈 작업"},
+	}
+	tests := []struct {
+		name       string
+		selection  string
+		input      string
+		wantInput  prep.Input
+		wantEvents []string
+	}{
+		{
+			name:      "jira",
+			selection: "jira",
+			input:     "abc-123",
+			wantInput: prep.Input{Kind: prep.InputJira, IssueKey: "ABC-123", BranchType: "feature", Base: "main", Worktree: "new"},
+			wantEvents: []string{
+				"select:작업 입력을 선택하세요",
+				"input:Jira 키를 입력하세요",
+				"confirm:이 계획을 적용할까요?",
+			},
+		},
+		{
+			name:      "description",
+			selection: "description",
+			input:     " 작업 설명 ",
+			wantInput: prep.Input{Kind: prep.InputDescription, Description: "작업 설명", BranchType: "feature", Base: "main", Worktree: "new"},
+			wantEvents: []string{
+				"select:작업 입력을 선택하세요",
+				"input:작업 설명을 입력하세요",
+				"confirm:이 계획을 적용할까요?",
+			},
+		},
+		{
+			name:      "empty",
+			selection: "empty",
+			wantInput: prep.Input{Kind: prep.InputEmpty, BranchType: "feature", Base: "main", Worktree: "new"},
+			wantEvents: []string{
+				"select:작업 입력을 선택하세요",
+				"confirm:이 계획을 적용할까요?",
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt := &fakePrompter{selections: []string{tc.selection}, confirmed: true}
+			if tc.input != "" {
+				prompt.inputs = []string{tc.input}
+			}
+			parsed := options{Input: prep.Input{BranchType: "feature", Base: "main", Worktree: "new"}}
+			err := completeOptions(&parsed, dependencies{
+				IsTerminal: func() bool { return true },
+				Prompter:   prompt,
+				Candidates: fakeCandidates{inputKinds: inputKinds},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(parsed.Input, tc.wantInput) {
+				t.Fatalf("input = %+v, want %+v", parsed.Input, tc.wantInput)
+			}
+			if !reflect.DeepEqual(prompt.events, tc.wantEvents) {
+				t.Fatalf("events = %v, want %v", prompt.events, tc.wantEvents)
+			}
+		})
+	}
+}
+
+func TestPromptTerminalReaderSequence(t *testing.T) {
+	prompt := terminalPrompter{input: strings.NewReader("1\n1\ny\n"), output: &bytes.Buffer{}}
+	first, err := prompt.Select("작업 입력", []promptOption{{Value: "empty", Label: "빈 작업"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := prompt.Select("기준 브랜치", []promptOption{{Value: "main", Label: "main"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := prompt.Confirm("적용할까요?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != "empty" || second != "main" || !approved {
+		t.Fatalf("sequence = %q, %q, %t", first, second, approved)
+	}
 }
 
 func TestPromptUsesInjectedInputAndBaseCandidates(t *testing.T) {

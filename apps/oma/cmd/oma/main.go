@@ -185,20 +185,50 @@ func completeOptions(parsed *options, deps dependencies) error {
 		}
 		return nil
 	}
-	if deps.Prompter == nil || deps.Candidates == nil {
-		return fmt.Errorf("oma prep: 대화형 후보 공급자를 사용할 수 없습니다")
+	if deps.Prompter == nil {
+		return fmt.Errorf("oma prep: 대화형 입력기를 사용할 수 없습니다")
 	}
 	if parsed.Input.Kind == "" {
+		if deps.Candidates == nil {
+			return fmt.Errorf("oma prep: 작업 입력 후보 공급자를 사용할 수 없습니다")
+		}
 		selected, err := deps.Prompter.Select("작업 입력을 선택하세요", deps.Candidates.InputKinds())
 		if err != nil {
 			return err
 		}
-		parsed.Input.Kind = prep.InputKind(selected)
-		if parsed.Input.Kind != prep.InputEmpty {
-			return fmt.Errorf("oma prep: Jira 키 또는 --description 값을 지정해야 합니다")
+		switch prep.InputKind(selected) {
+		case prep.InputJira:
+			value, err := deps.Prompter.Input("Jira 키를 입력하세요")
+			if err != nil {
+				return err
+			}
+			key, err := prep.NormalizeIssueKey(value)
+			if err != nil {
+				return err
+			}
+			parsed.Input.Kind = prep.InputJira
+			parsed.Input.IssueKey = key
+		case prep.InputDescription:
+			value, err := deps.Prompter.Input("작업 설명을 입력하세요")
+			if err != nil {
+				return err
+			}
+			value = strings.TrimSpace(value)
+			if value == "" {
+				return fmt.Errorf("oma prep: 작업 설명은 비어 있을 수 없습니다")
+			}
+			parsed.Input.Kind = prep.InputDescription
+			parsed.Input.Description = value
+		case prep.InputEmpty:
+			parsed.Input.Kind = prep.InputEmpty
+		default:
+			return fmt.Errorf("oma prep: 알 수 없는 작업 입력 종류입니다: %q", selected)
 		}
 	}
 	if parsed.Input.Base == "" {
+		if deps.Candidates == nil {
+			return fmt.Errorf("oma prep: 기준 브랜치 후보 공급자를 사용할 수 없습니다")
+		}
 		selected, err := deps.Prompter.Select("기준 브랜치를 선택하세요", deps.Candidates.Bases())
 		if err != nil {
 			return err
@@ -251,7 +281,7 @@ func main() {
 
 	deps := dependencies{
 		IsTerminal: func() bool { return term.IsTerminal(int(os.Stdin.Fd())) },
-		Prompter:   terminalPrompter{input: os.Stdin, output: os.Stdout},
+		Prompter:   &terminalPrompter{input: os.Stdin, output: os.Stdout},
 	}
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, deps); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
