@@ -99,28 +99,12 @@ func New(stateRoot string) (*Store, error) {
 	if !filepath.IsAbs(stateRoot) {
 		return nil, fmt.Errorf("%w: state root must be absolute", ErrUnsafeRoot)
 	}
-	absRoot := filepath.Clean(stateRoot)
-	rootCreated, err := ensureDirectory(absRoot, 0o700, false)
-	if err != nil {
+	appRoot := filepath.Clean(stateRoot)
+	if err := ensureSecurePath(appRoot); err != nil {
 		return nil, err
 	}
-	if rootCreated {
-		if err := os.Chmod(absRoot, 0o700); err != nil {
-			return nil, fmt.Errorf("secure newly created state root: %w", err)
-		}
-	}
-	omaDir := filepath.Join(absRoot, "oma")
-	omaCreated, err := ensureDirectory(omaDir, 0o700, false)
-	if err != nil {
-		return nil, err
-	}
-	if omaCreated {
-		if err := os.Chmod(omaDir, 0o700); err != nil {
-			return nil, fmt.Errorf("secure application state directory: %w", err)
-		}
-	}
-	plansDir := filepath.Join(omaDir, "plans")
-	if _, err := ensureDirectory(plansDir, 0o700, true); err != nil {
+	plansDir := filepath.Join(appRoot, "plans")
+	if err := ensureSecurePath(plansDir); err != nil {
 		return nil, err
 	}
 	return &Store{
@@ -201,6 +185,10 @@ func (s *Store) Load(token string, payload any) (Record, error) {
 	if err == nil {
 		return metadata(disk), nil
 	}
+	var committed *CommittedError
+	if errors.As(err, &committed) {
+		return metadata(disk), err
+	}
 	if !errors.Is(err, ErrMissing) {
 		return Record{}, err
 	}
@@ -219,6 +207,10 @@ func (s *Store) Claim(token string, payload any) (Record, error) {
 	}
 	disk, err := s.read(token, pendingSuffix, Pending, payload)
 	if err != nil {
+		var committed *CommittedError
+		if errors.As(err, &committed) {
+			return metadata(disk), err
+		}
 		if errors.Is(err, ErrMissing) {
 			return Record{}, s.absentState(token)
 		}
@@ -233,7 +225,9 @@ func (s *Store) Claim(token string, payload any) (Record, error) {
 	outcome := s.publish(token, claimedPath, data)
 	if outcome.err != nil && !outcome.committed {
 		if outcome.collision {
-			if ok, matchErr := s.recordMatches(token, claimedSuffix, Claimed); matchErr == nil && ok {
+			if ok, matchErr := s.recordMatches(token, claimedSuffix, Claimed); matchErr != nil {
+				return Record{}, stateConflict(matchErr)
+			} else if ok {
 				return Record{}, ErrClaimed
 			}
 			return Record{}, ErrStateConflict
@@ -270,10 +264,13 @@ func (s *Store) Consume(token string) error {
 	}
 	if consumedExists {
 		ok, matchErr := s.recordMatches(token, consumedSuffix, Consumed)
-		if matchErr != nil || !ok {
+		if matchErr != nil {
+			return stateConflict(matchErr)
+		}
+		if !ok {
 			return ErrStateConflict
 		}
-		return s.finalizeConsumed(token)
+		return s.finishConsumed(token)
 	}
 	disk, err := s.readWithoutExpiry(token, claimedSuffix, Claimed)
 	if err != nil {
@@ -283,7 +280,11 @@ func (s *Store) Consume(token string) error {
 				return existsErr
 			}
 			if consumedExists {
-				return s.finalizeConsumed(token)
+				ok, matchErr := s.recordMatches(token, consumedSuffix, Consumed)
+				if matchErr != nil || !ok {
+					return stateConflict(matchErr)
+				}
+				return s.finishConsumed(token)
 			}
 			pendingExists, existsErr := s.exists(s.path(token, pendingSuffix))
 			if existsErr != nil {
@@ -305,35 +306,52 @@ func (s *Store) Consume(token string) error {
 	if outcome.err != nil && !outcome.committed {
 		if outcome.collision {
 			ok, matchErr := s.recordMatches(token, consumedSuffix, Consumed)
-			if matchErr == nil && ok {
-				return s.finalizeConsumed(token)
+			if matchErr != nil {
+				return stateConflict(matchErr)
+			}
+			if ok {
+				return s.finishConsumed(token)
 			}
 			return ErrStateConflict
 		}
 		return fmt.Errorf("consume plan: %w", outcome.err)
 	}
-	finalizeErr := s.finalizeConsumed(token)
+	finalized := s.finalizeConsumed(token)
+	finalizeErr := finalized.err()
 	if outcome.err != nil || finalizeErr != nil {
 		outcome.err = errors.Join(outcome.err, finalizeErr)
-		if finalizeErr != nil {
-			outcome.ambiguous = true
-		}
+		outcome.ambiguous = outcome.ambiguous || finalized.syncErr != nil
 		return committedError(token, Consumed, outcome)
 	}
 	return nil
 }
 
-func (s *Store) finalizeConsumed(token string) error {
-	var result error
+type finalizeOutcome struct {
+	cleanupErr error
+	syncErr    error
+}
+
+func (o finalizeOutcome) err() error { return errors.Join(o.cleanupErr, o.syncErr) }
+
+func (s *Store) finishConsumed(token string) error {
+	finalized := s.finalizeConsumed(token)
+	if err := finalized.err(); err != nil {
+		return &CommittedError{Token: token, State: Consumed, Ambiguous: finalized.syncErr != nil, Err: err}
+	}
+	return nil
+}
+
+func (s *Store) finalizeConsumed(token string) finalizeOutcome {
+	var outcome finalizeOutcome
 	for _, suffix := range []string{claimedSuffix, pendingSuffix} {
 		if err := s.remove(s.path(token, suffix)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			result = errors.Join(result, fmt.Errorf("remove stale %s plan state: %w", suffix, err))
+			outcome.cleanupErr = errors.Join(outcome.cleanupErr, fmt.Errorf("remove stale %s plan state: %w", suffix, err))
 		}
 	}
 	if err := s.syncDir(s.dir); err != nil {
-		result = errors.Join(result, fmt.Errorf("sync consumed plan: %w", err))
+		outcome.syncErr = fmt.Errorf("sync consumed plan: %w", err)
 	}
-	return result
+	return outcome
 }
 
 func (s *Store) newToken() (string, error) {
@@ -407,9 +425,12 @@ func (s *Store) ensureReservation(token string) error {
 }
 
 func (s *Store) validateReservation(token string) error {
-	data, err := s.readSafeFile(s.path(token, reservationSuffix), token)
+	data, cleaned, err := s.readSafeFile(s.path(token, reservationSuffix), token)
 	if err != nil {
 		return err
+	}
+	if err := cleaned.err(); err != nil {
+		return &CommittedError{Token: token, State: Pending, Ambiguous: cleaned.syncErr != nil, Err: err}
 	}
 	if string(data) != token+"\n" {
 		return ErrStateConflict
@@ -441,6 +462,10 @@ func isTokenCharacter(char byte) bool {
 func (s *Store) read(token, suffix string, wantState State, payload any) (diskRecord, error) {
 	disk, err := s.decodeRecord(token, suffix, wantState)
 	if err != nil {
+		var committed *CommittedError
+		if errors.As(err, &committed) {
+			return disk, err
+		}
 		return diskRecord{}, err
 	}
 	if !s.now().Before(disk.ExpiresAt) {
@@ -456,7 +481,7 @@ func (s *Store) read(token, suffix string, wantState State, payload any) (diskRe
 
 func (s *Store) decodeRecord(token, suffix string, wantState State) (diskRecord, error) {
 	path := s.path(token, suffix)
-	data, err := s.readSafeFile(path, token)
+	data, cleaned, err := s.readSafeFile(path, token)
 	if err != nil {
 		return diskRecord{}, err
 	}
@@ -471,68 +496,73 @@ func (s *Store) decodeRecord(token, suffix string, wantState State) (diskRecord,
 		!disk.ExpiresAt.Equal(disk.CreatedAt.Add(planTTL)) || !json.Valid(disk.Payload) {
 		return diskRecord{}, ErrCorrupt
 	}
+	if cleanupErr := cleaned.err(); cleanupErr != nil {
+		return disk, &CommittedError{Token: token, State: wantState, Ambiguous: cleaned.syncErr != nil, Err: cleanupErr}
+	}
 	return disk, nil
 }
 
-func (s *Store) readSafeFile(path, token string) ([]byte, error) {
+func (s *Store) readSafeFile(path, token string) ([]byte, finalizeOutcome, error) {
 	file, err := s.openRead(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, ErrMissing
+			return nil, finalizeOutcome{}, ErrMissing
 		}
 		if errors.Is(err, syscall.ELOOP) {
-			return nil, ErrUnsafeRecord
+			return nil, finalizeOutcome{}, ErrUnsafeRecord
 		}
-		return nil, fmt.Errorf("open plan record: %w", err)
+		return nil, finalizeOutcome{}, fmt.Errorf("open plan record: %w", err)
 	}
 	info, statErr := file.Stat()
 	if statErr != nil {
 		_ = file.Close()
-		return nil, fmt.Errorf("inspect open plan record: %w", statErr)
+		return nil, finalizeOutcome{}, fmt.Errorf("inspect open plan record: %w", statErr)
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	fileSecurityMode := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
 	if !ok || !info.Mode().IsRegular() || fileSecurityMode != 0o600 ||
 		uint32(stat.Uid) != uint32(os.Geteuid()) {
 		_ = file.Close()
-		return nil, ErrUnsafeRecord
+		return nil, finalizeOutcome{}, ErrUnsafeRecord
 	}
-	if err := s.validateLinkTopology(file, path, token); err != nil {
+	cleaned, err := s.validateLinkTopology(file, path, token)
+	if err != nil {
 		_ = file.Close()
-		return nil, err
+		return nil, finalizeOutcome{}, err
 	}
 	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
 	if readErr != nil {
-		return nil, fmt.Errorf("read plan record: %w", readErr)
+		return nil, finalizeOutcome{}, fmt.Errorf("read plan record: %w", readErr)
 	}
 	if closeErr != nil {
-		return nil, fmt.Errorf("close plan record: %w", closeErr)
+		return nil, finalizeOutcome{}, fmt.Errorf("close plan record: %w", closeErr)
 	}
-	return data, nil
+	return data, cleaned, nil
 }
 
-func (s *Store) validateLinkTopology(file *os.File, path, token string) error {
+func (s *Store) validateLinkTopology(file *os.File, path, token string) (finalizeOutcome, error) {
 	for range 4 {
 		before, err := file.Stat()
 		if err != nil {
-			return fmt.Errorf("inspect plan link count: %w", err)
+			return finalizeOutcome{}, fmt.Errorf("inspect plan link count: %w", err)
 		}
 		beforeStat, ok := before.Sys().(*syscall.Stat_t)
 		if !ok {
-			return ErrUnsafeRecord
+			return finalizeOutcome{}, ErrUnsafeRecord
 		}
 		if beforeStat.Nlink == 0 {
-			return ErrMissing
+			return finalizeOutcome{}, ErrMissing
 		}
 		entries, err := os.ReadDir(s.dir)
 		if err != nil {
-			return fmt.Errorf("inspect plan link topology: %w", err)
+			return finalizeOutcome{}, fmt.Errorf("inspect plan link topology: %w", err)
 		}
 		wantBase := filepath.Base(path)
 		tempPrefix := "." + token + ".tmp-"
 		knownLinks := uint64(0)
 		sawTarget := false
+		legacyLinks := make([]string, 0)
 		for _, entry := range entries {
 			entryPath := filepath.Join(s.dir, entry.Name())
 			info, err := s.lstat(entryPath)
@@ -540,34 +570,53 @@ func (s *Store) validateLinkTopology(file *os.File, path, token string) error {
 				if errors.Is(err, os.ErrNotExist) {
 					continue
 				}
-				return fmt.Errorf("inspect plan link: %w", err)
+				return finalizeOutcome{}, fmt.Errorf("inspect plan link: %w", err)
 			}
-			if !os.SameFile(before, info) {
+			sameFile := os.SameFile(before, info)
+			if strings.HasPrefix(entry.Name(), ".plan-") && !sameFile && !strings.HasSuffix(wantBase, reservationSuffix) {
+				return finalizeOutcome{}, ErrUnsafeRecord
+			}
+			if !sameFile {
 				continue
 			}
-			if entry.Name() != wantBase && !strings.HasPrefix(entry.Name(), tempPrefix) {
-				return ErrUnsafeRecord
+			legacy := strings.HasPrefix(entry.Name(), ".plan-")
+			if entry.Name() != wantBase && !strings.HasPrefix(entry.Name(), tempPrefix) && !legacy {
+				return finalizeOutcome{}, ErrUnsafeRecord
+			}
+			if legacy {
+				legacyLinks = append(legacyLinks, entryPath)
 			}
 			sawTarget = sawTarget || entry.Name() == wantBase
 			knownLinks++
 		}
 		after, err := file.Stat()
 		if err != nil {
-			return fmt.Errorf("recheck plan link count: %w", err)
+			return finalizeOutcome{}, fmt.Errorf("recheck plan link count: %w", err)
 		}
 		afterStat, ok := after.Sys().(*syscall.Stat_t)
 		if !ok {
-			return ErrUnsafeRecord
+			return finalizeOutcome{}, ErrUnsafeRecord
 		}
 		if beforeStat.Nlink != afterStat.Nlink {
 			continue
 		}
 		if !sawTarget || knownLinks != uint64(afterStat.Nlink) {
-			return ErrUnsafeRecord
+			return finalizeOutcome{}, ErrUnsafeRecord
 		}
-		return nil
+		var cleaned finalizeOutcome
+		for _, legacyPath := range legacyLinks {
+			if err := s.remove(legacyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				cleaned.cleanupErr = errors.Join(cleaned.cleanupErr, fmt.Errorf("remove legacy publication link: %w", err))
+			}
+		}
+		if len(legacyLinks) > 0 {
+			if err := s.syncDir(s.dir); err != nil {
+				cleaned.syncErr = fmt.Errorf("sync legacy publication cleanup: %w", err)
+			}
+		}
+		return cleaned, nil
 	}
-	return ErrUnsafeRecord
+	return finalizeOutcome{}, ErrUnsafeRecord
 }
 
 func (s *Store) absentState(token string) error {
@@ -576,7 +625,9 @@ func (s *Store) absentState(token string) error {
 		return err
 	}
 	if consumedExists {
-		if ok, matchErr := s.recordMatches(token, consumedSuffix, Consumed); matchErr == nil && ok {
+		if ok, matchErr := s.recordMatches(token, consumedSuffix, Consumed); matchErr != nil {
+			return stateConflict(matchErr)
+		} else if ok {
 			return ErrConsumed
 		}
 		return ErrStateConflict
@@ -586,7 +637,9 @@ func (s *Store) absentState(token string) error {
 		return err
 	}
 	if claimedExists {
-		if ok, matchErr := s.recordMatches(token, claimedSuffix, Claimed); matchErr == nil && ok {
+		if ok, matchErr := s.recordMatches(token, claimedSuffix, Claimed); matchErr != nil {
+			return stateConflict(matchErr)
+		} else if ok {
 			return ErrClaimed
 		}
 		return ErrStateConflict
@@ -600,7 +653,9 @@ func (s *Store) nonPendingState(token string) error {
 		return err
 	}
 	if consumedExists {
-		if ok, matchErr := s.recordMatches(token, consumedSuffix, Consumed); matchErr == nil && ok {
+		if ok, matchErr := s.recordMatches(token, consumedSuffix, Consumed); matchErr != nil {
+			return stateConflict(matchErr)
+		} else if ok {
 			return ErrConsumed
 		}
 		return ErrStateConflict
@@ -610,7 +665,9 @@ func (s *Store) nonPendingState(token string) error {
 		return err
 	}
 	if claimedExists {
-		if ok, matchErr := s.recordMatches(token, claimedSuffix, Claimed); matchErr == nil && ok {
+		if ok, matchErr := s.recordMatches(token, claimedSuffix, Claimed); matchErr != nil {
+			return stateConflict(matchErr)
+		} else if ok {
 			return ErrClaimed
 		}
 		return ErrStateConflict
@@ -626,7 +683,19 @@ func (s *Store) recordMatches(token, suffix string, state State) (bool, error) {
 	if errors.Is(err, ErrMissing) {
 		return false, nil
 	}
+	var committed *CommittedError
+	if errors.As(err, &committed) {
+		return true, err
+	}
 	return false, err
+}
+
+func stateConflict(err error) error {
+	var committed *CommittedError
+	if errors.As(err, &committed) {
+		return err
+	}
+	return errors.Join(ErrStateConflict, err)
 }
 
 func (s *Store) readWithoutExpiry(token, suffix string, wantState State) (diskRecord, error) {
@@ -686,28 +755,46 @@ func (s *Store) publish(token, target string, data []byte) publishOutcome {
 	return outcome
 }
 
-func ensureDirectory(path string, mode os.FileMode, enforceMode bool) (bool, error) {
-	created := false
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(path, mode); err != nil {
-			return false, fmt.Errorf("create state directory: %w", err)
+func ensureSecurePath(path string) error {
+	volume := filepath.VolumeName(path)
+	current := volume + string(os.PathSeparator)
+	relative := strings.TrimPrefix(path, current)
+	parts := strings.Split(relative, string(os.PathSeparator))
+	for index, part := range parts {
+		if part == "" {
+			continue
 		}
-		created = true
-		info, err = os.Lstat(path)
-	}
-	if err != nil {
-		return false, fmt.Errorf("%w: %v", ErrUnsafeRoot, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return false, fmt.Errorf("%w: %s is not a real directory", ErrUnsafeRoot, path)
-	}
-	if enforceMode {
-		if err := os.Chmod(path, mode); err != nil {
-			return false, fmt.Errorf("secure state directory: %w", err)
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			if err := os.Mkdir(current, 0o700); err != nil {
+				return fmt.Errorf("create state directory: %w", err)
+			}
+			if err := os.Chmod(current, 0o700); err != nil {
+				return fmt.Errorf("secure new state directory: %w", err)
+			}
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrUnsafeRoot, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 && index != len(parts)-1 {
+			resolved, statErr := os.Stat(current)
+			if statErr != nil || !resolved.IsDir() {
+				return fmt.Errorf("%w: %s is not a directory", ErrUnsafeRoot, current)
+			}
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("%w: %s is not a real directory", ErrUnsafeRoot, current)
+		}
+		if index == len(parts)-1 {
+			if err := os.Chmod(current, 0o700); err != nil {
+				return fmt.Errorf("secure application state directory: %w", err)
+			}
 		}
 	}
-	return created, nil
+	return nil
 }
 
 func syncDirectory(path string) error {

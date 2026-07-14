@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/silee-tools/oma/internal/config"
 )
 
 type testPayload struct {
@@ -73,9 +75,35 @@ func TestStoreCreatesAndLoadsAPlan(t *testing.T) {
 		t.Fatalf("loaded metadata = %#v", loaded)
 	}
 
-	assertMode(t, stateRoot, 0o755)
-	assertMode(t, filepath.Join(stateRoot, "oma", "plans"), 0o700)
-	assertMode(t, filepath.Join(stateRoot, "oma", "plans", created.Token+pendingSuffix), 0o600)
+	assertMode(t, stateRoot, 0o700)
+	assertMode(t, filepath.Join(stateRoot, "plans"), 0o700)
+	assertMode(t, filepath.Join(stateRoot, "plans", created.Token+pendingSuffix), 0o600)
+}
+
+func TestStoreUsesResolvedApplicationStateRoot(t *testing.T) {
+	xdgState := t.TempDir()
+	paths := config.ResolvePaths(func(key string) string {
+		if key == "XDG_STATE_HOME" {
+			return xdgState
+		}
+		return ""
+	}, t.TempDir())
+	store, err := New(paths.StateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(paths.StateRoot, "plans")
+	if store.dir != want {
+		t.Fatalf("store dir = %q, want %q", store.dir, want)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StateRoot, "oma")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected double oma directory: %v", err)
+	}
+
+	emptyPaths := config.ResolvePaths(func(string) string { return "" }, "")
+	if _, err := New(emptyPaths.StateRoot); !errors.Is(err, ErrUnsafeRoot) {
+		t.Fatalf("New(empty HOME/XDG StateRoot %q) error = %v, want ErrUnsafeRoot", emptyPaths.StateRoot, err)
+	}
 }
 
 func TestStoreExpiresAtExactBoundary(t *testing.T) {
@@ -178,7 +206,7 @@ func TestStoreRejectsUnsafeStateRoots(t *testing.T) {
 	if err := os.Mkdir(stateRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(realRoot, filepath.Join(stateRoot, "oma")); err != nil {
+	if err := os.Symlink(realRoot, filepath.Join(stateRoot, "plans")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := New(stateRoot); !errors.Is(err, ErrUnsafeRoot) {
@@ -628,12 +656,244 @@ func TestStoreReportsCommittedPostPublicationErrors(t *testing.T) {
 			return originalRemove(path)
 		}
 		err = store.Consume(created.Token)
-		assertCommittedError(t, err, Consumed, true)
+		assertCommittedError(t, err, Consumed, false)
 		store.remove = originalRemove
 		if err := store.Consume(created.Token); err != nil {
 			t.Fatalf("Consume() reconciliation = %v", err)
 		}
 	})
+}
+
+func TestStoreReportsConsumedFinalizeErrorsAsCommitted(t *testing.T) {
+	injected := errors.New("injected finalize failure")
+	for _, suffix := range []string{claimedSuffix, pendingSuffix} {
+		t.Run("cleanup "+suffix, func(t *testing.T) {
+			store := newTestStore(t, time.Now(), bytes.Repeat([]byte{byte(0x56 + len(suffix))}, tokenBytes))
+			created, err := store.Create(testPayload{Title: "observed consumed"}, "fingerprint")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending, err := os.ReadFile(store.path(created.Token, pendingSuffix))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload testPayload
+			if _, err := store.Claim(created.Token, &payload); err != nil {
+				t.Fatal(err)
+			}
+			claimed, err := os.ReadFile(store.path(created.Token, claimedSuffix))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Consume(created.Token); err != nil {
+				t.Fatal(err)
+			}
+			stale := pending
+			if suffix == claimedSuffix {
+				stale = claimed
+			}
+			if err := os.WriteFile(store.path(created.Token, suffix), stale, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			originalRemove := store.remove
+			store.remove = func(path string) error {
+				if strings.HasSuffix(path, suffix) {
+					return injected
+				}
+				return originalRemove(path)
+			}
+			err = store.Consume(created.Token)
+			assertCommittedError(t, err, Consumed, false)
+			if !errors.Is(err, injected) {
+				t.Fatalf("Consume() error = %v, want injected cleanup error", err)
+			}
+		})
+	}
+
+	t.Run("durability sync", func(t *testing.T) {
+		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x59}, tokenBytes))
+		created, err := store.Create(testPayload{Title: "consumed sync"}, "fingerprint")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload testPayload
+		if _, err := store.Claim(created.Token, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Consume(created.Token); err != nil {
+			t.Fatal(err)
+		}
+		store.syncDir = func(string) error { return injected }
+		err = store.Consume(created.Token)
+		assertCommittedError(t, err, Consumed, true)
+		if !errors.Is(err, injected) {
+			t.Fatalf("Consume() error = %v, want injected sync error", err)
+		}
+	})
+}
+
+func TestStoreReconcilesLegacyPublicationLinks(t *testing.T) {
+	t.Run("same inode", func(t *testing.T) {
+		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x5a}, tokenBytes))
+		created, err := store.Create(testPayload{Title: "legacy temp"}, "fingerprint")
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacy := filepath.Join(store.dir, ".plan-crash")
+		if err := os.Link(store.path(created.Token, pendingSuffix), legacy); err != nil {
+			t.Fatal(err)
+		}
+		var payload testPayload
+		if _, err := store.Load(created.Token, &payload); err != nil {
+			t.Fatalf("Load() = %v", err)
+		}
+		if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("legacy link was not reconciled: %v", err)
+		}
+	})
+
+	t.Run("cleanup error", func(t *testing.T) {
+		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x5b}, tokenBytes))
+		created, err := store.Create(testPayload{Title: "legacy error"}, "fingerprint")
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacy := filepath.Join(store.dir, ".plan-cleanup")
+		if err := os.Link(store.path(created.Token, pendingSuffix), legacy); err != nil {
+			t.Fatal(err)
+		}
+		injected := errors.New("legacy cleanup failed")
+		originalRemove := store.remove
+		store.remove = func(path string) error {
+			if path == legacy {
+				return injected
+			}
+			return originalRemove(path)
+		}
+		var payload testPayload
+		loaded, err := store.Load(created.Token, &payload)
+		assertCommittedError(t, err, Pending, false)
+		if loaded.Token != created.Token || !errors.Is(err, injected) {
+			t.Fatalf("Load() = (%#v, %v)", loaded, err)
+		}
+	})
+
+	t.Run("unrelated inode", func(t *testing.T) {
+		store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x5c}, tokenBytes))
+		created, err := store.Create(testPayload{Title: "unrelated"}, "fingerprint")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(store.dir, ".plan-unrelated"), []byte("other"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var payload testPayload
+		if _, err := store.Load(created.Token, &payload); !errors.Is(err, ErrUnsafeRecord) {
+			t.Fatalf("Load() error = %v, want ErrUnsafeRecord", err)
+		}
+	})
+}
+
+func TestStorePreservesRecordMatchErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		state  State
+		want   error
+		mutate func(*testing.T, *Store, string)
+	}{
+		{name: "consumed corrupt", state: Consumed, want: ErrCorrupt, mutate: func(t *testing.T, store *Store, token string) {
+			t.Helper()
+			if err := os.WriteFile(store.path(token, consumedSuffix), []byte("{"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "claimed unsafe mode", state: Claimed, want: ErrUnsafeRecord, mutate: func(t *testing.T, store *Store, token string) {
+			t.Helper()
+			if err := os.Chmod(store.path(token, claimedSuffix), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "claimed read error", state: Claimed, want: syscall.EIO, mutate: func(t *testing.T, store *Store, token string) {
+			t.Helper()
+			original := store.openRead
+			store.openRead = func(path string) (*os.File, error) {
+				if strings.HasSuffix(path, claimedSuffix) {
+					return nil, syscall.EIO
+				}
+				return original(path)
+			}
+		}},
+		{name: "claimed wrong state", state: Claimed, want: ErrCorrupt, mutate: func(t *testing.T, store *Store, token string) {
+			t.Helper()
+			path := store.path(token, claimedSuffix)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data = bytes.Replace(data, []byte(`"state":"claimed"`), []byte(`"state":"pending"`), 1)
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "consumed unsafe mode", state: Consumed, want: ErrUnsafeRecord, mutate: func(t *testing.T, store *Store, token string) {
+			t.Helper()
+			if err := os.Chmod(store.path(token, consumedSuffix), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "consumed read error", state: Consumed, want: syscall.EIO, mutate: func(t *testing.T, store *Store, token string) {
+			t.Helper()
+			original := store.openRead
+			store.openRead = func(path string) (*os.File, error) {
+				if strings.HasSuffix(path, consumedSuffix) {
+					return nil, syscall.EIO
+				}
+				return original(path)
+			}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newTestStore(t, time.Now(), bytes.Repeat([]byte{byte(0x60 + len(test.name))}, tokenBytes))
+			created, err := store.Create(testPayload{Title: test.name}, "fingerprint")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload testPayload
+			if _, err := store.Claim(created.Token, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if test.state == Consumed {
+				if err := store.Consume(created.Token); err != nil {
+					t.Fatal(err)
+				}
+			}
+			test.mutate(t, store, created.Token)
+			_, err = store.Load(created.Token, &payload)
+			if !errors.Is(err, ErrStateConflict) || !errors.Is(err, test.want) {
+				t.Fatalf("Load() error = %v, want ErrStateConflict and %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestStorePreservesPendingReadErrors(t *testing.T) {
+	store := newTestStore(t, time.Now(), bytes.Repeat([]byte{0x6f}, tokenBytes))
+	created, err := store.Create(testPayload{Title: "pending read"}, "fingerprint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := store.openRead
+	store.openRead = func(path string) (*os.File, error) {
+		if strings.HasSuffix(path, pendingSuffix) {
+			return nil, syscall.EIO
+		}
+		return original(path)
+	}
+	var payload testPayload
+	if _, err := store.Load(created.Token, &payload); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("Load() error = %v, want EIO", err)
+	}
 }
 
 func TestStoreConcurrentConsumeIsIdempotent(t *testing.T) {
@@ -834,18 +1094,19 @@ func TestStoreCreatesOwnedDirectoriesWithRestrictiveUmask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertMode(t, stateRoot, 0o755)
-	assertMode(t, filepath.Join(stateRoot, "oma"), 0o700)
+	assertMode(t, stateRoot, 0o700)
 	assertMode(t, store.dir, 0o700)
 
-	missingRoot := filepath.Join(parent, "missing-state")
+	missingRoot := filepath.Join(parent, "missing", "xdg", "state", "oma")
 	missingStore, err := New(missingRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertMode(t, missingRoot, 0o700)
-	assertMode(t, filepath.Join(missingRoot, "oma"), 0o700)
 	assertMode(t, missingStore.dir, 0o700)
+	for path := filepath.Dir(missingRoot); path != parent; path = filepath.Dir(path) {
+		assertMode(t, path, 0o700)
+	}
 }
 
 func assertCommittedError(t *testing.T, err error, state State, ambiguous bool) {
@@ -861,7 +1122,7 @@ func assertCommittedError(t *testing.T, err error, state State, ambiguous bool) 
 
 func runStateProcesses(t *testing.T, plansDir, token, action string, count int, random string) []string {
 	t.Helper()
-	stateRoot := filepath.Dir(filepath.Dir(plansDir))
+	stateRoot := filepath.Dir(plansDir)
 	commands := make([]*exec.Cmd, count)
 	outputs := make([]bytes.Buffer, count)
 	for index := range count {
