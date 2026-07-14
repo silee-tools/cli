@@ -1356,6 +1356,152 @@ func TestPlanMigrationPreservesUnknownConflictIntentDraftAnchors(t *testing.T) {
 	}
 }
 
+func TestPlanMigrationRecoversConflictIntentDraftAnchorCleanupFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		crash      bool
+		setFailure func(*migrationFileOps, string, error)
+	}{
+		{
+			name:  "after cleanup move",
+			crash: true,
+			setFailure: func(ops *migrationFileOps, _ string, _ error) {
+				ops.afterConflictIntentDraftAnchorMove = func() { panic(simulatedCrash{}) }
+			},
+		},
+		{
+			name: "cleanup directory sync failure",
+			setFailure: func(ops *migrationFileOps, _ string, injected error) {
+				ops.conflictIntentDraftAnchorSync = func(string) error { return injected }
+			},
+		},
+		{
+			name: "cleanup remove failure",
+			setFailure: func(ops *migrationFileOps, anchor string, injected error) {
+				ops.remove = func(path string) error {
+					if strings.HasPrefix(path, anchor+".oma-quarantine-") {
+						return injected
+					}
+					return os.Remove(path)
+				}
+			},
+		},
+		{
+			name: "cleanup final sync failure",
+			setFailure: func(ops *migrationFileOps, _ string, injected error) {
+				calls := 0
+				ops.conflictIntentDraftAnchorSync = func(string) error {
+					calls++
+					if calls == 2 {
+						return injected
+					}
+					return nil
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testPaths(t)
+			marker, target := createCompletedAnchoredMarker(t, paths)
+			intent := stagedConflictIntentPathForTest(marker, target)
+			draftAnchor := intent + ".oma-draft-anchor"
+			injected := errors.New("injected draft anchor cleanup failure")
+			originalOps := migrationOS
+			migrationOS.afterStagedMarkerRead = func(path string) {
+				if path != target {
+					return
+				}
+				if err := os.Remove(path); err != nil {
+					panic(err)
+				}
+				createRegularStagedSentinel(t, path)
+			}
+			tt.setFailure(&migrationOS, draftAnchor, injected)
+			t.Cleanup(func() { migrationOS = originalOps })
+
+			if tt.crash {
+				assertSimulatedCrash(t, func() { _, _ = PlanMigration(paths) })
+			} else if _, err := PlanMigration(paths); !errors.Is(err, injected) {
+				t.Fatalf("PlanMigration() error = %v, want %v", err, injected)
+			}
+			assertMatches(t, intent)
+
+			migrationOS = originalOps
+			if _, err := PlanMigration(paths); err == nil {
+				t.Fatal("reentered PlanMigration() error = nil, want preserved replacement conflict")
+			}
+			assertRegularStagedSentinel(t, target)
+			assertRegularFile(t, paths.Legacy, validTOML, 0o640)
+			assertNoMatches(t, marker+".staged-conflict-*")
+		})
+	}
+}
+
+func TestPlanMigrationPreservesConflictingIntentDraftAnchorCleanupQuarantines(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, string, string)
+	}{
+		{
+			name: "fixed anchor and quarantine coexist",
+			mutate: func(t *testing.T, anchor, quarantine string) {
+				target, err := os.Readlink(quarantine)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, anchor); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "quarantine target mismatches",
+			mutate: func(t *testing.T, _ string, quarantine string) {
+				if err := os.Remove(quarantine); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("external-cleanup-target", quarantine); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := testPaths(t)
+			marker, target := createCompletedAnchoredMarker(t, paths)
+			intent := stagedConflictIntentPathForTest(marker, target)
+			anchor := intent + ".oma-draft-anchor"
+			originalOps := migrationOS
+			migrationOS.afterStagedMarkerRead = func(path string) {
+				if path != target {
+					return
+				}
+				if err := os.Remove(path); err != nil {
+					panic(err)
+				}
+				createRegularStagedSentinel(t, path)
+			}
+			migrationOS.afterConflictIntentDraftAnchorMove = func() { panic(simulatedCrash{}) }
+			t.Cleanup(func() { migrationOS = originalOps })
+
+			assertSimulatedCrash(t, func() { _, _ = PlanMigration(paths) })
+			matches, err := filepath.Glob(anchor + ".oma-quarantine-*")
+			if err != nil || len(matches) != 1 {
+				t.Fatalf("cleanup quarantine matches = %v, error = %v", matches, err)
+			}
+			tt.mutate(t, anchor, matches[0])
+			migrationOS = originalOps
+			if _, err := PlanMigration(paths); err == nil {
+				t.Fatal("reentered PlanMigration() error = nil, want cleanup quarantine conflict")
+			}
+			assertMatches(t, matches[0])
+			assertMatches(t, intent)
+		})
+	}
+}
+
 func TestPlanMigrationPreservesEvidenceWhenConflictIntentIsPreempted(t *testing.T) {
 	paths := testPaths(t)
 	marker, target := createCompletedAnchoredMarker(t, paths)

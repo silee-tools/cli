@@ -61,6 +61,8 @@ type migrationFileOps struct {
 	afterConflictIntentPart            func()
 	afterConflictIntentFileSync        func()
 	afterConflictIntentDraftAnchorSync func()
+	afterConflictIntentDraftAnchorMove func()
+	conflictIntentDraftAnchorSync      func(string) error
 }
 
 var migrationOS = migrationFileOps{
@@ -1402,7 +1404,7 @@ func createStagedMarkerConflictIntent(path, anchor, target, token string) (fileI
 	if err != nil {
 		return fileIdentity{}, err
 	}
-	if err := removeOwnedSymlink(draftAnchor, staged, token); err != nil {
+	if err := removeStagedMarkerConflictIntentDraftAnchor(draftAnchor, staged, token); err != nil {
 		return fileIdentity{}, err
 	}
 	return intentID, nil
@@ -1414,6 +1416,78 @@ func stagedMarkerConflictIntentDraftPath(intent, nonce string) string {
 
 func stagedMarkerConflictIntentDraftAnchorPath(intent string) string {
 	return intent + ".oma-draft-anchor"
+}
+
+func removeStagedMarkerConflictIntentDraftAnchor(anchor, expectedTarget, token string) error {
+	if err := requireSymlinkTarget(anchor, expectedTarget); err != nil {
+		return err
+	}
+	quarantine := anchor + ".oma-quarantine-" + token
+	if err := renameNoReplace(anchor, quarantine); err != nil {
+		return fmt.Errorf("quarantine conflict intent draft anchor: %w", err)
+	}
+	if migrationOS.afterConflictIntentDraftAnchorMove != nil {
+		migrationOS.afterConflictIntentDraftAnchorMove()
+	}
+	if err := syncConflictIntentDraftAnchorDirectory(filepath.Dir(anchor)); err != nil {
+		return err
+	}
+	if err := requireSymlinkTarget(quarantine, expectedTarget); err != nil {
+		return err
+	}
+	removeErr := migrationOS.remove(quarantine)
+	syncErr := syncConflictIntentDraftAnchorDirectory(filepath.Dir(anchor))
+	return errors.Join(removeErr, syncErr)
+}
+
+func syncConflictIntentDraftAnchorDirectory(path string) error {
+	if migrationOS.conflictIntentDraftAnchorSync != nil {
+		return migrationOS.conflictIntentDraftAnchorSync(path)
+	}
+	return syncDirectory(path)
+}
+
+func recoverStagedMarkerConflictIntentDraftAnchorCleanup(marker string) (bool, error) {
+	matches, err := filepath.Glob(marker + ".staged-conflict-intent-*.oma-draft-anchor.oma-quarantine-*")
+	if err != nil || len(matches) == 0 {
+		return false, err
+	}
+	if len(matches) != 1 {
+		return true, fmt.Errorf("multiple conflict intent draft anchor cleanup quarantines are present")
+	}
+	quarantine := matches[0]
+	separator := strings.LastIndex(quarantine, ".oma-quarantine-")
+	anchor := quarantine[:separator]
+	cleanupToken := quarantine[separator+len(".oma-quarantine-"):]
+	intent := strings.TrimSuffix(anchor, ".oma-draft-anchor")
+	prefix := marker + ".staged-conflict-intent-"
+	token := strings.TrimPrefix(intent, prefix)
+	decoded, decodeErr := hex.DecodeString(token)
+	if !strings.HasPrefix(intent, prefix) || cleanupToken != token || decodeErr != nil || len(decoded) != 16 {
+		return true, fmt.Errorf("conflict intent draft anchor cleanup token is invalid")
+	}
+	if _, err := os.Lstat(anchor); err == nil {
+		return true, fmt.Errorf("conflict intent draft anchor and cleanup quarantine both exist: %w", fs.ErrExist)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return true, err
+	}
+	target, err := os.Readlink(quarantine)
+	if err != nil {
+		return true, fmt.Errorf("conflict intent draft anchor cleanup quarantine is not a symlink: %w", err)
+	}
+	draftPrefix := intent + ".oma-staged-"
+	nonce := strings.TrimPrefix(target, draftPrefix)
+	decodedNonce, nonceErr := hex.DecodeString(nonce)
+	if !strings.HasPrefix(target, draftPrefix) || nonceErr != nil || len(decodedNonce) != 16 {
+		return true, fmt.Errorf("conflict intent draft anchor cleanup target is invalid")
+	}
+	if err := renameNoReplace(quarantine, anchor); err != nil {
+		return true, fmt.Errorf("restore conflict intent draft anchor cleanup quarantine: %w", err)
+	}
+	if err := syncDirectory(filepath.Dir(anchor)); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func recoverStagedMarkerConflictIntentDraftAnchor(marker string) (bool, error) {
@@ -1515,7 +1589,7 @@ func recoverStagedMarkerConflictIntentDraftAnchor(marker string) (bool, error) {
 	} else {
 		return true, err
 	}
-	if err := removeOwnedSymlink(draftAnchor, draft, token); err != nil {
+	if err := removeStagedMarkerConflictIntentDraftAnchor(draftAnchor, draft, token); err != nil {
 		return true, err
 	}
 	return true, nil
@@ -1591,6 +1665,11 @@ func recoverStagedMarkerConflictIntentDraft(marker string) (bool, error) {
 }
 
 func recoverStagedMarkerConflictIntent(marker string) (bool, error) {
+	if handled, err := recoverStagedMarkerConflictIntentDraftAnchorCleanup(marker); handled || err != nil {
+		if err != nil {
+			return true, err
+		}
+	}
 	if handled, err := recoverStagedMarkerConflictIntentDraftAnchor(marker); handled || err != nil {
 		if err != nil {
 			return true, err
@@ -1729,6 +1808,16 @@ func findStagedMarkerConflictIntent(marker string) (intent, quarantine, token st
 	matches, err := filepath.Glob(marker + ".staged-conflict-intent-*")
 	if err != nil || len(matches) == 0 {
 		return "", "", "", false, err
+	}
+	filtered := matches[:0]
+	for _, match := range matches {
+		if !strings.Contains(match, ".oma-draft-anchor") && !strings.Contains(match, ".oma-staged-") {
+			filtered = append(filtered, match)
+		}
+	}
+	matches = filtered
+	if len(matches) == 0 {
+		return "", "", "", false, nil
 	}
 	for _, match := range matches {
 		base, matchToken, quarantined, err := parseStagedMarkerConflictIntentPath(marker, match)
