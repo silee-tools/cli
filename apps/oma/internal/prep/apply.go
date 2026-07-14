@@ -126,6 +126,10 @@ func (p *Planner) Apply(ctx context.Context, token string) (result Result, resul
 			return p.git.RunSetup(ctx, current.payload.WorktreePath, current.payload.Input.SetupArgs)
 		})
 		if err != nil {
+			var callbackErr *state.SetupCallbackError
+			if errors.As(err, &callbackErr) {
+				return fail("setup", err)
+			}
 			return fail("setup-receipt", err)
 		}
 		if reused {

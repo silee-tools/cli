@@ -1062,6 +1062,11 @@ func TestEnsureSetupReceiptCallbackFailureAndPanicLeaveNoReceiptAndReleaseLock(t
 	injected := errors.New("injected setup failure")
 	if reused, err := store.EnsureSetupReceipt(key, func() error { return injected }); reused || !errors.Is(err, injected) {
 		t.Fatalf("callback failure reused=%t err=%v", reused, err)
+	} else {
+		var callbackErr *SetupCallbackError
+		if !errors.As(err, &callbackErr) {
+			t.Fatalf("callback failure type = %T, want *SetupCallbackError", err)
+		}
 	}
 	func() {
 		defer func() {

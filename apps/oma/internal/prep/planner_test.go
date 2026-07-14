@@ -212,7 +212,7 @@ func (f *fakePlanStore) EnsureSetupReceipt(key string, setup func() error) (bool
 		return true, nil
 	}
 	if err := setup(); err != nil {
-		return false, err
+		return false, &state.SetupCallbackError{Err: err}
 	}
 	f.receiptCreates++
 	if f.receiptCreateErr != nil {

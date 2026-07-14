@@ -87,6 +87,15 @@ func (e *SetupReceiptCommittedError) Error() string {
 
 func (e *SetupReceiptCommittedError) Unwrap() error { return e.Err }
 
+// Keep callback errors typed so callers cannot mistake setup command failures
+// for receipt inspection, locking, publication, or durability failures.
+type SetupCallbackError struct {
+	Err error
+}
+
+func (e *SetupCallbackError) Error() string { return fmt.Sprintf("setup callback failed: %v", e.Err) }
+func (e *SetupCallbackError) Unwrap() error { return e.Err }
+
 type Record struct {
 	Token       string
 	Fingerprint string
@@ -1138,7 +1147,7 @@ func (s *Store) EnsureSetupReceipt(key string, setup func() error) (bool, error)
 		return true, nil
 	}
 	if err := setup(); err != nil {
-		return false, err
+		return false, &SetupCallbackError{Err: err}
 	}
 	return false, s.createSetupReceiptLocked(key)
 }
