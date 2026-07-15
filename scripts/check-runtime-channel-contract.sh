@@ -158,13 +158,13 @@ check_tool() {
   fi
   grep -q 'invalid state' "$work/override-output"
 
-  if [ -n "$tap_dir" ]; then
+  if [ -n "$tap_dir" ] && [ -f "$tap_dir/Formula/$tool.rb" ]; then
     sh "$tap_dir/scripts/check-runtime-channel-contract.sh" \
       --exercise "$tool" "$prefix/var"
   else
     printf 'channel=release\n' >"$state_tmp"
     mv "$state_tmp" "$state"
-    printf 'SKIP %s: Homebrew tap checkout unavailable for cross-repository contract\n' \
+    printf 'SKIP %s: Homebrew Formula unavailable for cross-repository contract\n' \
       "$tool"
   fi
   assert_output "$tool release-channel" "$home/.local/bin/$tool" --version

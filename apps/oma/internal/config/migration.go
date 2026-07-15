@@ -1125,7 +1125,7 @@ func rollbackTransaction(tx migrationTransaction) error {
 		}
 	}
 	if tx.canonicalCommitted {
-		if err := removeOwnedRegularIfPresent(tx.paths.Canonical, tx.record.CanonicalID, tx.record.Token); err != nil {
+		if err := removeOwnedRegularIfPresentWithDigest(tx.paths.Canonical, tx.record.CanonicalID, transactionDigest(tx.record), tx.record.Token); err != nil {
 			rollbackErrors = append(rollbackErrors, err)
 		}
 	}
@@ -1167,16 +1167,31 @@ func linkOwnedNoReplace(source, destination string, expected fileIdentity) error
 }
 
 func removeOwnedRegularIfPresent(path string, expected fileIdentity, token string) error {
+	return removeOwnedRegularIfPresentWithExpectedDigest(path, expected, nil, token)
+}
+
+func removeOwnedRegularIfPresentWithDigest(path string, expected fileIdentity, digest [sha256.Size]byte, token string) error {
+	return removeOwnedRegularIfPresentWithExpectedDigest(path, expected, &digest, token)
+}
+
+func removeOwnedRegularIfPresentWithExpectedDigest(path string, expected fileIdentity, digest *[sha256.Size]byte, token string) error {
 	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return err
 	}
-	return removeOwnedRegular(path, expected, token)
+	return removeOwnedRegularWithExpectedDigest(path, expected, digest, token)
 }
 
 func removeOwnedRegular(path string, expected fileIdentity, token string) error {
+	return removeOwnedRegularWithExpectedDigest(path, expected, nil, token)
+}
+
+func removeOwnedRegularWithExpectedDigest(path string, expected fileIdentity, digest *[sha256.Size]byte, token string) error {
 	if err := requireOwnedRegular(path, expected); err != nil {
+		return err
+	}
+	if err := requireOwnedRegularDigest(path, digest); err != nil {
 		return err
 	}
 	if migrationOS.afterOwnershipCheck != nil {
@@ -1206,9 +1221,27 @@ func removeOwnedRegular(path string, expected fileIdentity, token string) error 
 		restoreErr := restoreQuarantinedRegular(quarantine, path)
 		return errors.Join(fmt.Errorf("quarantine identity conflict: %w", err), restoreErr)
 	}
+	if err := requireOwnedRegularDigest(quarantine, digest); err != nil {
+		restoreErr := restoreQuarantinedRegular(quarantine, path)
+		return errors.Join(fmt.Errorf("quarantine content conflict: %w", err), restoreErr)
+	}
 	removeErr := migrationOS.remove(quarantine)
 	syncErr := syncDirectory(filepath.Dir(quarantine))
 	return errors.Join(removeErr, syncErr)
+}
+
+func requireOwnedRegularDigest(path string, expected *[sha256.Size]byte) error {
+	if expected == nil {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if actual := sha256.Sum256(data); actual != *expected {
+		return fmt.Errorf("refuse to modify file with unexpected content at %s", path)
+	}
+	return nil
 }
 
 func removeOwnedSymlink(path, expectedTarget, token string) error {
@@ -1446,6 +1479,13 @@ func newTransactionToken() (string, error) {
 		return "", fmt.Errorf("generate migration transaction token: %w", err)
 	}
 	return hex.EncodeToString(raw[:]), nil
+}
+
+func transactionDigest(record transactionRecord) [sha256.Size]byte {
+	decoded, _ := hex.DecodeString(record.Digest)
+	var digest [sha256.Size]byte
+	copy(digest[:], decoded)
+	return digest
 }
 
 func requireOwnedRegular(path string, expected fileIdentity) error {

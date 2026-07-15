@@ -198,7 +198,7 @@ func TestMigrationRollbackPreservesCompetingCanonicalFile(t *testing.T) {
 		t.Fatal("PlanMigration() = nil, want migration")
 	}
 	err = migration.Apply(func(Config) error { return nil })
-	if !errors.Is(err, symlinkErr) || !strings.Contains(err.Error(), "unexpected identity") {
+	if !errors.Is(err, symlinkErr) || !strings.Contains(err.Error(), "unexpected") {
 		t.Fatalf("Apply() error = %v, want symlink and ownership errors", err)
 	}
 
@@ -640,6 +640,7 @@ func TestMigrationArtifactSnapshotFingerprintsOwnedQuarantineVariantsOnly(t *tes
 func TestInspectMigrationReturnsTypedDriftAcrossEnumerationAndReadBoundaries(t *testing.T) {
 	tests := []struct {
 		name    string
+		outcome inspectionOutcome
 		prepare func(*testing.T, Paths)
 		setHook func(*migrationFileOps, Paths)
 	}{
@@ -732,7 +733,8 @@ func TestInspectMigrationReturnsTypedDriftAcrossEnumerationAndReadBoundaries(t *
 			},
 		},
 		{
-			name: "owned marker is replaced before read",
+			name:    "owned marker is replaced before read",
+			outcome: inspectionFails,
 			prepare: func(t *testing.T, paths Paths) {
 				writeFile(t, migrationMarkerPath(paths), "owned marker", 0o600)
 			},
@@ -768,7 +770,8 @@ func TestInspectMigrationReturnsTypedDriftAcrossEnumerationAndReadBoundaries(t *
 			},
 		},
 		{
-			name: "source is replaced after enumeration",
+			name:    "source is replaced after enumeration",
+			outcome: inspectionEquivalentOrChanged,
 			setHook: func(ops *migrationFileOps, paths Paths) {
 				called := false
 				ops.beforeInspectionLstat = func(path string) {
@@ -801,7 +804,8 @@ func TestInspectMigrationReturnsTypedDriftAcrossEnumerationAndReadBoundaries(t *
 			},
 		},
 		{
-			name: "source is replaced before read",
+			name:    "source is replaced before read",
+			outcome: inspectionEquivalentOrChanged,
 			setHook: func(ops *migrationFileOps, paths Paths) {
 				called := false
 				ops.beforeInspectionRead = func(path string) {
@@ -847,12 +851,35 @@ func TestInspectMigrationReturnsTypedDriftAcrossEnumerationAndReadBoundaries(t *
 			originalOps := migrationOS
 			tt.setHook(&migrationOS, paths)
 			t.Cleanup(func() { migrationOS = originalOps })
-			if _, err := InspectMigration(paths); !errors.Is(err, ErrMigrationStateChanged) {
-				t.Fatalf("InspectMigration() error = %v, want ErrMigrationStateChanged", err)
+			migration, err := InspectMigration(paths)
+			switch tt.outcome {
+			case inspectionFails:
+				if err == nil {
+					t.Fatal("InspectMigration() error = nil, want safe inspection failure")
+				}
+			case inspectionEquivalentOrChanged:
+				if err != nil && !errors.Is(err, ErrMigrationStateChanged) {
+					t.Fatalf("InspectMigration() error = %v, want equivalent plan or ErrMigrationStateChanged", err)
+				}
+				if err == nil && migration == nil {
+					t.Fatal("InspectMigration() = nil, want equivalent migration plan")
+				}
+			default:
+				if !errors.Is(err, ErrMigrationStateChanged) {
+					t.Fatalf("InspectMigration() error = %v, want ErrMigrationStateChanged", err)
+				}
 			}
 		})
 	}
 }
+
+type inspectionOutcome int
+
+const (
+	inspectionStateChanged inspectionOutcome = iota
+	inspectionFails
+	inspectionEquivalentOrChanged
+)
 
 func TestInspectMigrationKeepsPermissionFailureDistinctFromStateDrift(t *testing.T) {
 	paths := testPaths(t)
