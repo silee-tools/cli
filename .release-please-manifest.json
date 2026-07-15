@@ -3,5 +3,5 @@
   "apps/totp": "1.1.2",
   "apps/git-tidy": "0.7.3",
   "apps/git-update-default": "0.2.1",
-  "apps/oma": "0.0.0"
+  "apps/oma": "0.1.0"
 }
