@@ -24,6 +24,7 @@
     "apps/jg": {"package-name": "jg"},
     "apps/totp": {"package-name": "totp"},
     "apps/git-tidy": {"package-name": "git-tidy"},
-    "apps/git-update-default": {"package-name": "git-update-default"}
+    "apps/git-update-default": {"package-name": "git-update-default"},
+    "apps/oma": {"package-name": "oma"}
   }
 }
