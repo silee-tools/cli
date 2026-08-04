@@ -11,7 +11,6 @@
 | [git-tidy](../apps/git-tidy/) | Go | 작업이 끝났거나 오래 방치된 로컬 git 브랜치를 정리. upstream 사라짐·merged·stale 신호로 후보를 찾는다. |
 | [git-update-default](../apps/git-update-default/) | Go | 현재 저장소를 원격 default branch 최신으로 전환. |
 | [jg / jgw](../apps/jg/) | Go | 사용 빈도 기반으로 git 저장소(jg) 와 한 저장소의 worktree 들(jgw) 사이를 빠르게 점프하는 CLI. |
-| [oma](../apps/oma/) | Go | 승인한 작업 계획을 기준으로 Git worktree·브랜치와 Jira 작업 시작 상태를 준비하는 에이전트 보조 CLI. |
 | [totp](../apps/totp/) | Go | macOS Keychain 기반 TOTP 코드 생성기 (macOS 전용). |
 
 ## 기술 스택
