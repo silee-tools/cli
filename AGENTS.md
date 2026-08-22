@@ -27,7 +27,6 @@
 - 릴리스: 태그를 직접 만들지 않는다. main 의 Conventional Commits 가 누적되면 release-please-action 이 **변경된 도구의 버전 bump 를 묶은 단일 Release PR** 을 자동 생성하거나 갱신한다(`release-please-config.json` 의 `separate-pull-requests: false`). 이렇게 하나의 PR 로 모으는 이유는, 도구별로 PR 을 분리하면 여러 PR 이 공유 파일 `.release-please-manifest.json` 을 동시에 수정해 반복적으로 충돌하기 때문이다. 그 PR 의 본문에서 변경된 도구의 다음 버전과 CHANGELOG 변경분을 검토하고 merge 하는 것이 릴리스 결정이다. PR merge 시 bump 된 도구마다 `<tool>/v<MAJOR>.<MINOR>.<PATCH>` 태그와 빈 GitHub Release 가 자동 생성되고, 후속 matrix job 이 해당 도구의 artifact 를 빌드해 첨부한 뒤 homebrew-tap formula 의 sha256/version 을 자동 commit + push 한다.
 - CI: 도구별 `.github/workflows/<tool>-ci.yml` + paths 필터로 자기 디렉토리만 트리거.
 - Homebrew formula 는 별도 레포 `silee-tools/homebrew-tap` 에서 관리. 본 레포의 source URL/buildpath 만 갱신 대상.
-- superpowers 설계·계획 문서는 작업 위치와 무관하게 저장소 루트 `docs/superpowers/{specs,plans}/` 에 둔다.
 
 ## 새 도구 추가 체크리스트
 
