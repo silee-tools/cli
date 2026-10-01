@@ -270,6 +270,9 @@ func TestBaseBranchPrefersLocalAndOverride(t *testing.T) {
 	if ref, _, err := BaseBranch("main"); err != nil || ref != "origin/main" {
 		t.Errorf("override 는 원격 폴백: ref=%q err=%v", ref, err)
 	}
+	if ref, name, err := BaseBranch("origin/main"); err != nil || ref != "origin/main" || name != "main" {
+		t.Errorf("origin/ 접두사 override: ref=%q name=%q err=%v", ref, name, err)
+	}
 	if _, _, err := BaseBranch("nope"); err == nil {
 		t.Error("없는 override 는 에러여야 한다")
 	}

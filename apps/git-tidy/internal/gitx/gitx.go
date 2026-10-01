@@ -181,9 +181,10 @@ func refExists(ref string) bool {
 	return err == nil
 }
 
-// resolveBase 는 브랜치 이름을 git 명령에 쓸 ref 로 바꾼다. 로컬 브랜치가 있으면
+// resolveBase 는 브랜치 이름(origin/ 접두사 허용)을 git 명령에 쓸 ref 로 바꾼다. 로컬 브랜치가 있으면
 // 그것을, 없고 origin 원격 추적 ref 만 있으면 origin/<name> 을 돌려준다.
 func resolveBase(name string) (string, bool) {
+	name = strings.TrimPrefix(name, "origin/")
 	if refExists("refs/heads/" + name) {
 		return name, true
 	}
@@ -201,7 +202,7 @@ func resolveBase(name string) (string, bool) {
 func BaseBranch(override string) (ref, name string, err error) {
 	if override != "" {
 		if ref, ok := resolveBase(override); ok {
-			return ref, override, nil
+			return ref, strings.TrimPrefix(override, "origin/"), nil
 		}
 		return "", "", fmt.Errorf("기준 브랜치 %q 를 찾을 수 없습니다 (로컬·origin 모두 없음)", override)
 	}
