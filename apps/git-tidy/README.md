@@ -31,11 +31,9 @@ git-tidy --no-fetch        # git fetch --prune 단계 건너뛰기
 git-tidy --version         # 버전 출력 (-v 동일)
 git-tidy --help            # 사용법 출력 (-h 동일)
 gtidy                      # git-tidy 와 동일
-gtidy!                     # git-tidy --run 과 동일
 ```
 
-`gtidy` 와 `gtidy!` 는 Homebrew formula 와 `mise run install` 이 함께 설치하는 단축
-명령이다.
+`gtidy` 는 Homebrew formula 와 `mise run install` 이 함께 설치하는 단축 명령이다.
 
 선택 화면에서는 `↑↓`/`jk` 이동, `space` 토글(그룹 헤더에서는 그룹 일괄 토글),
 `a` 전체 토글, `enter` 삭제, `esc` 취소를 쓴다.
@@ -81,7 +79,7 @@ mise run build      # 빌드
 mise run test       # 테스트 실행
 mise run lint       # 린터
 mise run fmt-check  # gofmt 검사 (CI 동일)
-mise run install    # 개발 빌드와 gtidy/gtidy! 단축 명령을 사용자 PATH에 설치
+mise run install    # 개발 빌드와 gtidy 단축 명령을 사용자 PATH에 설치
 ```
 
 `mise run install` 은 개발 채널을 활성화한다. 이후 Homebrew로 설치·업그레이드·재설치하면

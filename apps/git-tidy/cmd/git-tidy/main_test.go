@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -51,25 +50,6 @@ func TestDefaultStaleDaysFromEnv(t *testing.T) {
 	opts, err := parseArgs([]string{})
 	if err != nil || opts.staleDays != 30 {
 		t.Errorf("GIT_TIDY_STALE_DAYS 기본값 적용 실패: got %+v err=%v, want staleDays=30", opts, err)
-	}
-}
-
-func TestEffectiveArgs(t *testing.T) {
-	cases := []struct {
-		invoked string
-		args    []string
-		want    []string
-	}{
-		{"git-tidy", []string{"--no-fetch"}, []string{"--no-fetch"}},
-		{"gtidy", []string{"--stale-days=7"}, []string{"--stale-days=7"}},
-		{"gtidy!", nil, []string{"--run"}},
-		{"gtidy!", []string{"--no-tui"}, []string{"--run", "--no-tui"}},
-	}
-	for _, c := range cases {
-		got := effectiveArgs(c.invoked, c.args)
-		if !reflect.DeepEqual(got, c.want) {
-			t.Errorf("effectiveArgs(%q, %v) = %v, want %v", c.invoked, c.args, got, c.want)
-		}
 	}
 }
 

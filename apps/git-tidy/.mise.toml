@@ -23,7 +23,7 @@ description = "Check formatting (CI)"
 run = "test -z \"$(gofmt -l .)\""
 
 [tasks.install]
-description = "Build and install to ~/.local/bin (git-tidy + gtidy/gtidy! symlinks)"
+description = "Build and install to ~/.local/bin (git-tidy + gtidy symlink)"
 run = """
 set -eu
 mkdir -p "$HOME/.local/bin"
@@ -82,7 +82,6 @@ binary_installed=0
 rm -f "$binary_backup"
 binary_backup=""
 ln -sf "$HOME/.local/bin/git-tidy" "$HOME/.local/bin/gtidy"
-ln -sf "$HOME/.local/bin/git-tidy" "$HOME/.local/bin/gtidy!"
 """
 
 [tasks.uninstall]

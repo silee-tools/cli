@@ -22,4 +22,4 @@ _git_tidy() {
   fi
   COMPREPLY=($(compgen -W "${opts}" -- "${cur}"))
 }
-complete -o nosort -F _git_tidy git-tidy gtidy 'gtidy!'
+complete -o nosort -F _git_tidy git-tidy gtidy
