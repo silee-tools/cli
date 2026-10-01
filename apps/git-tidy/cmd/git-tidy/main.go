@@ -24,15 +24,6 @@ func versionLine(name, version string) string {
 	return fmt.Sprintf("%s v%s © 2026 silee-tools\n", name, version)
 }
 
-// effectiveArgs 는 호출된 이름에 따라 실제로 쓸 인자 목록을 돌려준다.
-// gtidy! 로 불리면 인자 앞에 --run 을 끼워 넣고, 그 외에는 인자를 그대로 둔다.
-func effectiveArgs(invoked string, args []string) []string {
-	if invoked == "gtidy!" {
-		return append([]string{"--run"}, args...)
-	}
-	return args
-}
-
 type options struct {
 	run       bool
 	noTUI     bool
@@ -91,7 +82,6 @@ const helpText = `Usage: git-tidy [--run] [options]
 
 단축 명령:
   gtidy                 git-tidy 와 동일
-  gtidy!                git-tidy --run 과 동일
 `
 
 func main() {
@@ -108,7 +98,7 @@ func main() {
 	}
 
 	invoked := filepath.Base(os.Args[0])
-	args := effectiveArgs(invoked, os.Args[1:])
+	args := os.Args[1:]
 
 	for _, a := range args {
 		switch a {

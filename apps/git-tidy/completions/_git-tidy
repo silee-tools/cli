@@ -1,4 +1,4 @@
-#compdef git-tidy gtidy gtidy!
+#compdef git-tidy gtidy
 
 __git_tidy_branches() {
   local -a b

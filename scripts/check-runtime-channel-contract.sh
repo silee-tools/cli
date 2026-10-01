@@ -60,7 +60,7 @@ check_tool() {
   gocache=$(cd "$repo_root/apps/$tool" && mise exec -- go env GOCACHE)
   aliases=""
   case $tool in
-  git-tidy) aliases="gtidy gtidy!" ;;
+  git-tidy) aliases="gtidy" ;;
   jg) aliases="jgw" ;;
   esac
 
