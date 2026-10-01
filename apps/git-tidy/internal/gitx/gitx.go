@@ -175,14 +175,47 @@ func parseWorktreeBranches(out string) map[string]string {
 	return result
 }
 
-// BaseBranch 는 main/master/trunk 등 기본 브랜치를 자동 감지한다.
-func BaseBranch() string {
-	for _, name := range []string{"main", "master", "trunk"} {
-		if _, err := run("show-ref", "--verify", "--quiet", "refs/heads/"+name); err == nil {
-			return name
+// refExists 는 ref 가 존재하는지 본다.
+func refExists(ref string) bool {
+	_, err := run("show-ref", "--verify", "--quiet", ref)
+	return err == nil
+}
+
+// resolveBase 는 브랜치 이름을 git 명령에 쓸 ref 로 바꾼다. 로컬 브랜치가 있으면
+// 그것을, 없고 origin 원격 추적 ref 만 있으면 origin/<name> 을 돌려준다.
+func resolveBase(name string) (string, bool) {
+	if refExists("refs/heads/" + name) {
+		return name, true
+	}
+	if refExists("refs/remotes/origin/" + name) {
+		return "origin/" + name, true
+	}
+	return "", false
+}
+
+// BaseBranch 는 병합 기준 브랜치를 정한다. override(GIT_TIDY_BASE / --base) >
+// origin/HEAD 가 가리키는 브랜치 > main/master/trunk 순으로 폴백한다.
+// ref 는 git 명령에 넘길 이름(로컬이 없으면 origin/<name>), name 은 보호 규칙에서
+// 로컬 브랜치와 비교할 브랜치 이름이다. override 를 해석하지 못하면 폴백하지 않고
+// 에러를 돌려준다.
+func BaseBranch(override string) (ref, name string, err error) {
+	if override != "" {
+		if ref, ok := resolveBase(override); ok {
+			return ref, override, nil
+		}
+		return "", "", fmt.Errorf("기준 브랜치 %q 를 찾을 수 없습니다 (로컬·origin 모두 없음)", override)
+	}
+	candidates := []string{}
+	if out, err := run("symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		candidates = append(candidates, strings.TrimPrefix(strings.TrimSpace(out), "origin/"))
+	}
+	candidates = append(candidates, "main", "master", "trunk")
+	for _, c := range candidates {
+		if ref, ok := resolveBase(c); ok {
+			return ref, c, nil
 		}
 	}
-	return "main"
+	return "", "", fmt.Errorf("기준 브랜치를 정할 수 없습니다 (origin/HEAD, main, master, trunk 없음). GIT_TIDY_BASE 로 지정하세요")
 }
 
 // MergedBranches 는 base 에 머지된 로컬 브랜치 이름 집합을 돌려준다.

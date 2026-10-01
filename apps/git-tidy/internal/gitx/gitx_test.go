@@ -231,3 +231,54 @@ func TestRemoveWorktreeKeepsHealthyOnFailure(t *testing.T) {
 		t.Errorf("정상 worktree 디렉터리는 보존돼야 한다: %v", err)
 	}
 }
+
+// setupRemoteOnlyBase 는 로컬 main 이 없고 origin/<remoteDefault> 만 있으며
+// origin/HEAD 가 그 브랜치를 가리키는 저장소를 만든다(현재 브랜치는 cur).
+func setupRemoteOnlyBase(t *testing.T, remoteDefault, cur string) string {
+	t.Helper()
+	dir := setupRepo(t)
+	runGit(t, dir, "update-ref", "refs/remotes/origin/main", "HEAD")
+	runGit(t, dir, "update-ref", "refs/remotes/origin/"+remoteDefault, "HEAD")
+	runGit(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/"+remoteDefault)
+	runGit(t, dir, "checkout", "-q", "-b", cur)
+	runGit(t, dir, "branch", "-D", "main")
+	return dir
+}
+
+func TestBaseBranchOriginHEADRemoteOnly(t *testing.T) {
+	dir := setupRemoteOnlyBase(t, "release/2026-08", "release/2026-10")
+	chdir(t, dir)
+
+	ref, name, err := BaseBranch("")
+	if err != nil || ref != "origin/release/2026-08" || name != "release/2026-08" {
+		t.Fatalf("origin/HEAD 의 원격 ref 를 써야 한다: ref=%q name=%q err=%v", ref, name, err)
+	}
+	// 재현 상황: 로컬 main 이 없어도 병합 조회가 죽지 않는다.
+	if _, err := MergedBranches(ref); err != nil {
+		t.Fatalf("MergedBranches: %v", err)
+	}
+}
+
+func TestBaseBranchPrefersLocalAndOverride(t *testing.T) {
+	dir := setupRemoteOnlyBase(t, "release/2026-08", "release/2026-10")
+	runGit(t, dir, "branch", "release/2026-08")
+	chdir(t, dir)
+
+	if ref, _, err := BaseBranch(""); err != nil || ref != "release/2026-08" {
+		t.Errorf("로컬 브랜치가 우선: ref=%q err=%v", ref, err)
+	}
+	if ref, _, err := BaseBranch("main"); err != nil || ref != "origin/main" {
+		t.Errorf("override 는 원격 폴백: ref=%q err=%v", ref, err)
+	}
+	if _, _, err := BaseBranch("nope"); err == nil {
+		t.Error("없는 override 는 에러여야 한다")
+	}
+}
+
+func TestBaseBranchFallsBackToMain(t *testing.T) {
+	dir := setupRepo(t)
+	chdir(t, dir)
+	if ref, name, err := BaseBranch(""); err != nil || ref != "main" || name != "main" {
+		t.Errorf("origin/HEAD 없으면 main: ref=%q name=%q err=%v", ref, name, err)
+	}
+}
