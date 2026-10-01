@@ -72,6 +72,7 @@ gtidy!                     # git-tidy --run 과 동일
 | 변수 | 설명 | 기본값 |
 |------|------|--------|
 | `GIT_TIDY_STALE_DAYS` | stale 판정 창(일). `--stale-days=N` 으로 호출 시점에 덮어쓸 수 있다. | `20` |
+| `GIT_TIDY_BASE` | 병합 기준 브랜치 이름(`origin/` 접두사 허용). `--base=BRANCH` 로 덮어쓸 수 있다. 미지정 시 `origin/HEAD` 가 가리키는 브랜치 → `main` → `master` → `trunk` 순으로 정하며, 로컬 브랜치가 없으면 `origin/<branch>` 를 쓴다. | 자동 판정 |
 
 ## 개발
 

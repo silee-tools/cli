@@ -1,9 +1,16 @@
 #compdef git-tidy gtidy gtidy!
 
+__git_tidy_branches() {
+  local -a b
+  b=(${(f)"$(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null)"})
+  compadd -a b
+}
+
 _arguments \
   '--run[삭제 대상을 다중 선택해 삭제]' \
   '--no-tui[체크박스 TUI 대신 줄 기반 선택]' \
   '--stale-days=[stale 판정 창 (일)]:days:(7 14 20 30)' \
+  '--base=[병합 기준 브랜치]:branch:__git_tidy_branches' \
   '--no-fetch[git fetch --prune 건너뛰기]' \
   '--version[버전 출력]' \
   '--help[도움말 출력]'

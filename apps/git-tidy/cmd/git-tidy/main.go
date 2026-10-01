@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,6 +38,7 @@ type options struct {
 	noTUI     bool
 	noFetch   bool
 	staleDays int
+	base      string // 병합 기준 브랜치 지정(비면 자동 판정)
 }
 
 func defaultStaleDays() int {
@@ -50,7 +52,7 @@ func defaultStaleDays() int {
 
 // parseArgs 는 인자를 옵션으로 바꾼다. -v/-h 는 상위에서 먼저 처리한다.
 func parseArgs(args []string) (options, error) {
-	o := options{staleDays: defaultStaleDays()}
+	o := options{staleDays: defaultStaleDays(), base: os.Getenv("GIT_TIDY_BASE")}
 	for _, a := range args {
 		switch {
 		case a == "--run":
@@ -65,6 +67,8 @@ func parseArgs(args []string) (options, error) {
 				return o, fmt.Errorf("잘못된 --stale-days 값: %s", a[13:])
 			}
 			o.staleDays = n
+		case strings.HasPrefix(a, "--base="):
+			o.base = strings.TrimPrefix(a, "--base=")
 		default:
 			return o, fmt.Errorf("알 수 없는 옵션: %s", a)
 		}
@@ -80,6 +84,7 @@ const helpText = `Usage: git-tidy [--run] [options]
   git-tidy --run        삭제 대상을 다중 선택해 삭제
   git-tidy --run --no-tui  체크박스 TUI 대신 줄 기반 선택
   --stale-days=N        stale 판정 창 (기본 20, GIT_TIDY_STALE_DAYS)
+  --base=BRANCH         병합 기준 브랜치 (기본 origin/HEAD → main/master/trunk, GIT_TIDY_BASE)
   --no-fetch            git fetch --prune 건너뛰기
   -v, --version         버전 출력
   -h, --help            도움말 출력
@@ -174,7 +179,10 @@ func buildClassification(opts options) (classify.Classified, []string, error) {
 	if err != nil {
 		return classify.Classified{}, nil, err
 	}
-	base := gitx.BaseBranch()
+	base, baseName, err := gitx.BaseBranch(opts.base)
+	if err != nil {
+		return classify.Classified{}, nil, err
+	}
 	merged, err := gitx.MergedBranches(base)
 	if err != nil {
 		return classify.Classified{}, nil, err
@@ -190,7 +198,7 @@ func buildClassification(opts options) (classify.Classified, []string, error) {
 	in := classify.Input{
 		Now:         time.Now().Unix(),
 		StaleDays:   opts.staleDays,
-		Base:        base,
+		Base:        baseName,
 		Current:     gitx.CurrentBranch(),
 		Branches:    branches,
 		Merged:      merged,

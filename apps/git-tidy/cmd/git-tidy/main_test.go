@@ -91,3 +91,15 @@ func TestPrintTargetsShowsSignalDescriptionsAndAbsorbedEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestParseArgsBase(t *testing.T) {
+	t.Setenv("GIT_TIDY_BASE", "develop")
+	o, err := parseArgs(nil)
+	if err != nil || o.base != "develop" {
+		t.Fatalf("환경 변수가 기준 브랜치여야 한다: %q err=%v", o.base, err)
+	}
+	o, err = parseArgs([]string{"--base=release/x"})
+	if err != nil || o.base != "release/x" {
+		t.Fatalf("--base 가 환경 변수를 덮어야 한다: %q err=%v", o.base, err)
+	}
+}
