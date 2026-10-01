@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.8.0](https://github.com/silee-tools/cli/compare/git-tidy/v0.7.3...git-tidy/v0.8.0) (2026-10-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **git-tidy:** gtidy! 가 git-tidy --run 으로 동작하지 않는다. 삭제를 진행하려면 git-tidy --run 을 쓴다.
+
+### Features
+
+* **git-tidy:** gtidy! 단축 명령 제거 ([#110](https://github.com/silee-tools/cli/issues/110)) ([bd0e16b](https://github.com/silee-tools/cli/commit/bd0e16be1cfe5ce971f1d6a4ab6971acadfdd667))
+
+
+### Bug Fixes
+
+* **git-tidy:** 병합 기준 브랜치를 실제 기본 브랜치로 판정 ([#108](https://github.com/silee-tools/cli/issues/108)) ([f8dafa0](https://github.com/silee-tools/cli/commit/f8dafa0654a943ed246ce93bfe72d3ae3578d440))
+
 ## [0.7.3](https://github.com/silee-tools/cli/compare/git-tidy/v0.7.2...git-tidy/v0.7.3) (2026-07-11)
 
 
