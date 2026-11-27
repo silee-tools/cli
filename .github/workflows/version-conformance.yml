@@ -1,7 +1,7 @@
 name: version conformance
 
 # 모노레포 전 도구의 --version 출력이 표준 형식
-# "<tool> v<version> © 2026 silee-tools" 인지 강제하는 게이트.
+# "<tool> v<version> © 2026 ottdy" 인지 강제하는 게이트.
 # apps/<new-tool>/ 추가만으로 자동 검사 대상이 된다(도구 이름 하드코딩 없음).
 # OS 라우팅은 scripts/check-version-format.sh 가 각 도구의 .goreleaser.yaml
 # goos 로 결정한다(linux 포함→ubuntu, darwin 전용→macos, zsh→ubuntu).
@@ -45,7 +45,7 @@ jobs:
       - name: Check out Homebrew tap contract
         uses: actions/checkout@v6
         with:
-          repository: silee-tools/homebrew-tap
+          repository: ottdy/homebrew-tap
           ref: f5670e385219b19976d53226a5888625f5ad6d5d
           persist-credentials: false
           path: .runtime-channel/homebrew-tap

@@ -6,17 +6,17 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/silee-tools/git-update-default/internal/confirm"
-	"github.com/silee-tools/git-update-default/internal/gitx"
-	"github.com/silee-tools/git-update-default/internal/resolve"
-	"github.com/silee-tools/git-update-default/internal/runtimechannel"
+	"github.com/ottdy/git-update-default/internal/confirm"
+	"github.com/ottdy/git-update-default/internal/gitx"
+	"github.com/ottdy/git-update-default/internal/resolve"
+	"github.com/ottdy/git-update-default/internal/runtimechannel"
 )
 
 var version = "dev"
 var runtimeStatePath string
 
 func versionLine(name, version string) string {
-	return fmt.Sprintf("%s v%s © 2026 silee-tools\n", name, version)
+	return fmt.Sprintf("%s v%s © 2026 ottdy\n", name, version)
 }
 
 const helpText = `Usage: git-update-default [--current] [--stash | --force]

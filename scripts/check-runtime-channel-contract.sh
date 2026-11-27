@@ -6,7 +6,7 @@ CDPATH=
 export CDPATH
 repo_root=$(cd -- "$(dirname "$0")/.." && pwd)
 umask 077
-work=$(mktemp -d "${TMPDIR:-/tmp}/silee-tools-runtime-channel.XXXXXX")
+work=$(mktemp -d "${TMPDIR:-/tmp}/ottdy-runtime-channel.XXXXXX")
 real_mv=$(command -v mv)
 tap_dir=${HOMEBREW_TAP_DIR:-}
 if [ -z "$tap_dir" ] && [ -d "$(dirname "$repo_root")/homebrew-tap" ]; then
@@ -86,11 +86,11 @@ check_tool() {
 
   test -x "$home/.local/bin/$tool"
   test "$(sed -n 's/^channel=//p' "$state")" = dev
-  assert_output "$tool vdev © 2026 silee-tools" \
+  assert_output "$tool vdev © 2026 ottdy" \
     "$home/.local/bin/$tool" --version
   for command in $aliases; do
     test -L "$home/.local/bin/$command"
-    assert_output "$command vdev © 2026 silee-tools" \
+    assert_output "$command vdev © 2026 ottdy" \
       "$home/.local/bin/$command" --version
   done
 
@@ -143,7 +143,7 @@ check_tool() {
       PATH=$work/fake-bin:$PATH \
       mise run install >/dev/null
   )
-  assert_output "$tool vdev © 2026 silee-tools" \
+  assert_output "$tool vdev © 2026 ottdy" \
     "$home/.local/bin/$tool" --version
 
   mkdir -p "$(dirname "$release")" "$(dirname "$state")"
@@ -184,10 +184,10 @@ check_tool() {
       mise run install >/dev/null
   )
   test "$(sed -n 's/^channel=//p' "$state")" = dev
-  assert_output "$tool vdev © 2026 silee-tools" \
+  assert_output "$tool vdev © 2026 ottdy" \
     "$home/.local/bin/$tool" --version
   for command in $aliases; do
-    assert_output "$command vdev © 2026 silee-tools" \
+    assert_output "$command vdev © 2026 ottdy" \
       "$home/.local/bin/$command" --version
   done
 

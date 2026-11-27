@@ -10,7 +10,7 @@
 ## 설치
 
 ```bash
-brew install silee-tools/tap/git-tidy
+brew install ottdy/tap/git-tidy
 ```
 
 또는 소스에서 직접 빌드:

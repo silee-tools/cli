@@ -2,7 +2,7 @@
 
 [English (영어)](../README.md)
 
-`silee-tools` GitHub 조직 아래 개인용 CLI 도구들을 모은 모노레포다. 각 도구는 `apps/` 하위에 자기 완결적인 디렉토리로 들어가 있으며, 자체 `.mise.toml`, README, 테스트를 갖는다. 도구별 릴리스는 `<tool>/v<MAJOR>.<MINOR>.<PATCH>` 형식의 태그 prefix 스킴으로 독립적으로 진행한다.
+`ottdy` GitHub 조직 아래 개인용 CLI 도구들을 모은 모노레포다. 각 도구는 `apps/` 하위에 자기 완결적인 디렉토리로 들어가 있으며, 자체 `.mise.toml`, README, 테스트를 갖는다. 도구별 릴리스는 `<tool>/v<MAJOR>.<MINOR>.<PATCH>` 형식의 태그 prefix 스킴으로 독립적으로 진행한다.
 
 ## 도구
 
@@ -18,12 +18,12 @@
 - Go 모노레포 (각 도구 독립)
 - Task Runner: [mise](https://mise.jdx.dev/) (도구별 `.mise.toml`)
 - CI: GitHub Actions, 도구별 `paths:` 필터
-- 배포: [silee-tools/homebrew-tap](https://github.com/silee-tools/homebrew-tap) (별도 레포)
+- 배포: [ottdy/homebrew-tap](https://github.com/ottdy/homebrew-tap) (별도 레포)
 
 ## 저장소 구조
 
 ```
-silee-tools/cli/
+ottdy/cli/
 ├── apps/                       # 도구당 하위 디렉토리 1개, 자기 완결적
 │   └── <tool>/
 │       ├── .mise.toml
@@ -47,7 +47,7 @@ silee-tools/cli/
 레포를 클론하고 작업할 도구를 고른다:
 
 ```bash
-git clone git@github.com:silee-tools/cli.git
+git clone git@github.com:ottdy/cli.git
 cd cli/apps/<tool>
 mise trust ../.. .
 mise run test

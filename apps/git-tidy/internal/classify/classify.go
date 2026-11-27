@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"sort"
 
-	"github.com/silee-tools/git-tidy/internal/gitx"
+	"github.com/ottdy/git-tidy/internal/gitx"
 )
 
 var ticketIDPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-[0-9]+\b`)

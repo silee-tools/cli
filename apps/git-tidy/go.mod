@@ -1,4 +1,4 @@
-module github.com/silee-tools/git-tidy
+module github.com/ottdy/git-tidy
 
 go 1.23
 

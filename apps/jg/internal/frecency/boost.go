@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/silee-tools/jg/internal/entry"
+	"github.com/ottdy/jg/internal/entry"
 )
 
 // SortWithBoost sorts entries by frecency, then stably re-sorts by

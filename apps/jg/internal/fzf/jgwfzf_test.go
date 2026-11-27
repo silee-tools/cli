@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/silee-tools/jg/internal/worktree"
+	"github.com/ottdy/jg/internal/worktree"
 )
 
 func TestWorktreeLabel(t *testing.T) {

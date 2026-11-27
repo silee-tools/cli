@@ -9,7 +9,7 @@ Ranks your Git repositories by frecency (frequency + recency) and lets you quick
 ## Installation
 
 ```bash
-brew install silee-tools/tap/jg
+brew install ottdy/tap/jg
 ```
 
 This automatically installs `fzf` as a dependency.

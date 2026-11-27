@@ -1,8 +1,10 @@
+![ottdy; — Open Terminal. Today. / Open Throttle. Today.](.github/assets/ottdy-banner.png)
+
 # cli
 
 [한국어 (Korean)](docs/README_ko.md)
 
-Monorepo of personal CLI tools under the `silee-tools` GitHub organization. Each tool lives in its own self-contained directory under `apps/` with its own `.mise.toml`, README, and tests. Tools are released independently using a `<tool>/v<MAJOR>.<MINOR>.<PATCH>` tag prefix scheme.
+Monorepo of personal CLI tools under the `ottdy` GitHub organization. Each tool lives in its own self-contained directory under `apps/` with its own `.mise.toml`, README, and tests. Tools are released independently using a `<tool>/v<MAJOR>.<MINOR>.<PATCH>` tag prefix scheme.
 
 ## Tools
 
@@ -18,12 +20,12 @@ Monorepo of personal CLI tools under the `silee-tools` GitHub organization. Each
 - Go monorepo (each tool independent)
 - Task Runner: [mise](https://mise.jdx.dev/) (per-tool `.mise.toml`)
 - CI: GitHub Actions with `paths:` filters per tool
-- Distribution: [silee-tools/homebrew-tap](https://github.com/silee-tools/homebrew-tap) (separate repo)
+- Distribution: [ottdy/homebrew-tap](https://github.com/ottdy/homebrew-tap) (separate repo)
 
 ## Repository Layout
 
 ```
-silee-tools/cli/
+ottdy/cli/
 ├── apps/                       # one subdirectory per tool, self-contained
 │   └── <tool>/
 │       ├── .mise.toml
@@ -47,7 +49,7 @@ silee-tools/cli/
 Clone the repository and pick a tool to work on:
 
 ```bash
-git clone git@github.com:silee-tools/cli.git
+git clone git@github.com:ottdy/cli.git
 cd cli/apps/<tool>
 mise trust ../.. .
 mise run test

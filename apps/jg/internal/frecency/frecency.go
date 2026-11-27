@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/silee-tools/jg/internal/entry"
+	"github.com/ottdy/jg/internal/entry"
 )
 
 // Score calculates the frecency score for an entry.

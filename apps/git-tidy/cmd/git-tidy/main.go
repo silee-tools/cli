@@ -10,18 +10,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/silee-tools/git-tidy/internal/classify"
-	"github.com/silee-tools/git-tidy/internal/gitx"
-	"github.com/silee-tools/git-tidy/internal/pick"
-	"github.com/silee-tools/git-tidy/internal/reason"
-	"github.com/silee-tools/git-tidy/internal/runtimechannel"
+	"github.com/ottdy/git-tidy/internal/classify"
+	"github.com/ottdy/git-tidy/internal/gitx"
+	"github.com/ottdy/git-tidy/internal/pick"
+	"github.com/ottdy/git-tidy/internal/reason"
+	"github.com/ottdy/git-tidy/internal/runtimechannel"
 )
 
 var version = "dev"
 var runtimeStatePath string
 
 func versionLine(name, version string) string {
-	return fmt.Sprintf("%s v%s © 2026 silee-tools\n", name, version)
+	return fmt.Sprintf("%s v%s © 2026 ottdy\n", name, version)
 }
 
 type options struct {

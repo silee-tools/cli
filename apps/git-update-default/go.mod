@@ -1,4 +1,4 @@
-module github.com/silee-tools/git-update-default
+module github.com/ottdy/git-update-default
 
 go 1.23
 
