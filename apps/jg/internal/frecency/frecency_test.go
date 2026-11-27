@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/silee-tools/jg/internal/entry"
+	"github.com/ottdy/jg/internal/entry"
 )
 
 func TestScoreAtZeroDelta(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/silee-tools/jg/internal/xdgpath"
+	"github.com/ottdy/jg/internal/xdgpath"
 )
 
 // DataFile is the path to the worktree frecency data file. Override in tests.

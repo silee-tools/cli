@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/silee-tools/git-tidy/internal/classify"
+	"github.com/ottdy/git-tidy/internal/classify"
 )
 
 func TestParseArgs(t *testing.T) {
@@ -39,7 +39,7 @@ func TestParseArgsRejectsUnknown(t *testing.T) {
 }
 
 func TestVersionLine(t *testing.T) {
-	want := "git-tidy v1.2.3 © 2026 silee-tools\n"
+	want := "git-tidy v1.2.3 © 2026 ottdy\n"
 	if got := versionLine("git-tidy", "1.2.3"); got != want {
 		t.Errorf("versionLine = %q, want %q", got, want)
 	}

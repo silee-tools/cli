@@ -3,7 +3,7 @@ package fzf
 import (
 	"testing"
 
-	"github.com/silee-tools/jg/internal/entry"
+	"github.com/ottdy/jg/internal/entry"
 )
 
 func TestShortenPath(t *testing.T) {

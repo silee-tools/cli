@@ -14,9 +14,9 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/silee-tools/cli/apps/totp/internal/code"
-	"github.com/silee-tools/cli/apps/totp/internal/runtimechannel"
-	"github.com/silee-tools/cli/apps/totp/internal/store"
+	"github.com/ottdy/cli/apps/totp/internal/code"
+	"github.com/ottdy/cli/apps/totp/internal/runtimechannel"
+	"github.com/ottdy/cli/apps/totp/internal/store"
 )
 
 // version is injected at build time via -ldflags "-X main.version=...".
@@ -96,7 +96,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, helpText, version, store.Marker)
 		return nil
 	case "-v", "--version":
-		fmt.Fprintf(stdout, "totp v%s © 2026 silee-tools\n", version)
+		fmt.Fprintf(stdout, "totp v%s © 2026 ottdy\n", version)
 		return nil
 	case "add":
 		return runAdd(args[1:], stdin, stdout, stderr)

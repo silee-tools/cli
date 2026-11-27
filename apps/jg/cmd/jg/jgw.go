@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/silee-tools/jg/internal/entry"
-	"github.com/silee-tools/jg/internal/frecency"
-	"github.com/silee-tools/jg/internal/fzf"
-	"github.com/silee-tools/jg/internal/worktree"
-	"github.com/silee-tools/jg/internal/wtstore"
+	"github.com/ottdy/jg/internal/entry"
+	"github.com/ottdy/jg/internal/frecency"
+	"github.com/ottdy/jg/internal/fzf"
+	"github.com/ottdy/jg/internal/worktree"
+	"github.com/ottdy/jg/internal/wtstore"
 )
 
 type flow int

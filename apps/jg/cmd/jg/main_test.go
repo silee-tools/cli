@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/silee-tools/jg/internal/worktree"
+	"github.com/ottdy/jg/internal/worktree"
 )
 
 func TestJgwFlowDecision(t *testing.T) {
@@ -47,8 +47,8 @@ func TestVersionLine(t *testing.T) {
 		version string
 		want    string
 	}{
-		{"jg", "0.3.0", "jg v0.3.0 © 2026 silee-tools\n"},
-		{"jg", "dev", "jg vdev © 2026 silee-tools\n"},
+		{"jg", "0.3.0", "jg v0.3.0 © 2026 ottdy\n"},
+		{"jg", "dev", "jg vdev © 2026 ottdy\n"},
 	}
 	for _, tt := range tests {
 		if got := versionLine(tt.name, tt.version); got != tt.want {

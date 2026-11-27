@@ -1,4 +1,4 @@
-module github.com/silee-tools/cli/apps/totp
+module github.com/ottdy/cli/apps/totp
 
 go 1.23
 

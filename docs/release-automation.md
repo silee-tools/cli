@@ -12,7 +12,7 @@
 4. **개발자가 Release PR 을 merge 한다.** release-please-action 이 즉시 `<tool>/v<MAJOR>.<MINOR>.<PATCH>` 태그를 만들고, 빈 GitHub Release(노트는 CHANGELOG 변경분으로 자동 채워짐) 를 생성한다. CHANGELOG.md 갱신은 PR merge 와 함께 main 에 들어가 있다.
 5. **같은 release-please.yml 안의 build-and-upload matrix job 이 릴리스된 도구별로 한 번씩 실행된다.** 각 도구의 `.goreleaser.yaml`에 선언된 운영체제와 아키텍처에 맞춰 GoReleaser가 tar.gz와 checksums.txt를 만든 뒤 release-please가 만들어 둔 release에 `gh release upload`로 첨부한다. GoReleaser 는 `release.disable: true` 로 release 객체 자체를 건드리지 않는다.
 6. **같은 job 마지막 step 이 homebrew-tap 의 `Formula/<tool>.rb` 의 sha256 placeholder 와 version 라인을 새 값으로 자동 갱신하고 commit + push 한다.** `HOMEBREW_TAP_TOKEN` secret 이 설정된 경우에만 동작하며, 여러 도구 릴리스가 가까운 시점에 tap 저장소를 갱신하더라도 non-fast-forward 경합은 `git pull --rebase` 후 재시도한다. 미설정 시 step 자체가 skip 되고 `notice` 로 수동 갱신 안내가 출력된다.
-7. **사용자 머신에서 `brew update && brew upgrade silee-tools/tap/<tool>` 로 새 버전을 설치한다.** Formula 의 `post_install`이 활성 채널을 `release`로 원자적으로 전환하므로, PATH 앞쪽에 개발 바이너리가 남아 있어도 새 Homebrew 바이너리가 실행된다.
+7. **사용자 머신에서 `brew update && brew upgrade ottdy/tap/<tool>` 로 새 버전을 설치한다.** Formula 의 `post_install`이 활성 채널을 `release`로 원자적으로 전환하므로, PATH 앞쪽에 개발 바이너리가 남아 있어도 새 Homebrew 바이너리가 실행된다.
 
 ## release-please 의 동작 원리
 
@@ -44,7 +44,7 @@ manifest 의 초기값은 마지막 릴리스된 버전을 그대로 둔다. 다
 
 ## HOMEBREW_TAP_TOKEN 설정 (1회성)
 
-silee-tools/homebrew-tap 레포에 push 권한을 가진 fine-grained Personal Access Token 을 만들어 silee-tools/cli 의 repository secret 으로 등록한다.
+ottdy/homebrew-tap 레포에 push 권한을 가진 fine-grained Personal Access Token 을 만들어 ottdy/cli 의 repository secret 으로 등록한다.
 
 ### Token 생성
 
@@ -52,8 +52,8 @@ GitHub → Settings → Developer settings → Personal access tokens → Fine-g
 
 - Token name: `silee-tools-cli-homebrew-tap-bot`
 - Expiration: 1년 (만료 전 갱신 알림 캘린더 등록 권장)
-- Resource owner: `silee-tools`
-- Repository access: Only select repositories → `silee-tools/homebrew-tap`
+- Resource owner: `ottdy`
+- Repository access: Only select repositories → `ottdy/homebrew-tap`
 - Repository permissions:
   - **Contents: Read and write** (필수)
   - Metadata: Read-only (자동 부여)
@@ -62,11 +62,11 @@ GitHub → Settings → Developer settings → Personal access tokens → Fine-g
 
 ```bash
 gh secret set HOMEBREW_TAP_TOKEN \
-  --repo silee-tools/cli \
+  --repo ottdy/cli \
   --body "<생성한_PAT>"
 ```
 
-또는 GitHub UI: silee-tools/cli → Settings → Secrets and variables → Actions → New repository secret → Name: `HOMEBREW_TAP_TOKEN`, Value: 토큰
+또는 GitHub UI: ottdy/cli → Settings → Secrets and variables → Actions → New repository secret → Name: `HOMEBREW_TAP_TOKEN`, Value: 토큰
 
 ## Self-hosted 러너 사용 (선택)
 
@@ -78,8 +78,8 @@ build-and-upload job 의 runner 는 다음 우선순위로 결정된다.
 자체 호스팅 macOS / Linux 러너가 있으면 GitHub Actions 의 self-hosted 러너 라벨을 `vars.RUNNER_MACOS` / `vars.RUNNER_LINUX` 에 등록한다. 미설정 시 GitHub-hosted 로 동작한다.
 
 ```bash
-gh variable set RUNNER_LINUX --repo silee-tools/cli --body "self-hosted"
-gh variable set RUNNER_MACOS --repo silee-tools/cli --body "self-hosted"
+gh variable set RUNNER_LINUX --repo ottdy/cli --body "self-hosted"
+gh variable set RUNNER_MACOS --repo ottdy/cli --body "self-hosted"
 ```
 
 ## 도구명 → formula 파일명 매핑
@@ -110,8 +110,8 @@ gh variable set RUNNER_MACOS --repo silee-tools/cli --body "self-hosted"
 1. 자동 생성된 Release PR 본문에서 변경된 도구의 CHANGELOG와 manifest version bump를 확인한다.
 2. Release PR merge 후 build-and-upload job이 `paths_released`에 포함된 도구만 처리하는지 확인한다.
 3. 새 GitHub Release에 tar.gz와 checksums.txt가 첨부됐는지 확인한다.
-4. silee-tools/homebrew-tap에 `chore(<tool>): bump to v<X.Y.Z>...` 커밋이 생성됐는지 확인한다.
-5. 본인 머신에서 `brew update && brew upgrade silee-tools/tap/<tool>`을 실행한다.
+4. ottdy/homebrew-tap에 `chore(<tool>): bump to v<X.Y.Z>...` 커밋이 생성됐는지 확인한다.
+5. 본인 머신에서 `brew update && brew upgrade ottdy/tap/<tool>`을 실행한다.
 6. 기존 개발 바이너리를 삭제하지 않은 상태에서도 `<tool> --version`이 배포 버전을 출력하는지 확인한다.
 
 ## 의도적으로 자동화하지 않은 항목

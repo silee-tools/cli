@@ -3,7 +3,7 @@ package shell
 import (
 	"fmt"
 
-	"github.com/silee-tools/jg/plugin"
+	"github.com/ottdy/jg/plugin"
 )
 
 func InitZsh() string {

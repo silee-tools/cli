@@ -5,7 +5,7 @@
 # apps/<tool>/ 을 자동 순회하여, 각 도구가 `-v` 와 `--version` 입력 시
 # 표준 출력에 정확히 다음 한 줄을 찍고 종료 코드 0 으로 끝나는지 검증한다.
 #
-#   <tool> v<version> © 2026 silee-tools
+#   <tool> v<version> © 2026 ottdy
 #
 # 도구 이름을 하드코딩하지 않으므로 apps/<new-tool>/ 추가만으로 자동 검사
 # 대상이 된다. OS 라우팅의 단일 진실 소스는 각 도구의 .goreleaser.yaml 이다:
@@ -25,7 +25,7 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-expected_suffix=" © 2026 silee-tools"
+expected_suffix=" © 2026 ottdy"
 
 host_os="unknown"
 case "$(uname -s)" in

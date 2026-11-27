@@ -9,7 +9,7 @@ Frecency 기반 Git 저장소 빠른 점프 CLI
 ## 설치
 
 ```bash
-brew install silee-tools/tap/jg
+brew install ottdy/tap/jg
 ```
 
 `fzf`가 의존성으로 자동 설치됩니다.

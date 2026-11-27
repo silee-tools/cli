@@ -1,6 +1,6 @@
 package main
 
-import "github.com/silee-tools/jg/internal/worktree"
+import "github.com/ottdy/jg/internal/worktree"
 
 // shouldPinMain 은 main working tree 를 피커 최상단에 고정할지 판정한다.
 // main 경로가 비었거나 cwd 가 이미 main 루트와 같은 자리이면 고정하지 않는다.

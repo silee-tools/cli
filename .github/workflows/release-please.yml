@@ -183,7 +183,7 @@ jobs:
 
           tap_dir="$(mktemp -d)/homebrew-tap"
           git clone --depth=1 \
-            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/silee-tools/homebrew-tap.git" \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ottdy/homebrew-tap.git" \
             "$tap_dir"
 
           formula_path="${tap_dir}/Formula/${formula_name}.rb"
@@ -215,7 +215,7 @@ jobs:
             echo "Formula 변경 없음 — push skip"
             exit 0
           fi
-          git commit -m "chore(${formula_name}): bump to ${version} from silee-tools/cli release"
+          git commit -m "chore(${formula_name}): bump to ${version} from ottdy/cli release"
 
           # Multiple release jobs can update the tap repository close together.
           # Rebase and retry a few times on non-fast-forward races so independent
@@ -235,4 +235,4 @@ jobs:
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          echo "::notice title=Homebrew formula 수동 갱신 필요::HOMEBREW_TAP_TOKEN secret 미설정. release 의 checksums.txt 로 silee-tools/homebrew-tap 의 Formula/${{ steps.ctx.outputs.tool }}.rb 를 수동 갱신하세요."
+          echo "::notice title=Homebrew formula 수동 갱신 필요::HOMEBREW_TAP_TOKEN secret 미설정. release 의 checksums.txt 로 ottdy/homebrew-tap 의 Formula/${{ steps.ctx.outputs.tool }}.rb 를 수동 갱신하세요."

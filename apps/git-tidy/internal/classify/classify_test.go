@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/silee-tools/git-tidy/internal/gitx"
+	"github.com/ottdy/git-tidy/internal/gitx"
 )
 
 func TestClassify(t *testing.T) {

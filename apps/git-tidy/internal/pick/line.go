@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/silee-tools/git-tidy/internal/reason"
+	"github.com/ottdy/git-tidy/internal/reason"
 )
 
 // RunLine 은 줄 입력으로 다중 선택을 진행하고 체크된 항목을 돌려준다.

@@ -9,7 +9,7 @@ macOS Keychain 기반 TOTP(Time-based One-Time Password) 코드 생성기.
 ## 설치
 
 ```bash
-brew install silee-tools/tap/totp
+brew install ottdy/tap/totp
 ```
 
 또는 로컬 개발 빌드:

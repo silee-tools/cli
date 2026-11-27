@@ -7,7 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/silee-tools/git-tidy/internal/reason"
+	"github.com/ottdy/git-tidy/internal/reason"
 )
 
 // row 는 화면 한 줄이다. 그룹 헤더이거나 항목이다.

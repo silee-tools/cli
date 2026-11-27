@@ -9,12 +9,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/silee-tools/jg/internal/entry"
-	"github.com/silee-tools/jg/internal/frecency"
-	"github.com/silee-tools/jg/internal/fzf"
-	"github.com/silee-tools/jg/internal/runtimechannel"
-	"github.com/silee-tools/jg/internal/scheduler"
-	"github.com/silee-tools/jg/internal/shell"
+	"github.com/ottdy/jg/internal/entry"
+	"github.com/ottdy/jg/internal/frecency"
+	"github.com/ottdy/jg/internal/fzf"
+	"github.com/ottdy/jg/internal/runtimechannel"
+	"github.com/ottdy/jg/internal/scheduler"
+	"github.com/ottdy/jg/internal/shell"
 )
 
 var version = "dev"
@@ -85,9 +85,9 @@ func toolName(argv0 string) string {
 }
 
 // versionLine 은 모노레포 전 도구가 공유하는 표준 버전 한 줄을 만든다:
-// "<도구> v<버전> © 2026 silee-tools".
+// "<도구> v<버전> © 2026 ottdy".
 func versionLine(name, version string) string {
-	return fmt.Sprintf("%s v%s © 2026 silee-tools\n", name, version)
+	return fmt.Sprintf("%s v%s © 2026 ottdy\n", name, version)
 }
 
 func printHelp() {

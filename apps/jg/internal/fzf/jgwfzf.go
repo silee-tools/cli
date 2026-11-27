@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/silee-tools/jg/internal/worktree"
+	"github.com/ottdy/jg/internal/worktree"
 )
 
 // WorktreePickerInput 은 jgw 의 fzf picker 호출 파라미터다.

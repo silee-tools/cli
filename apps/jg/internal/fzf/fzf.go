@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/silee-tools/jg/internal/entry"
+	"github.com/ottdy/jg/internal/entry"
 )
 
 // Run launches fzf with the given entries and optional query. pinnedMain 이

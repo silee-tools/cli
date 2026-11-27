@@ -1,3 +1,3 @@
-module github.com/silee-tools/jg
+module github.com/ottdy/jg
 
 go 1.23
